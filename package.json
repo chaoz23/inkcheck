@@ -1,0 +1,39 @@
+{
+  "name": "inkcheck",
+  "version": "0.1.0",
+  "description": "CI for ink stories — compile checks, exhaustive branch playtesting, dead-content detection. MCP server + CLI.",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "tsc"
+  },
+  "keywords": [
+    "ink",
+    "inkle",
+    "narrative",
+    "mcp",
+    "model-context-protocol",
+    "interactive-fiction",
+    "ci",
+    "testing"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "inkjs": "^2.4.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "typescript": "^6.0.3"
+  },
+  "bin": {
+    "inkcheck": "dist/cli.js",
+    "inkcheck-mcp": "dist/server.js"
+  },
+  "files": [
+    "dist"
+  ]
+}

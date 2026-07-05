@@ -1,0 +1,5 @@
+node_modules/
+dist/
+*.tgz
+# The Intercept is inkle's content — downloaded for demos, not redistributed
+examples/TheIntercept.ink
