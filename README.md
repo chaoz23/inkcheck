@@ -11,6 +11,16 @@ inkcheck is a QA tool, not a writing tool. It doesn't generate a word of prose. 
 - **Unreachable content** — knots no explored path ever visits, so orphaned scenes don't ship silently
 - **Every distinct ending** — with the choice trail that reaches it, so you know your five endings are actually five reachable endings
 
+## vs. the alternatives
+
+| | Catches syntax errors | Plays every branch | Finds unreachable content | Repro path for crashes | Runs in CI |
+| --- | :---: | :---: | :---: | :---: | :---: |
+| **`inklecate` (compiler)** | ✓ | — | — | — | ✓ |
+| **Manual playtesting** | — | only what you click | by luck | if you remember your clicks | — |
+| **inkcheck** | ✓ | ✓ (bounded exhaustive) | ✓ | ✓ | ✓ |
+
+The compiler tells you the story is *valid*. Clicking through tells you the paths you *happened to click* work. Neither tells you whether all five endings are reachable or which choice sequence crashes the runtime. inkcheck walks the graph for you and answers exactly those questions — deterministically, in CI.
+
 ## Example
 
 ```
@@ -73,6 +83,18 @@ GitHub Actions:
   with: { node-version: 22 }
 - run: npx -y inkcheck story/main.ink --strict
 ```
+
+## For agents
+
+inkcheck is built to be driven by an AI coding agent, not just a human at a terminal.
+
+- **Machine-readable interface:** `tool.json` at the repo root describes the CLI flags, MCP tools, exit codes, and `--json` output shape in one file.
+- **`--json`** emits the entire report as a single JSON object (`{ compile, stats, explore }`) on stdout — parse that instead of scraping the pretty output.
+- **Deterministic exit codes:** `0` clean · `1` compile/runtime errors (or, under `--strict`, warnings and unvisited knots) · `2` usage error. Branch on the exit code; don't grep the text.
+- **MCP:** `claude mcp add inkcheck -- npx -y inkcheck mcp` exposes `compile_story`, `story_stats`, `playtest_story`, and `explore_story` as tools.
+- **The loop:** edit `.ink` → `compile_story` → `explore_story` → fix what it reports → repeat. inkcheck is a deterministic oracle for a story graph you generated or edited — use it to verify your own work before returning it.
+
+`llms.txt` at the repo root is a compact, model-friendly summary of all of the above.
 
 ## How it works
 
