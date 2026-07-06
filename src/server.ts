@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { compile, stats, scanKnots, scanExternals } from "./inklecate";
-import { playtest, explore } from "./explore";
+import { playtest, explore, mergeMinRepro } from "./explore";
 
 const server = new McpServer({ name: "inkcheck", version: "0.1.0" });
 
@@ -81,9 +81,11 @@ server.registerTool(
         .describe("Max choices deep to explore (default 30)"),
       maxStates: z.number().int().min(1).max(20000).optional()
         .describe("Max story states to visit (default 500)"),
+      minRepro: z.boolean().optional()
+        .describe("Run a second BFS pass to shorten repro paths (default true)"),
     },
   },
-  async ({ file, maxDepth, maxStates }) => {
+  async ({ file, maxDepth, maxStates, minRepro }) => {
     const compiled = await compile(file);
     if (!compiled.success || !compiled.storyJson) {
       return err(
@@ -91,10 +93,17 @@ server.registerTool(
           compiled.issues.map((i) => i.raw).join("\n")
       );
     }
-    const result = explore(compiled.storyJson, scanKnots(file), scanExternals(file), {
-      maxDepth,
-      maxStates,
-    });
+    const knots = scanKnots(file);
+    const externals = scanExternals(file);
+    let result = explore(compiled.storyJson, knots, externals, { maxDepth, maxStates });
+    if (minRepro !== false) {
+      const bfs = explore(compiled.storyJson, knots, externals, {
+        maxDepth,
+        maxStates,
+        strategy: "bfs",
+      });
+      result = mergeMinRepro(result, bfs);
+    }
     return json({ compileIssues: compiled.issues, ...result });
   }
 );

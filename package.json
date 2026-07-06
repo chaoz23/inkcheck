@@ -5,7 +5,8 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
-    "prepublishOnly": "tsc"
+    "prepublishOnly": "tsc",
+    "test": "tsc && node --test \"test/**/*.test.js\""
   },
   "keywords": [
     "ink",
@@ -17,7 +18,7 @@
     "ci",
     "testing"
   ],
-  "author": "",
+  "author": "Daniel Strader",
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
@@ -35,5 +36,8 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "engines": {
+    "node": ">=18"
+  }
 }
