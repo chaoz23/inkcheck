@@ -28,7 +28,7 @@ $ inkcheck examples/manor.ink
 
 Exit code is non-zero on compile or runtime errors (add `--strict` to also fail on warnings and unvisited knots), so it drops straight into CI.
 
-Scale check: it explores 5,000 states of inkle's published game [*The Intercept*](https://github.com/inkle/the-intercept) (14,728 words, 343 choices) in ~45 seconds, surfacing 16 distinct endings — and, correctly, zero errors.
+Scale check: it explores 5,000 states of inkle's published game [*The Intercept*](https://github.com/inkle/the-intercept) (14,728 words, 343 choices) in ~5 seconds, surfacing 16 distinct endings — and, correctly, zero errors.
 
 ## MCP server
 
@@ -44,7 +44,7 @@ Four tools for AI agents working on ink stories:
 Add to Claude Code:
 
 ```sh
-claude mcp add inkcheck -- npx -y inkcheck-mcp
+claude mcp add inkcheck -- npx -y inkcheck mcp
 ```
 
 or to any MCP client config:
@@ -52,7 +52,7 @@ or to any MCP client config:
 ```json
 {
   "mcpServers": {
-    "inkcheck": { "command": "npx", "args": ["-y", "inkcheck", "inkcheck-mcp"] }
+    "inkcheck": { "command": "npx", "args": ["-y", "inkcheck", "mcp"] }
   }
 }
 ```
@@ -62,7 +62,8 @@ The intended loop for an agent editing a story: edit `.ink` → `compile_story` 
 ## CLI
 
 ```
-inkcheck <story.ink> [--max-depth N] [--max-states N] [--strict] [--json]
+inkcheck <story.ink> [--max-depth N] [--max-states N] [--no-min-repro] [--strict] [--json]
+inkcheck mcp    # start the MCP server on stdio
 ```
 
 GitHub Actions:
@@ -76,16 +77,15 @@ GitHub Actions:
 ## How it works
 
 - **Compilation** uses `inklecate`, the canonical compiler — found via `$INKLECATE_PATH`, then `PATH`, then auto-downloaded from the official ink release into `~/.cache/inkcheck` on first run. Stories are compiled with `-c` so all knot visits are counted.
-- **Exploration** runs the compiled story in [inkjs](https://github.com/y-lohse/inkjs) (the official JS runtime port), walking the choice tree depth-first. States are deduplicated by content hash (ignoring turn counters and RNG seeds), which is what makes stories with loops terminate. `INCLUDE`s are followed; `EXTERNAL` functions are auto-stubbed so exploration doesn't require a game engine.
+- **Exploration** runs the compiled story in [inkjs](https://github.com/y-lohse/inkjs) (the official JS runtime port), walking the choice tree depth-first from a single pooled story instance (the compiled JSON is parsed once, states rewind via `LoadJson`). States are deduplicated by content hash (ignoring turn counters and RNG seeds), which is what makes stories with loops terminate. `INCLUDE`s are followed; `EXTERNAL` functions are auto-stubbed so exploration doesn't require a game engine.
+- A second breadth-first pass shortens error and ending repro paths to minimal choice trails where they're reachable within limits (skip with `--no-min-repro`).
 - Bounds (`--max-depth`, `--max-states`) keep worst-case combinatorics in check; the report says explicitly when it was truncated.
 
 ## Roadmap
 
-- Shortest-repro pass (re-search error paths breadth-first for minimal reproductions)
 - Localization/tag lint (untagged lines, inconsistent tag schemas)
 - State assertions ("gold must never go negative on any path")
 - Yarn Spinner support via `ysc`
-- Performance: story-instance reuse (~10× headroom on large stories)
 
 ## License
 

@@ -173,20 +173,29 @@ interface Frame {
   depth: number;
 }
 
+export interface ExploreOptions {
+  maxDepth?: number;
+  maxStates?: number;
+  /** "dfs" (default) surfaces endings early; "bfs" yields shortest paths. */
+  strategy?: "dfs" | "bfs";
+}
+
 /**
- * Depth-first exhaustive walk of the story's choice tree, up to limits.
- * Reports every distinct ending, every runtime error with the choice trail
- * that triggers it, and knot coverage. Depth-first so endings surface early
- * even in deep stories; identical states (modulo turn counters) are pruned.
+ * Exhaustive walk of the story's choice tree, up to limits. Reports every
+ * distinct ending, every runtime error with the choice trail that triggers
+ * it, and knot coverage. Identical states (modulo turn counters) are pruned.
+ * A single pooled Story instance is reused across states via LoadJson, so
+ * the compiled JSON is parsed once regardless of exploration size.
  */
 export function explore(
   storyJson: string,
   knots: KnotInfo[],
   externals: string[] = [],
-  opts: { maxDepth?: number; maxStates?: number } = {}
+  opts: ExploreOptions = {}
 ): ExploreResult {
   const maxDepth = opts.maxDepth ?? 30;
   const maxStates = opts.maxStates ?? 500;
+  const strategy = opts.strategy ?? "dfs";
 
   const endings = new Map<string, EndingReport>();
   const runtimeErrors = new Map<string, RuntimeErrorReport>();
@@ -209,35 +218,43 @@ export function explore(
     }
   };
 
-  // Root frame: fresh story, continue to the first choice point.
-  const root = makeStory(storyJson, externals);
-  const rootStep = continueMaximally(root);
-  root.errors.forEach((e) => runtimeErrors.set(e, { message: e, path: [] }));
-  root.warnings.forEach((w) => runtimeWarnings.add(w));
-  recordKnotCoverage(root);
+  // One pooled instance: constructing Story parses the full compiled JSON,
+  // so we do it once and rewind between branches with LoadJson.
+  const s = makeStory(storyJson, externals);
+  const resetSession = () => {
+    s.errors.length = 0;
+    s.warnings.length = 0;
+  };
+
+  // Root: continue the fresh story to the first choice point.
+  const rootStep = continueMaximally(s);
+  s.errors.forEach((e) => runtimeErrors.set(e, { message: e, path: [] }));
+  s.warnings.forEach((w) => runtimeWarnings.add(w));
+  recordKnotCoverage(s);
 
   if (rootStep.choicesOffered.length === 0) {
     // Linear story (or immediate end).
     endings.set(rootStep.text, {
       path: [],
       finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
-      variables: extractVariables(root.story),
+      variables: extractVariables(s.story),
     });
   }
 
-  const rootState = root.story.state.ToJson();
+  const rootState = s.story.state.ToJson();
   seenStates.add(stateKey(rootState));
-  const stack: Frame[] = [{ stateJson: rootState, path: [], depth: 0 }];
+  const frames: Frame[] = [{ stateJson: rootState, path: [], depth: 0 }];
+  let head = 0; // BFS read pointer (avoids O(n) shifts)
 
-  while (stack.length > 0) {
+  while (strategy === "bfs" ? head < frames.length : frames.length > 0) {
     if (statesExplored >= maxStates) {
       truncated = true;
       break;
     }
-    const frame = stack.pop()!;
-    const parent = makeStory(storyJson, externals);
+    const frame = strategy === "bfs" ? frames[head++] : frames.pop()!;
+    resetSession();
     try {
-      parent.story.state.LoadJson(frame.stateJson);
+      s.story.state.LoadJson(frame.stateJson);
     } catch (e) {
       runtimeErrors.set(String(e), {
         message: `State restore failed: ${e instanceof Error ? e.message : e}`,
@@ -245,14 +262,14 @@ export function explore(
       });
       continue;
     }
-    const numChoices = parent.story.currentChoices.length;
+    const numChoices = s.story.currentChoices.length;
 
     for (let i = 0; i < numChoices; i++) {
       if (statesExplored >= maxStates) {
         truncated = true;
         break;
       }
-      const s = makeStory(storyJson, externals);
+      resetSession();
       s.story.state.LoadJson(frame.stateJson);
       const choiceText = s.story.currentChoices[i]?.text ?? `#${i}`;
       const path = [...frame.path, choiceText];
@@ -288,7 +305,7 @@ export function explore(
       const key = stateKey(nextState);
       if (seenStates.has(key)) continue; // identical state: subtree already covered
       seenStates.add(key);
-      stack.push({ stateJson: nextState, path, depth: frame.depth + 1 });
+      frames.push({ stateJson: nextState, path, depth: frame.depth + 1 });
     }
   }
 
@@ -304,4 +321,38 @@ export function explore(
     truncated,
     limits: { maxDepth, maxStates },
   };
+}
+
+function endingKey(e: EndingReport): string {
+  return e.finalText + "|" + JSON.stringify(e.variables);
+}
+
+/**
+ * Shorten the repro paths in `main` (a DFS result) using a BFS pass over the
+ * same story: BFS reaches everything by its shortest choice trail, so any
+ * error or ending both passes found gets the minimal reproduction.
+ */
+export function mergeMinRepro(main: ExploreResult, bfs: ExploreResult): ExploreResult {
+  for (const err of main.runtimeErrors) {
+    const match = bfs.runtimeErrors.find((e) => e.message === err.message);
+    if (match && match.path.length < err.path.length) err.path = match.path;
+  }
+  const bfsEndings = new Map(bfs.endingsFound.map((e) => [endingKey(e), e]));
+  for (const end of main.endingsFound) {
+    const match = bfsEndings.get(endingKey(end));
+    if (match && match.path.length < end.path.length) end.path = match.path;
+  }
+  // BFS may also have reached endings/errors/knots DFS missed within limits.
+  const mainEndingKeys = new Set(main.endingsFound.map(endingKey));
+  for (const e of bfs.endingsFound) {
+    if (!mainEndingKeys.has(endingKey(e))) main.endingsFound.push(e);
+  }
+  const mainErrs = new Set(main.runtimeErrors.map((e) => e.message));
+  for (const e of bfs.runtimeErrors) {
+    if (!mainErrs.has(e.message)) main.runtimeErrors.push(e);
+  }
+  const visited = new Set([...main.visitedKnots, ...bfs.visitedKnots]);
+  main.visitedKnots = [...visited];
+  main.unvisitedKnots = main.unvisitedKnots.filter((k) => !visited.has(k.name));
+  return main;
 }

@@ -1,0 +1,24 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm test
+      - name: CLI catches a broken story (expects exit 1)
+        run: "! node dist/cli.js examples/broken.ink"
+        shell: bash
+      - name: CLI catches a runtime error (expects exit 1)
+        run: "! node dist/cli.js examples/manor.ink"
+        shell: bash

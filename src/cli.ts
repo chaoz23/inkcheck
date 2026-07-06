@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 import { compile, stats, scanKnots, scanExternals } from "./inklecate";
-import { explore } from "./explore";
+import { explore, mergeMinRepro } from "./explore";
 
 function usage(): never {
   console.log(`inkcheck — CI for ink stories
 
 Usage: inkcheck <story.ink> [options]
+       inkcheck mcp              Start the MCP server (stdio)
 
 Options:
   --max-depth <n>    Max choices deep to explore (default 30)
   --max-states <n>   Max story states to visit (default 500)
+  --no-min-repro     Skip the second pass that shortens repro paths
   --strict           Treat warnings and unvisited knots as failures
   --json             Emit the full report as JSON
 `);
@@ -18,6 +20,10 @@ Options:
 
 async function main() {
   const args = process.argv.slice(2);
+  if (args[0] === "mcp") {
+    require("./server");
+    return;
+  }
   const file = args.find((a) => !a.startsWith("--"));
   if (!file) usage();
   const flag = (name: string): string | undefined => {
@@ -44,7 +50,15 @@ async function main() {
   const knots = scanKnots(file);
   const externals = scanExternals(file);
   const st = await stats(file);
-  const report = explore(compiled.storyJson!, knots, externals, { maxDepth, maxStates });
+  let report = explore(compiled.storyJson!, knots, externals, { maxDepth, maxStates });
+  if (!args.includes("--no-min-repro")) {
+    const bfs = explore(compiled.storyJson!, knots, externals, {
+      maxDepth,
+      maxStates,
+      strategy: "bfs",
+    });
+    report = mergeMinRepro(report, bfs);
+  }
 
   if (asJson) {
     console.log(
