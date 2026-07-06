@@ -39,5 +39,13 @@
   ],
   "engines": {
     "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chaoz23/inkcheck.git"
+  },
+  "homepage": "https://github.com/chaoz23/inkcheck#readme",
+  "bugs": {
+    "url": "https://github.com/chaoz23/inkcheck/issues"
   }
 }
