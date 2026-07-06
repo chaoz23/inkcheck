@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.chaoz23/inkcheck",
+  "description": "CI for ink interactive-fiction stories — compile checks, exhaustive branch playtesting, runtime-error repro paths, and dead-content detection. Verifies a story the way you'd verify code.",
+  "repository": {
+    "url": "https://github.com/chaoz23/inkcheck",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "inkcheck",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "runtimeArguments": [
+        {
+          "type": "positional",
+          "value": "mcp",
+          "valueHint": "mcp"
+        }
+      ]
+    }
+  ]
+}
