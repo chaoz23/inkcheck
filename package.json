@@ -1,6 +1,6 @@
 {
   "name": "inkcheck",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "CI for ink stories — compile checks, exhaustive branch playtesting, dead-content detection. MCP server + CLI.",
   "main": "dist/server.js",
   "scripts": {
