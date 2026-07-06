@@ -1,0 +1,41 @@
+# inkcheck
+
+> CI for ink interactive-fiction stories. Compile checks, exhaustive branch playtesting, runtime-error repro paths, and dead-content detection. An MCP server for AI coding agents and a standalone CLI. It writes no prose — it verifies the story you already wrote, the way you'd verify code.
+
+inkcheck exists because compiling an ink story only proves the syntax is valid. It does not prove every ending is reachable, that no knot is orphaned, or that no choice sequence trips a runtime error. inkcheck does a bounded exhaustive walk of the choice graph and reports all of that with reproduction paths, and exits non-zero on failure so it drops into CI.
+
+## Install / run
+
+- CLI: `npx -y inkcheck <story.ink>`
+- CLI machine output: `npx -y inkcheck <story.ink> --json`
+- CI: `npx -y inkcheck story/main.ink --strict`
+- MCP (Claude Code): `claude mcp add inkcheck -- npx -y inkcheck mcp`
+- MCP config: `{ "mcpServers": { "inkcheck": { "command": "npx", "args": ["-y", "inkcheck", "mcp"] } } }`
+
+## Exit codes
+
+- 0: clean
+- 1: compile errors, runtime errors, or (under --strict) warnings/unvisited knots
+- 2: usage error
+
+## MCP tools
+
+- compile_story — structured compile issues (severity, file, line)
+- story_stats — word/knot/choice counts + full knot list with locations
+- playtest_story — play one scripted choice path headlessly; transcript, tags, variables, errors
+- explore_story — bounded exhaustive walk: endings, error repro paths, knot coverage
+
+## Intended agent loop
+
+edit .ink → compile_story → explore_story → fix what it reports → repeat. Treat inkcheck as a deterministic oracle for a story graph you generated or edited.
+
+## What it is not
+
+Not a writing tool and not an authoring aid. It generates zero prose. It is pure QA for the [ink](https://github.com/inkle/ink) language (inkle's scripting language for interactive fiction).
+
+## Links
+
+- Repo: https://github.com/chaoz23/inkcheck
+- Package: https://www.npmjs.com/package/inkcheck
+- ink language: https://github.com/inkle/ink
+- License: MIT
