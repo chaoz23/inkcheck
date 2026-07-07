@@ -1,0 +1,60 @@
+name: Incorrect or missed report
+description: Report a false positive, false negative, or misleading coverage result.
+title: "[report] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping make Inkcheck more trustworthy. Issues are public: do not attach private, embargoed, or jam-restricted story material. A minimal synthetic `.ink` file is ideal.
+  - type: input
+    id: version
+    attributes:
+      label: Inkcheck version
+      description: Run `npx -y inkcheck --version`, or provide the exact package version used.
+      placeholder: 0.2.0
+    validations:
+      required: true
+  - type: textarea
+    id: command-report
+    attributes:
+      label: Command and report
+      description: Include the exact command, exit code, and relevant report section.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+      description: What should Inkcheck have reported instead, and why?
+    validations:
+      required: true
+  - type: dropdown
+    id: story-features
+    attributes:
+      label: Story features involved
+      description: Choose the closest match and explain combinations below.
+      options:
+        - Ordinary choices and diverts
+        - TURNS() or turn-sensitive logic
+        - Random or shuffle behavior
+        - EXTERNAL functions or host-engine entry points
+        - INCLUDE files
+        - Unsure or other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction or additional context
+      description: Paste a small synthetic example, drag in a file you may share publicly, or describe the structure without sharing protected text.
+      render: ink
+  - type: checkboxes
+    id: consent
+    attributes:
+      label: Public-sharing confirmation
+      options:
+        - label: I am authorized to share every story excerpt or file attached to this public issue.
+          required: true
+        - label: I understand that opening this issue does not grant permission to retain the story as a test fixture or quote it elsewhere.
+          required: true

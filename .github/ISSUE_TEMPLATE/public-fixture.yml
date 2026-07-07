@@ -1,0 +1,50 @@
+name: Offer a public test fixture
+description: Contribute a small authorized Ink edge case for regression testing.
+title: "[fixture] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please offer only a small synthetic example or material you own and may license publicly. Do not submit private, embargoed, or jam-restricted stories.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Behavior the fixture demonstrates
+      description: Explain the edge case and the result Inkcheck should produce.
+    validations:
+      required: true
+  - type: textarea
+    id: fixture
+    attributes:
+      label: Minimal `.ink` fixture
+      description: Paste the fixture or attach a file.
+      render: ink
+    validations:
+      required: true
+  - type: dropdown
+    id: license
+    attributes:
+      label: Fixture license
+      description: The fixture can be retained only under an explicit reusable license.
+      options:
+        - MIT
+        - CC0-1.0
+        - Other (explain below)
+    validations:
+      required: true
+  - type: input
+    id: license-other
+    attributes:
+      label: Other license details
+      description: Complete this only if you selected “Other.”
+  - type: checkboxes
+    id: permissions
+    attributes:
+      label: Permission
+      options:
+        - label: I created this fixture or am authorized to license it as selected above.
+          required: true
+        - label: I permit the Inkcheck project to retain, modify, and redistribute this fixture under that license.
+          required: true
+        - label: I understand that acceptance is not guaranteed and attribution will follow the selected license.
+          required: true

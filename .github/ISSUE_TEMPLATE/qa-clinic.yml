@@ -1,0 +1,50 @@
+name: Request an opt-in QA clinic check
+description: Ask for help interpreting an Inkcheck report without publicly sharing a story.
+title: "[clinic] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue is public. Do not attach an unpublished or restricted story. Describe the technical shape of the project; any private handoff must be arranged separately and will require explicit retention and publication choices.
+  - type: input
+    id: deadline
+    attributes:
+      label: Relevant deadline
+      description: Optional jam or release deadline, including timezone.
+      placeholder: 2026-08-20 18:00 PDT
+  - type: dropdown
+    id: size
+    attributes:
+      label: Approximate story size
+      options:
+        - Under 1,000 words
+        - 1,000–10,000 words
+        - 10,000–50,000 words
+        - Over 50,000 words
+    validations:
+      required: true
+  - type: textarea
+    id: integrations
+    attributes:
+      label: Ink features and host integration
+      description: Note EXTERNAL functions, engine-entered knots, randomness, TURNS(), INCLUDE files, or custom runtime behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: What would make the check useful?
+      description: Describe the failure, coverage concern, or report you want help interpreting—without pasting protected story text.
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Participation boundaries
+      options:
+        - label: I understand that this public request is not permission to quote, name, retain, or publish my story or its results.
+          required: true
+        - label: I will confirm that I own or am authorized to share any story before a private check occurs.
+          required: true
+        - label: I understand that bounded exploration is not proof that every possible playthrough is correct.
+          required: true
