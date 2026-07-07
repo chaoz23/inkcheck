@@ -8,7 +8,7 @@ RUN npm run build
 
 FROM node:22-bookworm-slim AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates unzip \
+    && apt-get install -y --no-install-recommends ca-certificates libicu72 unzip \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -19,7 +19,7 @@ COPY examples/clean-branch.ink ./examples/clean-branch.ink
 
 ENV HOME=/opt/inkcheck
 RUN mkdir -p /opt/inkcheck \
-    && node dist/cli.js examples/clean-branch.ink --json >/dev/null \
+    && node dist/cli.js examples/clean-branch.ink --json \
     && rm -rf examples \
     && chmod -R a=rX /opt/inkcheck \
     && apt-get purge -y unzip \
