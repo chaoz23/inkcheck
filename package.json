@@ -1,7 +1,7 @@
 {
   "name": "inkcheck",
   "version": "0.1.1",
-  "description": "CI for ink stories — compile checks, exhaustive branch playtesting, dead-content detection. MCP server + CLI.",
+  "description": "Mechanical QA for ink stories — compile checks, bounded branch exploration, repro paths, and dead-content review.",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",

@@ -1,13 +1,14 @@
 # inkcheck
 
-> CI for ink interactive-fiction stories. Compile checks, exhaustive branch playtesting, runtime-error repro paths, and dead-content detection. An MCP server for AI coding agents and a standalone CLI. It writes no prose — it verifies the story you already wrote, the way you'd verify code.
+> Mechanical QA for ink interactive-fiction stories. Compile checks, bounded systematic branch exploration, runtime-error repro paths, and dead-content review. A standalone CLI with optional CI and MCP integrations. It writes no prose.
 
-inkcheck exists because compiling an ink story only proves the syntax is valid. It does not prove every ending is reachable, that no knot is orphaned, or that no choice sequence trips a runtime error. inkcheck does a bounded exhaustive walk of the choice graph and reports all of that with reproduction paths, and exits non-zero on failure so it drops into CI.
+inkcheck exists because compiling an ink story only proves the syntax is valid. It does not exercise choice paths or reproduce runtime failures. inkcheck systematically walks the choice graph within explicit limits, reports terminal states and possible dead content, and exits non-zero on failures so it drops into CI.
 
 ## Install / run
 
 - CLI: `npx -y inkcheck <story.ink>`
 - CLI machine output: `npx -y inkcheck <story.ink> --json`
+- Human-readable CI output: `npx -y inkcheck <story.ink> --markdown`
 - CI: `npx -y inkcheck story/main.ink --strict`
 - MCP (Claude Code): `claude mcp add inkcheck -- npx -y inkcheck mcp`
 - MCP config: `{ "mcpServers": { "inkcheck": { "command": "npx", "args": ["-y", "inkcheck", "mcp"] } } }`
@@ -15,7 +16,7 @@ inkcheck exists because compiling an ink story only proves the syntax is valid. 
 ## Exit codes
 
 - 0: clean
-- 1: compile errors, runtime errors, or (under --strict) warnings/unvisited knots
+- 1: compile errors, runtime errors, or (under --strict) warnings, unvisited knots, truncation, or external stubs
 - 2: usage error
 
 ## MCP tools
@@ -23,7 +24,7 @@ inkcheck exists because compiling an ink story only proves the syntax is valid. 
 - compile_story — structured compile issues (severity, file, line)
 - story_stats — word/knot/choice counts + full knot list with locations
 - playtest_story — play one scripted choice path headlessly; transcript, tags, variables, errors
-- explore_story — bounded exhaustive walk: endings, error repro paths, knot coverage
+- explore_story — bounded systematic walk: terminal states, error repro paths, knot coverage, and explicit limitations
 
 ## Intended agent loop
 
@@ -32,6 +33,13 @@ edit .ink → compile_story → explore_story → fix what it reports → repeat
 ## What it is not
 
 Not a writing tool and not an authoring aid. It generates zero prose. It is pure QA for the [ink](https://github.com/inkle/ink) language (inkle's scripting language for interactive fiction).
+
+## Coverage limits
+
+- Truncation means the report is partial; strict mode fails.
+- EXTERNAL functions are stubbed to zero and named in the report; strict mode fails.
+- Random behavior is detected, but every possible seed is not enumerated.
+- Unvisited knots are review prompts, not automatic proof that content should be deleted.
 
 ## Links
 

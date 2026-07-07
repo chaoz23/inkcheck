@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.github.chaoz23/inkcheck",
-  "description": "CI for ink interactive-fiction stories — compile checks, exhaustive branch playtesting, runtime-error repro paths, and dead-content detection. Verifies a story the way you'd verify code.",
+  "description": "Mechanical QA for ink interactive-fiction stories — compile checks, bounded systematic branch exploration, runtime-error repro paths, and dead-content review. Never writes prose.",
   "repository": {
     "url": "https://github.com/chaoz23/inkcheck",
     "source": "github"

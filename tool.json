@@ -1,7 +1,7 @@
 {
   "name": "inkcheck",
-  "version": "0.1.0",
-  "description": "CI for ink interactive-fiction stories — compile checks, exhaustive branch playtesting, runtime-error repro paths, and dead-content detection. Verifies a .ink story the way you'd verify code. Writes no prose.",
+  "version": "0.1.1",
+  "description": "Mechanical QA for ink interactive-fiction stories — compile checks, bounded systematic branch exploration, runtime-error repro paths, and dead-content review. Writes no prose.",
   "homepage": "https://github.com/chaoz23/inkcheck",
   "license": "MIT",
   "install": {
@@ -15,20 +15,21 @@
     "machineOutput": "--json",
     "flags": [
       { "flag": "--json", "description": "Emit the full report as a single JSON object on stdout. Use this for programmatic consumption." },
-      { "flag": "--strict", "description": "Treat warnings and unvisited knots as failures (exit 1)." },
+      { "flag": "--markdown", "description": "Emit a GitHub Step Summary-friendly Markdown report." },
+      { "flag": "--strict", "description": "Also fail on warnings, unvisited knots, truncation, or external stubs (exit 1)." },
       { "flag": "--max-depth <n>", "description": "Max choices deep to explore. Default 30." },
       { "flag": "--max-states <n>", "description": "Max story states to visit. Default 500." },
       { "flag": "--no-min-repro", "description": "Skip the second pass that shortens repro paths." }
     ],
     "exitCodes": {
-      "0": "Clean — compiled and explored with no errors (and, under --strict, no warnings or unvisited knots).",
-      "1": "Failure — compile errors, runtime errors, or (under --strict) warnings/unvisited knots.",
+      "0": "Clean — compiled and explored with no errors (and, under --strict, no warnings, unvisited knots, truncation, or external stubs).",
+      "1": "Failure — compile errors, runtime errors, or (under --strict) warnings, unvisited knots, truncation, or external stubs.",
       "2": "Usage error — no story file given or bad arguments."
     },
     "jsonSchema": {
       "compile": "{ success: bool, issues: [{severity, file, line, message}], errors: int, warnings: int, todos: int }",
       "stats": "{ words, knots, stitches, functions, choices, gathers, diverts }",
-      "explore": "{ statesExplored: int, endingsFound: [{path: string[], finalText, variables}], runtimeErrors: [{message, path}], unvisitedKnots: [{name, location}], truncated: bool }"
+      "explore": "{ statesExplored: int, endingsFound: [{path: string[], finalText, variables}], runtimeErrors: [{message, path}], unvisitedKnots: [{name, file, line}], externalFunctionsStubbed: string[], randomnessDetected: bool, truncated: bool, limits: {maxDepth, maxStates} }"
     }
   },
   "mcp": {
@@ -39,8 +40,8 @@
       { "name": "compile_story", "description": "Structured compile issues (severity, file, line)." },
       { "name": "story_stats", "description": "Word/knot/choice counts plus the full knot list with locations." },
       { "name": "playtest_story", "description": "Play one scripted choice path headlessly; returns transcript, tags, variables, errors." },
-      { "name": "explore_story", "description": "Bounded exhaustive walk: endings, error repro paths, knot coverage." }
+      { "name": "explore_story", "description": "Bounded systematic walk: terminal states, error repro paths, knot coverage, and explicit coverage limits." }
     ]
   },
-  "agentLoop": "edit .ink → compile_story → explore_story → fix what it reports → repeat. Use inkcheck as a deterministic oracle to verify a story graph you generated or edited before returning it."
+  "agentLoop": "edit .ink → compile_story → explore_story → fix confirmed failures → review coverage limitations → repeat. Never infer that a truncated, randomized, or externally driven story was completely verified."
 }
