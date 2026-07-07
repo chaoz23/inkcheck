@@ -62,3 +62,5 @@ If inkcheck misses a failure or reports one incorrectly, reduce it to the smalle
 - whether the story uses `EXTERNAL` functions, randomness, or host-engine entry points.
 
 False positives are bugs too.
+
+Use the repository's focused issue forms to report an incorrect result, offer a small licensed fixture, or request an opt-in QA clinic check. GitHub issues are public: never attach unpublished or jam-restricted story material. Opening an issue does not grant permission to quote, name, retain, or publish a participant's story.
