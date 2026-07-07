@@ -12,6 +12,7 @@ inkcheck exists because compiling an ink story only proves the syntax is valid. 
 - CI: `npx -y inkcheck story/main.ink --strict`
 - MCP (Claude Code): `claude mcp add inkcheck -- npx -y inkcheck mcp`
 - MCP config: `{ "mcpServers": { "inkcheck": { "command": "npx", "args": ["-y", "inkcheck", "mcp"] } } }`
+- Self-hosted web service: `inkcheck-web` or `npm run web` (temporary upload; local CLI remains private by default)
 
 ## Exit codes
 
@@ -40,6 +41,7 @@ Not a writing tool and not an authoring aid. It generates zero prose. It is pure
 - EXTERNAL functions are stubbed to zero and named in the report; strict mode fails.
 - Random behavior is detected, but every possible seed is not enumerated.
 - Unvisited knots are review prompts, not automatic proof that content should be deleted.
+- Hosted checks accept only authorized `.ink` files, validate INCLUDE paths, enforce stricter limits, and delete each temporary job after its response.
 
 ## Links
 

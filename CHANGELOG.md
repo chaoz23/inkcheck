@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add a self-hosted web checker with direct `.ink` upload or paste, optional unchanged `INCLUDE` files/folders, consent gates, safe path validation, pilot access codes, rate limits, one-job concurrency, child-process timeouts, and immediate temporary-file deletion.
+- Support an exact browser-origin allowlist so a static community page can call the checker without opening the API to arbitrary websites.
+- Add a hardened Docker/Caddy deployment whose application container has no runtime internet route.
+- Document a production budget under $50/month and keep residential Windows hosting for development rather than the public trust boundary.
+
 ## 0.2.0 — 2026-07-07
 
 ### Trustworthy coverage

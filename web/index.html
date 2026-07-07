@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Run a private, temporary mechanical QA check on an Ink story.">
+    <title>Inkcheck hosted checker</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header class="hero">
+        <p class="eyebrow">Mechanical QA for Ink stories</p>
+        <h1>Find the path that breaks.</h1>
+        <p class="lede">Upload authorized <code>.ink</code> source, run a bounded check, and receive a private report. Inkcheck does not generate or edit prose.</p>
+      </header>
+
+      <section class="notice" aria-labelledby="privacy-title">
+        <h2 id="privacy-title">Temporary hosted processing</h2>
+        <p>Your story is uploaded to this service, processed in a temporary directory, returned in this request, and deleted. Story text is not written to application logs or analytics. For maximum privacy, use the local CLI instead.</p>
+      </section>
+
+      <form id="check-form">
+        <section class="card" aria-labelledby="story-title">
+          <div class="section-heading">
+            <span>1</span>
+            <div><h2 id="story-title">Add the story</h2><p>Upload the original <code>.ink</code> file or paste its contents.</p></div>
+          </div>
+
+          <p class="plain-language"><strong>No conversion or repackaging:</strong> use the same <code>.ink</code> files you already edit.</p>
+
+          <label class="upload-box primary-upload">
+            <strong>Choose the main .ink file</strong>
+            <span>One ordinary file upload—nothing to rename or reformat</span>
+            <input id="main-file" type="file" accept=".ink,text/plain">
+          </label>
+
+          <div class="or" aria-hidden="true"><span>or</span></div>
+          <label for="story-text">Paste the main file's contents</label>
+          <textarea id="story-text" rows="10" spellcheck="false" placeholder="Hello, world.&#10;-> END"></textarea>
+
+          <details id="include-options">
+            <summary>My story uses <code>INCLUDE</code> files</summary>
+            <p class="muted">Add the existing supporting files unchanged. If they live in subfolders, select the existing project folder instead.</p>
+            <div class="upload-grid">
+              <label class="upload-box compact-upload">
+                <strong>Add INCLUDE files</strong>
+                <span>For supporting files beside the main file</span>
+                <input id="include-files" type="file" accept=".ink,text/plain" multiple>
+              </label>
+              <label class="upload-box compact-upload">
+                <strong>Select the existing project folder</strong>
+                <span>Preserves its current subfolder paths</span>
+                <input id="folder" type="file" accept=".ink,text/plain" webkitdirectory multiple>
+              </label>
+            </div>
+          </details>
+
+          <div id="root-choice" hidden>
+            <label for="root">Which file starts the story?</label>
+            <select id="root"><option value="main.ink">main.ink</option></select>
+          </div>
+          <p id="selection-note" class="muted">Choose one main file or paste its contents.</p>
+        </section>
+
+        <section class="card" aria-labelledby="limits-title">
+          <div class="section-heading">
+            <span>2</span>
+            <div><h2 id="limits-title">Set bounded limits</h2><p>Defaults are intentionally modest for a shared service.</p></div>
+          </div>
+          <div class="limits">
+            <label for="max-depth">Maximum choice depth<input id="max-depth" type="number" min="1" max="100" value="30" required></label>
+            <label for="max-states">Maximum states<input id="max-states" type="number" min="1" max="5000" value="500" required></label>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="permission-title">
+          <div class="section-heading">
+            <span>3</span>
+            <div><h2 id="permission-title">Confirm permission</h2><p>Do not upload private material you are not authorized to share with this service.</p></div>
+          </div>
+          <label class="check"><input id="authorized" type="checkbox" required><span>I created these files or am authorized to upload them for this check.</span></label>
+          <label class="check"><input id="privacy" type="checkbox" required><span>I understand this hosted mode temporarily uploads the story; the local CLI does not.</span></label>
+          <label for="access-code">Pilot access code <span class="optional">(if provided by the organizer)</span></label>
+          <input id="access-code" type="password" autocomplete="off" inputmode="text">
+        </section>
+
+        <button id="submit" type="submit">Run Inkcheck</button>
+        <p id="form-status" role="status" aria-live="polite"></p>
+      </form>
+
+      <section id="result" class="card result" hidden aria-labelledby="result-title">
+        <div class="result-heading"><h2 id="result-title">Report</h2><button id="download" type="button">Download JSON</button></div>
+        <p id="result-summary" class="summary"></p>
+        <pre id="result-json" tabindex="0"></pre>
+      </section>
+
+      <footer>
+        <p>Coverage is bounded. Randomness, host-game <code>EXTERNAL</code> functions, and engine-entered content can limit what a headless check observes.</p>
+        <p><a href="https://github.com/chaoz23/inkcheck">Source and local CLI</a></p>
+      </footer>
+    </main>
+  </body>
+</html>

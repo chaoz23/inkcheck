@@ -1,0 +1,142 @@
+import * as path from "path";
+
+export interface HostedLimits {
+  maxBodyBytes: number;
+  maxFiles: number;
+  maxFileBytes: number;
+  maxDepth: number;
+  maxStates: number;
+}
+
+export interface HostedFile {
+  name: string;
+  content: string;
+  bytes: number;
+}
+
+export interface HostedSubmission {
+  root: string;
+  files: HostedFile[];
+  maxDepth: number;
+  maxStates: number;
+}
+
+export class SubmissionError extends Error {
+  constructor(
+    message: string,
+    readonly status = 400
+  ) {
+    super(message);
+    this.name = "SubmissionError";
+  }
+}
+
+function safeInkPath(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 240) {
+    throw new SubmissionError(`${label} must be a relative .ink path under 240 characters`);
+  }
+  if (value.includes("\\") || value.includes("\0") || path.posix.isAbsolute(value)) {
+    throw new SubmissionError(`${label} must use a safe relative path`);
+  }
+  const normalized = path.posix.normalize(value);
+  if (
+    normalized !== value ||
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.startsWith("../") ||
+    !normalized.toLowerCase().endsWith(".ink")
+  ) {
+    throw new SubmissionError(`${label} must use a normalized relative .ink path`);
+  }
+  return normalized;
+}
+
+function boundedInteger(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+  label: string
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+    throw new SubmissionError(`${label} must be an integer from ${minimum} to ${maximum}`);
+  }
+  return value as number;
+}
+
+function validateIncludes(files: HostedFile[]): void {
+  const names = new Set(files.map((file) => file.name));
+  for (const file of files) {
+    for (const line of file.content.split(/\r?\n/)) {
+      const code = line.replace(/\/\/.*$/, "");
+      const match = code.match(/^\s*INCLUDE\s+(.+?)\s*$/);
+      if (!match) continue;
+      const include = match[1];
+      if (
+        !include ||
+        include.includes("\\") ||
+        include.includes("\0") ||
+        path.posix.isAbsolute(include)
+      ) {
+        throw new SubmissionError(`Unsafe INCLUDE path in ${file.name}: ${include || "empty"}`, 422);
+      }
+      const target = path.posix.normalize(path.posix.join(path.posix.dirname(file.name), include));
+      if (target === ".." || target.startsWith("../") || !names.has(target)) {
+        throw new SubmissionError(
+          `INCLUDE in ${file.name} must reference an uploaded file: ${include}`,
+          422
+        );
+      }
+    }
+  }
+}
+
+export function validateSubmission(input: unknown, limits: HostedLimits): HostedSubmission {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new SubmissionError("Request body must be a JSON object");
+  }
+  const body = input as Record<string, unknown>;
+  if (body.authorized !== true) {
+    throw new SubmissionError("Confirm that you are authorized to upload these files", 422);
+  }
+  if (body.privacyAcknowledged !== true) {
+    throw new SubmissionError("Confirm that you understand the temporary hosted processing", 422);
+  }
+  if (!body.files || typeof body.files !== "object" || Array.isArray(body.files)) {
+    throw new SubmissionError("files must be an object mapping relative .ink paths to text");
+  }
+
+  const entries = Object.entries(body.files as Record<string, unknown>);
+  if (entries.length < 1 || entries.length > limits.maxFiles) {
+    throw new SubmissionError(`Upload between 1 and ${limits.maxFiles} .ink files`, 413);
+  }
+  const seen = new Set<string>();
+  const files: HostedFile[] = entries.map(([rawName, rawContent]) => {
+    const name = safeInkPath(rawName, "File name");
+    if (seen.has(name)) throw new SubmissionError(`Duplicate file path: ${name}`);
+    seen.add(name);
+    if (typeof rawContent !== "string") {
+      throw new SubmissionError(`File content must be text: ${name}`);
+    }
+    if (rawContent.includes("\0")) {
+      throw new SubmissionError(`File content contains a null byte: ${name}`);
+    }
+    const bytes = Buffer.byteLength(rawContent, "utf8");
+    if (bytes > limits.maxFileBytes) {
+      throw new SubmissionError(`${name} exceeds the ${limits.maxFileBytes}-byte file limit`, 413);
+    }
+    return { name, content: rawContent, bytes };
+  });
+  validateIncludes(files);
+
+  const root = safeInkPath(body.root, "root");
+  if (!seen.has(root)) throw new SubmissionError("root must name one of the uploaded files", 422);
+
+  return {
+    root,
+    files,
+    maxDepth: boundedInteger(body.maxDepth, 30, 1, limits.maxDepth, "maxDepth"),
+    maxStates: boundedInteger(body.maxStates, 500, 1, limits.maxStates, "maxStates"),
+  };
+}

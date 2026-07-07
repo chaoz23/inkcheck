@@ -22,3 +22,27 @@ jobs:
       - name: CLI catches a runtime error (expects exit 1)
         run: "! node dist/cli.js examples/manor.ink"
         shell: bash
+
+  hosted-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose configuration
+        run: INKCHECK_HOST=check.example.org docker compose config --quiet
+      - name: Build hosted checker image
+        run: docker build --tag inkcheck-hosted:test .
+      - name: Start hosted checker
+        run: docker run --detach --name inkcheck-hosted --publish 127.0.0.1:8080:8080 inkcheck-hosted:test
+      - name: Wait for health check
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/healthz; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs inkcheck-hosted
+          exit 1
+      - name: Show container logs
+        if: always()
+        run: docker logs inkcheck-hosted || true

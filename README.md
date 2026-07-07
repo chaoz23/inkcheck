@@ -16,6 +16,12 @@ No global install is required. The first run downloads the pinned official ink c
 
 Want to see the failure-path report before trying your own story? Run the [two-minute synthetic demo](docs/two-minute-demo.md).
 
+## Hosted checker
+
+The repository now includes a self-hosted web interface for writers who do not want to use a terminal. Hosted mode temporarily uploads authorized `.ink` source, runs a bounded check, returns the report, and deletes the temporary job directory. It does not make reports public or retain story text in application logs.
+
+The local CLI remains the privacy-first option because no story upload occurs. See [Hosted checker deployment](docs/hosted-checker.md) for the threat model, Docker deployment, operating limits, and a current sub-$50/month budget.
+
 ## What it catches
 
 - **Compile errors and warnings** — broken diverts, unresolved variables, loose ends, with file and line numbers (via [inklecate](https://github.com/inkle/ink/releases), the official compiler)
