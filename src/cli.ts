@@ -1,7 +1,13 @@
 #!/usr/bin/env node
-import { compile, stats, scanKnots, scanExternals, scanStorySemantics } from "./inklecate";
+import {
+  CompileResult,
+  compile,
+  stats,
+  scanKnots,
+  scanExternals,
+  scanStorySemantics,
+} from "./inklecate";
 import { ExploreResult, explore, mergeMinRepro } from "./explore";
-import { CompileResult } from "./inklecate";
 
 function usage(message?: string): never {
   if (message) console.error(`inkcheck: ${message}\n`);
@@ -11,8 +17,8 @@ Usage: inkcheck <story.ink> [options]
        inkcheck mcp              Start the MCP server (stdio)
 
 Options:
-  --max-depth <n>    Max choices deep to explore (default 30)
-  --max-states <n>   Max story states to visit (default 500)
+  --max-depth <n>    Max choices deep to explore, 1–200 (default 30)
+  --max-states <n>   Max story states to visit, 1–20000 (default 500)
   --no-min-repro     Skip the second pass that shortens repro paths
   --strict           Also fail on warnings, unvisited knots, truncation, or external stubs
   --json             Emit the full report as JSON
@@ -34,16 +40,17 @@ async function main() {
   let asJson = false;
   let asMarkdown = false;
   let minRepro = true;
-  const positiveInt = (flag: string, raw: string | undefined): number => {
-    if (!raw || !/^\d+$/.test(raw) || Number(raw) < 1) {
-      usage(`${flag} requires a positive integer`);
+  const boundedInt = (flag: string, raw: string | undefined, max: number): number => {
+    const value = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
+    if (!Number.isSafeInteger(value) || value < 1 || value > max) {
+      usage(`${flag} requires an integer from 1 to ${max}`);
     }
-    return Number(raw);
+    return value;
   };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "--max-depth") maxDepth = positiveInt(arg, args[++i]);
-    else if (arg === "--max-states") maxStates = positiveInt(arg, args[++i]);
+    if (arg === "--max-depth") maxDepth = boundedInt(arg, args[++i], 200);
+    else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 20_000);
     else if (arg === "--strict") strict = true;
     else if (arg === "--json") asJson = true;
     else if (arg === "--markdown") asMarkdown = true;
@@ -109,10 +116,10 @@ async function main() {
     );
     for (const i of compiled.issues) console.log(`  ${i.raw}`);
     console.log(
-      `✓ explored ${report.statesExplored} states${report.truncated ? " (truncated at limits)" : ""} — ${report.endingsFound.length} distinct ending(s)`
+      `✓ explored ${report.statesExplored} states${report.truncated ? " (truncated at limits)" : ""} — ${report.endingsFound.length} distinct terminal state(s)`
     );
     for (const e of report.endingsFound.slice(0, 10)) {
-      console.log(`    ending via [${e.path.join(" → ") || "linear"}]: "${e.finalText.split("\n").pop()}"`);
+      console.log(`    terminal via [${e.path.join(" → ") || "linear"}]: "${e.finalText.split("\n").pop()}"`);
     }
     if (report.runtimeErrors.length) {
       console.log(`✗ ${report.runtimeErrors.length} runtime error(s):`);
@@ -176,12 +183,15 @@ function renderMarkdown(
 ): string {
   const complete =
     !report.truncated && report.externalFunctionsStubbed.length === 0 && !report.randomnessDetected;
+  const status = report.runtimeErrors.length
+    ? "❌ **Runtime failures found.**"
+    : complete
+      ? "✅ **Choice traversal completed within the configured limits.**"
+      : "⚠️ **Results have coverage limitations; see below.**";
   const lines = [
     "# inkcheck report",
     "",
-    complete
-      ? "✅ **Choice traversal completed within the configured limits.**"
-      : "⚠️ **Results have coverage limitations; see below.**",
+    status,
     "",
     "| Check | Result |",
     "| --- | ---: |",

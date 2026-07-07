@@ -1,6 +1,6 @@
 {
   "name": "inkcheck",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Mechanical QA for ink interactive-fiction stories — compile checks, bounded systematic branch exploration, runtime-error repro paths, and dead-content review. Writes no prose.",
   "homepage": "https://github.com/chaoz23/inkcheck",
   "license": "MIT",
@@ -17,8 +17,8 @@
       { "flag": "--json", "description": "Emit the full report as a single JSON object on stdout. Use this for programmatic consumption." },
       { "flag": "--markdown", "description": "Emit a GitHub Step Summary-friendly Markdown report." },
       { "flag": "--strict", "description": "Also fail on warnings, unvisited knots, truncation, or external stubs (exit 1)." },
-      { "flag": "--max-depth <n>", "description": "Max choices deep to explore. Default 30." },
-      { "flag": "--max-states <n>", "description": "Max story states to visit. Default 500." },
+      { "flag": "--max-depth <n>", "description": "Max choices deep to explore, from 1 to 200. Default 30." },
+      { "flag": "--max-states <n>", "description": "Max story states to visit, from 1 to 20000. Default 500." },
       { "flag": "--no-min-repro", "description": "Skip the second pass that shortens repro paths." }
     ],
     "exitCodes": {

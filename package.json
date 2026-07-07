@@ -1,6 +1,6 @@
 {
   "name": "inkcheck",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Mechanical QA for ink stories — compile checks, bounded branch exploration, repro paths, and dead-content review.",
   "main": "dist/server.js",
   "scripts": {
@@ -35,7 +35,12 @@
     "inkcheck-mcp": "dist/server.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "docs/inkjam-qa-guide.md",
+    "CHANGELOG.md",
+    "llms.txt",
+    "server.json",
+    "tool.json"
   ],
   "engines": {
     "node": ">=18"

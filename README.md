@@ -4,6 +4,16 @@
 
 inkcheck is a QA tool, not a writing tool. It does not generate, rewrite, or send away a word of prose. It exists so that the story *you* wrote can be checked mechanically: compile it with ink's official compiler, explore choice paths within explicit limits, and reproduce failures before a player finds them.
 
+## Quick start
+
+With Node.js 18 or newer:
+
+```sh
+npx -y inkcheck path/to/main.ink
+```
+
+No global install is required. The first run downloads the pinned official ink compiler, verifies its SHA-256 hash, and processes the story locally.
+
 ## What it catches
 
 - **Compile errors and warnings** — broken diverts, unresolved variables, loose ends, with file and line numbers (via [inklecate](https://github.com/inkle/ink/releases), the official compiler)
@@ -76,6 +86,8 @@ The intended loop for an agent editing a story: edit `.ink` → `compile_story` 
 inkcheck <story.ink> [--max-depth N] [--max-states N] [--no-min-repro] [--strict] [--json|--markdown]
 inkcheck mcp    # start the MCP server on stdio
 ```
+
+`--max-depth` accepts 1–200 and `--max-states` accepts 1–20,000. These hard ceilings prevent malformed automation inputs from accidentally disabling the exploration bounds.
 
 GitHub Actions:
 

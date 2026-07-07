@@ -4,8 +4,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { compile, stats, scanKnots, scanExternals, scanStorySemantics } from "./inklecate";
 import { playtest, explore, mergeMinRepro } from "./explore";
+import { VERSION } from "./version";
 
-const server = new McpServer({ name: "inkcheck", version: "0.1.1" });
+const server = new McpServer({ name: "inkcheck", version: VERSION });
 
 function json(result: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };

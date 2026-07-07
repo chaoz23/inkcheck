@@ -17,6 +17,8 @@ export interface PlaytestResult {
   variables: Record<string, unknown>;
   runtimeErrors: string[];
   runtimeWarnings: string[];
+  /** EXTERNAL functions replaced with zero during this playtest. */
+  externalFunctionsStubbed: string[];
 }
 
 export interface EndingReport {
@@ -165,7 +167,8 @@ export function playtest(
     step = continueMaximally(s);
   }
   steps.push(step);
-  const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
+  const ended =
+    s.errors.length === 0 && !s.story.canContinue && s.story.currentChoices.length === 0;
   return {
     steps,
     ended,
@@ -173,6 +176,7 @@ export function playtest(
     variables: extractVariables(s.story),
     runtimeErrors: s.errors,
     runtimeWarnings: s.warnings,
+    externalFunctionsStubbed: [...externals],
   };
 }
 
@@ -197,7 +201,7 @@ export interface ExploreOptions {
 
 /**
  * Bounded systematic walk of the story's choice tree. Reports every
- * distinct ending, every runtime error with the choice trail that triggers
+ * distinct terminal state, every runtime error with the choice trail that triggers
  * it, and knot coverage. States are pruned only after configured-insensitive
  * turn/RNG bookkeeping is canonicalized.
  * A single pooled Story instance is reused across states via LoadJson, so
@@ -211,6 +215,12 @@ export function explore(
 ): ExploreResult {
   const maxDepth = opts.maxDepth ?? 30;
   const maxStates = opts.maxStates ?? 500;
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 200) {
+    throw new RangeError("maxDepth must be an integer from 1 to 200");
+  }
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 20_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 20000");
+  }
   const strategy = opts.strategy ?? "dfs";
   const stateSensitivity = {
     turns: opts.preserveTurnState ?? true,
