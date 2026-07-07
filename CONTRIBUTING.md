@@ -31,7 +31,7 @@ node dist/cli.js examples/manor.ink --json    # machine-readable report
 
 ## Good first issues
 
-- Additional `.ink` fixtures that stress the exhaustive walk (loops, deep nesting, heavy `EXTERNAL` use).
+- Additional `.ink` fixtures that stress bounded exploration (loops, deep nesting, randomness, heavy `EXTERNAL` use).
 - Localization / tag lint (untagged lines, inconsistent tag schemas) — see the roadmap in the README.
 - State assertions (e.g. "gold must never go negative on any path").
 

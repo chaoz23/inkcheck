@@ -2,10 +2,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { compile, stats, scanKnots, scanExternals } from "./inklecate";
+import { compile, stats, scanKnots, scanExternals, scanStorySemantics } from "./inklecate";
 import { playtest, explore, mergeMinRepro } from "./explore";
+import { VERSION } from "./version";
 
-const server = new McpServer({ name: "inkcheck", version: "0.1.0" });
+const server = new McpServer({ name: "inkcheck", version: VERSION });
 
 function json(result: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
@@ -74,7 +75,7 @@ server.registerTool(
   "explore_story",
   {
     description:
-      "Exhaustively explore an ink story's choice tree (breadth-first, bounded). Reports every distinct ending with the choice trail that reaches it, every runtime error with a reproduction path, unvisited knots (potential dead content), and loop truncation. This is automated narrative QA — use it to verify story structure after edits.",
+      "Systematically explore an ink story's choice tree within explicit bounds. Reports distinct terminal states with choice trails, runtime errors with reproduction paths, unvisited knots, external stubs, randomness, and truncation. This is mechanical narrative QA and never writes prose.",
     inputSchema: {
       file: z.string().describe("Path to the root .ink file"),
       maxDepth: z.number().int().min(1).max(200).optional()
@@ -95,12 +96,23 @@ server.registerTool(
     }
     const knots = scanKnots(file);
     const externals = scanExternals(file);
-    let result = explore(compiled.storyJson, knots, externals, { maxDepth, maxStates });
+    const semantics = scanStorySemantics(file);
+    const options = {
+      maxDepth,
+      maxStates,
+      preserveTurnState: semantics.usesTurns,
+      preserveRandomState: semantics.usesRandomness,
+      randomnessDetected: semantics.usesRandomness,
+    };
+    let result = explore(compiled.storyJson, knots, externals, options);
     if (minRepro !== false) {
       const bfs = explore(compiled.storyJson, knots, externals, {
         maxDepth,
         maxStates,
         strategy: "bfs",
+        preserveTurnState: semantics.usesTurns,
+        preserveRandomState: semantics.usesRandomness,
+        randomnessDetected: semantics.usesRandomness,
       });
       result = mergeMinRepro(result, bfs);
     }

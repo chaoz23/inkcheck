@@ -1,9 +1,15 @@
 import { spawnSync, execSync } from "child_process";
+import { createHash, randomUUID } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
 const INK_VERSION = "1.2.1";
+const INKLECATE_SHA256: Record<string, string> = {
+  "inklecate_linux.zip": "1997ff5bca618c90003ecd5fecb286e7468abb955005a2a185042949642f8fb5",
+  "inklecate_mac.zip": "200aae0b4471b38142465559a0640baf143e87fc9a236c68d08e1adde48053cf",
+  "inklecate_windows.zip": "96bc130f57d134faf3d52019f36ce0879ea015fa7e84d280ccc1a9c8d376843f",
+};
 
 export type Severity = "ERROR" | "WARNING" | "TODO" | "RUNTIME ERROR";
 
@@ -61,7 +67,15 @@ async function downloadInklecate(dest: string): Promise<string> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to download inklecate from ${url}: HTTP ${res.status}`);
   const zipPath = path.join(dir, "inklecate.zip");
-  fs.writeFileSync(zipPath, Buffer.from(await res.arrayBuffer()));
+  const archive = Buffer.from(await res.arrayBuffer());
+  const actualHash = createHash("sha256").update(archive).digest("hex");
+  const expectedHash = INKLECATE_SHA256[platformZip()];
+  if (actualHash !== expectedHash) {
+    throw new Error(
+      `Refusing inklecate ${INK_VERSION}: SHA-256 mismatch for ${platformZip()} (expected ${expectedHash}, got ${actualHash})`
+    );
+  }
+  fs.writeFileSync(zipPath, archive);
   const unzip =
     process.platform === "win32"
       ? spawnSync("tar", ["-xf", zipPath, "-C", dir])
@@ -108,7 +122,7 @@ export async function compile(inkFile: string): Promise<CompileResult> {
   const inklecate = await resolveInklecate();
   const outFile = path.join(
     os.tmpdir(),
-    `inkcheck-${process.pid}-${Date.now()}.json`
+    `inkcheck-${process.pid}-${randomUUID()}.json`
   );
   const proc = spawnSync(inklecate, ["-j", "-c", "-o", outFile, inkFile], {
     encoding: "utf8",
@@ -144,9 +158,9 @@ export async function compile(inkFile: string): Promise<CompileResult> {
     warnings: issues.filter((i) => i.severity === "WARNING").length,
     todos: issues.filter((i) => i.severity === "TODO").length,
   };
-  if (success && fs.existsSync(outFile)) {
-    result.storyJson = fs.readFileSync(outFile, "utf8");
-    fs.rmSync(outFile);
+  if (fs.existsSync(outFile)) {
+    if (success) result.storyJson = fs.readFileSync(outFile, "utf8");
+    fs.rmSync(outFile, { force: true });
   }
   return result;
 }
@@ -168,6 +182,41 @@ export interface KnotInfo {
   isFunction: boolean;
   file: string;
   line: number;
+}
+
+export interface StorySemantics {
+  usesTurns: boolean;
+  usesRandomness: boolean;
+}
+
+/**
+ * Conservatively detect Ink features whose hidden runtime state can affect
+ * future branches. False positives cost exploration work; false negatives can
+ * hide behavior, so prose-like matches intentionally err on the safe side.
+ */
+export function scanStorySemantics(
+  inkFile: string,
+  seen: Set<string> = new Set()
+): StorySemantics {
+  const abs = path.resolve(inkFile);
+  if (seen.has(abs) || !fs.existsSync(abs)) return { usesTurns: false, usesRandomness: false };
+  seen.add(abs);
+  let usesTurns = false;
+  let usesRandomness = false;
+  for (const line of fs.readFileSync(abs, "utf8").split(/\r?\n/)) {
+    const code = line.replace(/\/\/.*$/, "");
+    if (/\b(?:TURNS|TURNS_SINCE)\s*\(/.test(code)) usesTurns = true;
+    if (/\b(?:RANDOM|SEED_RANDOM|LIST_RANDOM)\s*\(/.test(code) || /\{\s*~/.test(code)) {
+      usesRandomness = true;
+    }
+    const inc = code.match(/^\s*INCLUDE\s+(.+?)\s*$/);
+    if (inc) {
+      const child = scanStorySemantics(path.join(path.dirname(abs), inc[1]), seen);
+      usesTurns ||= child.usesTurns;
+      usesRandomness ||= child.usesRandomness;
+    }
+  }
+  return { usesTurns, usesRandomness };
 }
 
 /**

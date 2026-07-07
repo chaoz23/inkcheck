@@ -1,12 +1,29 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 
-const { parseIssue, compile, scanKnots, scanExternals } = require("../dist/inklecate");
-const { explore, playtest, mergeMinRepro } = require("../dist/explore");
+const {
+  parseIssue,
+  compile,
+  scanKnots,
+  scanExternals,
+  scanStorySemantics,
+} = require("../dist/inklecate");
+const { explore, playtest, mergeMinRepro, stateKey } = require("../dist/explore");
 
 const MANOR = path.join(__dirname, "..", "examples", "manor.ink");
 const BROKEN = path.join(__dirname, "..", "examples", "broken.ink");
+const LINEAR_RUNTIME_ERROR = path.join(
+  __dirname,
+  "..",
+  "examples",
+  "linear-runtime-error.ink"
+);
+const CLEAN_BRANCH = path.join(__dirname, "..", "examples", "clean-branch.ink");
+const EXTERNAL_STORY = path.join(__dirname, "..", "examples", "external-story.ink");
+const CLI = path.join(__dirname, "..", "dist", "cli.js");
+const ROOT = path.join(__dirname, "..");
 
 test("parseIssue extracts severity, file, line, message", () => {
   const i = parseIssue("ERROR: 'story.ink' line 42: Divert target not found: '-> nowhere'");
@@ -91,4 +108,147 @@ test("playtest reports out-of-range choices as errors", async () => {
   const result = playtest(compiled.storyJson, [9]);
   assert.strictEqual(result.runtimeErrors.length, 1);
   assert.match(result.runtimeErrors[0], /out of range/);
+});
+
+test("playtest discloses external functions stubbed to zero", async () => {
+  const compiled = await compile(EXTERNAL_STORY);
+  const result = playtest(compiled.storyJson, [], scanExternals(EXTERNAL_STORY));
+  assert.deepStrictEqual(result.externalFunctionsStubbed, ["choose_route"]);
+});
+
+test("playtest does not call a crashing terminal state an ending", async () => {
+  const compiled = await compile(LINEAR_RUNTIME_ERROR);
+  const result = playtest(compiled.storyJson, []);
+  assert.strictEqual(result.ended, false);
+  assert.strictEqual(result.runtimeErrors.length, 1);
+});
+
+test("explore does not report a crashing linear story as an ending", async () => {
+  const compiled = await compile(LINEAR_RUNTIME_ERROR);
+  assert.strictEqual(compiled.success, true);
+  const report = explore(compiled.storyJson, scanKnots(LINEAR_RUNTIME_ERROR));
+  assert.strictEqual(report.runtimeErrors.length, 1);
+  assert.strictEqual(report.endingsFound.length, 0);
+});
+
+test("state identity preserves turn and random state", () => {
+  const base = { flows: {}, variablesState: {}, turnIdx: 1, storySeed: 10, previousRandom: 4 };
+  assert.notStrictEqual(stateKey(JSON.stringify(base)), stateKey(JSON.stringify({ ...base, turnIdx: 2 })));
+  assert.notStrictEqual(
+    stateKey(JSON.stringify(base)),
+    stateKey(JSON.stringify({ ...base, storySeed: 11 }))
+  );
+  assert.notStrictEqual(
+    stateKey(JSON.stringify(base)),
+    stateKey(JSON.stringify({ ...base, previousRandom: 5 }))
+  );
+  assert.strictEqual(
+    stateKey(JSON.stringify(base), { turns: false, randomness: false }),
+    stateKey(JSON.stringify({ ...base, turnIdx: 2, storySeed: 11, previousRandom: 5 }), {
+      turns: false,
+      randomness: false,
+    })
+  );
+});
+
+test("scanStorySemantics follows includes and detects turn and random behavior", () => {
+  const semantics = scanStorySemantics(
+    path.join(__dirname, "..", "examples", "semantic-features.ink")
+  );
+  assert.deepStrictEqual(semantics, { usesTurns: true, usesRandomness: true });
+});
+
+test("CLI accepts limit flags before the story path", () => {
+  const proc = spawnSync(process.execPath, [CLI, "--max-states", "20", MANOR, "--json"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(proc.status, 1);
+  assert.strictEqual(JSON.parse(proc.stdout).compile.success, true);
+});
+
+test("CLI rejects invalid numeric and unknown options as usage errors", () => {
+  const invalid = spawnSync(process.execPath, [CLI, CLEAN_BRANCH, "--max-states", "nope"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(invalid.status, 2);
+  assert.match(invalid.stderr, /requires an integer from 1 to 20000/);
+  const unbounded = spawnSync(
+    process.execPath,
+    [CLI, CLEAN_BRANCH, "--max-states", "999999999999999999999999"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(unbounded.status, 2);
+  assert.match(unbounded.stderr, /requires an integer from 1 to 20000/);
+  const unknown = spawnSync(process.execPath, [CLI, CLEAN_BRANCH, "--surprise"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(unknown.status, 2);
+  assert.match(unknown.stderr, /unknown option/);
+});
+
+test("explore rejects unsafe limits even when called as a library", async () => {
+  const compiled = await compile(CLEAN_BRANCH);
+  assert.throws(
+    () => explore(compiled.storyJson, [], [], { maxStates: Number.POSITIVE_INFINITY }),
+    /maxStates must be an integer/
+  );
+});
+
+test("strict mode fails when traversal is truncated", () => {
+  const proc = spawnSync(
+    process.execPath,
+    [CLI, CLEAN_BRANCH, "--max-states", "1", "--no-min-repro", "--strict", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(proc.status, 1);
+  assert.strictEqual(JSON.parse(proc.stdout).explore.truncated, true);
+});
+
+test("external stubs are disclosed and make strict coverage fail", () => {
+  const proc = spawnSync(process.execPath, [CLI, EXTERNAL_STORY, "--strict", "--json"], {
+    encoding: "utf8",
+  });
+  const report = JSON.parse(proc.stdout).explore;
+  assert.strictEqual(proc.status, 1);
+  assert.deepStrictEqual(report.externalFunctionsStubbed, ["choose_route"]);
+});
+
+test("markdown output is suitable for a GitHub Actions step summary", () => {
+  const proc = spawnSync(process.execPath, [CLI, CLEAN_BRANCH, "--markdown"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(proc.status, 0);
+  assert.match(proc.stdout, /# inkcheck report/);
+  assert.match(proc.stdout, /Distinct terminal states \| 2/);
+  const failed = spawnSync(process.execPath, [CLI, MANOR, "--markdown"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(failed.status, 1);
+  assert.match(failed.stdout, /Runtime failures found/);
+});
+
+test("release version stays synchronized across package and manifests", () => {
+  const readJson = (file) => JSON.parse(require("node:fs").readFileSync(path.join(ROOT, file)));
+  const pkg = readJson("package.json");
+  const lock = readJson("package-lock.json");
+  const tool = readJson("tool.json");
+  const server = readJson("server.json");
+  const { VERSION } = require("../dist/version");
+  assert.strictEqual(pkg.version, "0.2.0");
+  assert.strictEqual(lock.version, pkg.version);
+  assert.strictEqual(lock.packages[""].version, pkg.version);
+  assert.strictEqual(tool.version, pkg.version);
+  assert.strictEqual(server.version, pkg.version);
+  assert.strictEqual(server.packages[0].version, pkg.version);
+  assert.strictEqual(VERSION, pkg.version);
+  for (const required of [
+    "dist",
+    "docs/inkjam-qa-guide.md",
+    "CHANGELOG.md",
+    "llms.txt",
+    "server.json",
+    "tool.json",
+  ]) {
+    assert.ok(pkg.files.includes(required), `${required} must ship in the npm package`);
+  }
 });

@@ -17,6 +17,8 @@ export interface PlaytestResult {
   variables: Record<string, unknown>;
   runtimeErrors: string[];
   runtimeWarnings: string[];
+  /** EXTERNAL functions replaced with zero during this playtest. */
+  externalFunctionsStubbed: string[];
 }
 
 export interface EndingReport {
@@ -39,22 +41,31 @@ export interface ExploreResult {
   /** Authored knots never visited on any explored path (functions excluded). */
   unvisitedKnots: { name: string; file: string; line: number }[];
   visitedKnots: string[];
+  /** EXTERNAL functions that were replaced with a constant zero during exploration. */
+  externalFunctionsStubbed: string[];
+  /** Whether Ink random functions or shuffle sequences occur in the source. */
+  randomnessDetected: boolean;
   truncated: boolean;
   limits: { maxDepth: number; maxStates: number };
 }
 
 /**
- * Key a story state by its meaningful content: strip the turn counter and RNG
- * bookkeeping so two narratively identical states dedupe, which is what makes
- * exploring stories with loops terminate.
+ * Key a story state while preserving semantically relevant hidden state.
+ * Ink stories can inspect TURNS() and make later random choices, so those
+ * fields are removed only when a source scan has established they are unused.
  */
-function stateKey(stateJson: string): string {
+export function stateKey(
+  stateJson: string,
+  sensitivity: { turns?: boolean; randomness?: boolean } = { turns: true, randomness: true }
+): string {
   try {
-    const s = JSON.parse(stateJson);
-    delete s.turnIdx;
-    delete s.storySeed;
-    delete s.previousRandom;
-    return createHash("sha1").update(JSON.stringify(s)).digest("hex");
+    const state = JSON.parse(stateJson);
+    if (sensitivity.turns === false) delete state.turnIdx;
+    if (sensitivity.randomness === false) {
+      delete state.storySeed;
+      delete state.previousRandom;
+    }
+    return createHash("sha1").update(JSON.stringify(state)).digest("hex");
   } catch {
     return createHash("sha1").update(stateJson).digest("hex");
   }
@@ -156,7 +167,8 @@ export function playtest(
     step = continueMaximally(s);
   }
   steps.push(step);
-  const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
+  const ended =
+    s.errors.length === 0 && !s.story.canContinue && s.story.currentChoices.length === 0;
   return {
     steps,
     ended,
@@ -164,6 +176,7 @@ export function playtest(
     variables: extractVariables(s.story),
     runtimeErrors: s.errors,
     runtimeWarnings: s.warnings,
+    externalFunctionsStubbed: [...externals],
   };
 }
 
@@ -178,12 +191,19 @@ export interface ExploreOptions {
   maxStates?: number;
   /** "dfs" (default) surfaces endings early; "bfs" yields shortest paths. */
   strategy?: "dfs" | "bfs";
+  /** Preserve turn counters when the source uses TURNS()/TURNS_SINCE(). Default true. */
+  preserveTurnState?: boolean;
+  /** Preserve RNG bookkeeping when the source uses random behavior. Default true. */
+  preserveRandomState?: boolean;
+  /** Report that the source scanner found random behavior. */
+  randomnessDetected?: boolean;
 }
 
 /**
- * Exhaustive walk of the story's choice tree, up to limits. Reports every
- * distinct ending, every runtime error with the choice trail that triggers
- * it, and knot coverage. Identical states (modulo turn counters) are pruned.
+ * Bounded systematic walk of the story's choice tree. Reports every
+ * distinct terminal state, every runtime error with the choice trail that triggers
+ * it, and knot coverage. States are pruned only after configured-insensitive
+ * turn/RNG bookkeeping is canonicalized.
  * A single pooled Story instance is reused across states via LoadJson, so
  * the compiled JSON is parsed once regardless of exploration size.
  */
@@ -195,7 +215,17 @@ export function explore(
 ): ExploreResult {
   const maxDepth = opts.maxDepth ?? 30;
   const maxStates = opts.maxStates ?? 500;
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 200) {
+    throw new RangeError("maxDepth must be an integer from 1 to 200");
+  }
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 20_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 20000");
+  }
   const strategy = opts.strategy ?? "dfs";
+  const stateSensitivity = {
+    turns: opts.preserveTurnState ?? true,
+    randomness: opts.preserveRandomState ?? true,
+  };
 
   const endings = new Map<string, EndingReport>();
   const runtimeErrors = new Map<string, RuntimeErrorReport>();
@@ -232,7 +262,7 @@ export function explore(
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
 
-  if (rootStep.choicesOffered.length === 0) {
+  if (rootStep.choicesOffered.length === 0 && s.errors.length === 0) {
     // Linear story (or immediate end).
     endings.set(rootStep.text, {
       path: [],
@@ -242,7 +272,7 @@ export function explore(
   }
 
   const rootState = s.story.state.ToJson();
-  seenStates.add(stateKey(rootState));
+  seenStates.add(stateKey(rootState, stateSensitivity));
   const frames: Frame[] = [{ stateJson: rootState, path: [], depth: 0 }];
   let head = 0; // BFS read pointer (avoids O(n) shifts)
 
@@ -289,7 +319,7 @@ export function explore(
       recordKnotCoverage(s);
 
       const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
-      if (ended) {
+      if (ended && s.errors.length === 0) {
         const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
         const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
         if (!endings.has(key)) {
@@ -302,7 +332,7 @@ export function explore(
         continue;
       }
       const nextState = s.story.state.ToJson();
-      const key = stateKey(nextState);
+      const key = stateKey(nextState, stateSensitivity);
       if (seenStates.has(key)) continue; // identical state: subtree already covered
       seenStates.add(key);
       frames.push({ stateJson: nextState, path, depth: frame.depth + 1 });
@@ -318,6 +348,8 @@ export function explore(
       .filter((k) => !visitedKnots.has(k.name))
       .map(({ name, file, line }) => ({ name, file, line })),
     visitedKnots: [...visitedKnots],
+    externalFunctionsStubbed: [...externals],
+    randomnessDetected: opts.randomnessDetected ?? false,
     truncated,
     limits: { maxDepth, maxStates },
   };
@@ -351,6 +383,7 @@ export function mergeMinRepro(main: ExploreResult, bfs: ExploreResult): ExploreR
   for (const e of bfs.runtimeErrors) {
     if (!mainErrs.has(e.message)) main.runtimeErrors.push(e);
   }
+  main.runtimeWarnings = [...new Set([...main.runtimeWarnings, ...bfs.runtimeWarnings])];
   const visited = new Set([...main.visitedKnots, ...bfs.visitedKnots]);
   main.visitedKnots = [...visited];
   main.unvisitedKnots = main.unvisitedKnots.filter((k) => !visited.has(k.name));
