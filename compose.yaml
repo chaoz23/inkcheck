@@ -25,6 +25,7 @@ services:
       INKCHECK_WEB_RATE_WINDOW_MS: "3600000"
       INKCHECK_WEB_TRUST_PROXY: "1"
       INKCHECK_WEB_ACCESS_CODE: ${INKCHECK_WEB_ACCESS_CODE:-}
+      INKCHECK_WEB_ALLOWED_ORIGINS: ${INKCHECK_WEB_ALLOWED_ORIGINS:-https://secondlandings.com}
     networks:
       - backend
 

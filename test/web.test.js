@@ -6,6 +6,7 @@ const {
   validateSubmission,
 } = require("../dist/web-validation");
 const {
+  applyBrowserOrigin,
   createInkcheckWebServer,
   parseMultipartBody,
   webConfigFromEnv,
@@ -99,6 +100,26 @@ test("multipart upload preserves unchanged ink contents and relative paths", asy
   assert.strictEqual(parsed.privacyAcknowledged, true);
 });
 
+test("browser access allows only exact configured origins", () => {
+  const headers = new Map();
+  const response = { setHeader: (name, value) => headers.set(name, value) };
+  applyBrowserOrigin(
+    { headers: { origin: "https://secondlandings.com" } },
+    response,
+    ["https://secondlandings.com"]
+  );
+  assert.strictEqual(headers.get("Access-Control-Allow-Origin"), "https://secondlandings.com");
+  assert.strictEqual(headers.get("Vary"), "Origin");
+  assert.throws(
+    () => applyBrowserOrigin(
+      { headers: { origin: "https://not-secondlandings.example" } },
+      response,
+      ["https://secondlandings.com"]
+    ),
+    (error) => error instanceof SubmissionError && error.status === 403
+  );
+});
+
 test("web API validates input and returns a no-retention report", async (t) => {
   const config = {
     ...webConfigFromEnv(),
@@ -107,6 +128,7 @@ test("web API validates input and returns a no-retention report", async (t) => {
     staticDir: path.join(__dirname, "..", "web"),
     rateLimit: 100,
     accessCode: "pilot-code",
+    allowedOrigins: ["https://secondlandings.com"],
   };
   let calls = 0;
   const server = createInkcheckWebServer({
@@ -144,6 +166,26 @@ test("web API validates input and returns a no-retention report", async (t) => {
   assert.strictEqual(health.status, 200);
   assert.strictEqual((await health.json()).ok, true);
 
+  const preflight = await fetch(`${base}/api/check`, {
+    method: "OPTIONS",
+    headers: {
+      Origin: "https://secondlandings.com",
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": "content-type,x-inkcheck-access-code",
+    },
+  });
+  assert.strictEqual(preflight.status, 204);
+  assert.strictEqual(
+    preflight.headers.get("access-control-allow-origin"),
+    "https://secondlandings.com"
+  );
+
+  const rejectedOrigin = await fetch(`${base}/api/check`, {
+    method: "OPTIONS",
+    headers: { Origin: "https://malicious.example" },
+  });
+  assert.strictEqual(rejectedOrigin.status, 403);
+
   const unauthorized = await fetch(`${base}/api/check`, {
     method: "POST",
     body: multipartBody(),
@@ -153,6 +195,7 @@ test("web API validates input and returns a no-retention report", async (t) => {
   const rejected = await fetch(`${base}/api/check`, {
     method: "POST",
     headers: {
+      Origin: "https://secondlandings.com",
       "X-Inkcheck-Access-Code": "pilot-code",
     },
     body: multipartBody(validBody({ authorized: false })),
@@ -163,11 +206,16 @@ test("web API validates input and returns a no-retention report", async (t) => {
   const accepted = await fetch(`${base}/api/check`, {
     method: "POST",
     headers: {
+      Origin: "https://secondlandings.com",
       "X-Inkcheck-Access-Code": "pilot-code",
     },
     body: multipartBody(),
   });
   assert.strictEqual(accepted.status, 200);
+  assert.strictEqual(
+    accepted.headers.get("access-control-allow-origin"),
+    "https://secondlandings.com"
+  );
   const body = await accepted.json();
   assert.strictEqual(body.report.compile.success, true);
   assert.strictEqual(body.meta.retained, false);

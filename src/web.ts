@@ -23,6 +23,7 @@ export interface WebConfig extends HostedLimits {
   globalRateLimit: number;
   rateWindowMs: number;
   accessCode?: string;
+  allowedOrigins: string[];
   trustProxy: boolean;
   staticDir: string;
 }
@@ -52,6 +53,30 @@ function integerEnv(name: string, fallback: number, minimum: number, maximum: nu
   return value;
 }
 
+function allowedOriginsFromEnv(): string[] {
+  const raw = process.env.INKCHECK_WEB_ALLOWED_ORIGINS?.trim();
+  if (!raw) return [];
+  return raw.split(",").map((entry) => {
+    const value = entry.trim();
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      throw new Error("INKCHECK_WEB_ALLOWED_ORIGINS must contain comma-separated http(s) origins");
+    }
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      url.origin !== value ||
+      url.username ||
+      url.password ||
+      value === "*"
+    ) {
+      throw new Error("INKCHECK_WEB_ALLOWED_ORIGINS must contain exact http(s) origins without paths");
+    }
+    return url.origin;
+  });
+}
+
 export function webConfigFromEnv(): WebConfig {
   return {
     host: process.env.HOST ?? "127.0.0.1",
@@ -68,6 +93,7 @@ export function webConfigFromEnv(): WebConfig {
     globalRateLimit: integerEnv("INKCHECK_WEB_GLOBAL_RATE_LIMIT", 60, 1, 10_000),
     rateWindowMs: integerEnv("INKCHECK_WEB_RATE_WINDOW_MS", 3_600_000, 1_000, 86_400_000),
     accessCode: process.env.INKCHECK_WEB_ACCESS_CODE || undefined,
+    allowedOrigins: allowedOriginsFromEnv(),
     trustProxy: process.env.INKCHECK_WEB_TRUST_PROXY === "1",
     staticDir: process.env.INKCHECK_WEB_STATIC_DIR ?? path.join(__dirname, "..", "web"),
   };
@@ -338,6 +364,23 @@ function securityHeaders(res: ServerResponse): void {
   res.setHeader("X-Frame-Options", "DENY");
 }
 
+export function applyBrowserOrigin(
+  req: IncomingMessage,
+  res: ServerResponse,
+  allowedOrigins: readonly string[]
+): void {
+  const origin = req.headers.origin;
+  if (origin === undefined) return;
+  if (typeof origin !== "string" || !allowedOrigins.includes(origin)) {
+    throw new SubmissionError("This browser origin is not allowed to use the checker", 403);
+  }
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Inkcheck-Access-Code");
+  res.setHeader("Access-Control-Max-Age", "600");
+  res.setHeader("Vary", "Origin");
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   securityHeaders(res);
   res.statusCode = status;
@@ -374,6 +417,16 @@ export function createInkcheckWebServer(options: {
     res.setHeader("X-Request-Id", requestId);
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
+      if (url.pathname === "/api/check") {
+        applyBrowserOrigin(req, res, config.allowedOrigins);
+        if (req.method === "OPTIONS") {
+          securityHeaders(res);
+          res.statusCode = 204;
+          res.setHeader("Cache-Control", "no-store");
+          res.end();
+          return;
+        }
+      }
       if (req.method === "GET" && url.pathname === "/healthz") {
         sendJson(res, 200, { ok: true, version: VERSION });
         return;

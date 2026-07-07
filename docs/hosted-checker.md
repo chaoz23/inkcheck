@@ -21,6 +21,8 @@ The report can contain authored choice text, final text, variable names, and val
 
 `POST /api/check` accepts `multipart/form-data`, the same transport used by ordinary browser file uploads. The main file, optional unchanged `INCLUDE` files, limits, and consent confirmations are separate form parts. Relative project paths travel as hidden part names when a folder is selected; the author does not create or edit that metadata.
 
+For a form hosted on another origin, set `INKCHECK_WEB_ALLOWED_ORIGINS` to an exact comma-separated allowlist such as `https://secondlandings.com`. The API answers browser preflight requests only for configured origins and never emits a wildcard. Command-line and same-origin requests without an `Origin` header continue to work.
+
 The browser offers three source-native choices:
 
 1. upload one main `.ink` file;
@@ -47,7 +49,8 @@ Install Docker Engine and the Compose plugin, point a DNS record at the VPS, the
 ```sh
 git clone https://github.com/chaoz23/inkcheck.git
 cd inkcheck
-export INKCHECK_HOST=check.example.org
+export INKCHECK_HOST=inkcheck-api.secondlandings.com
+export INKCHECK_WEB_ALLOWED_ORIGINS=https://secondlandings.com
 export INKCHECK_WEB_ACCESS_CODE='generate-a-long-random-pilot-code'
 docker compose up -d --build
 docker compose ps
