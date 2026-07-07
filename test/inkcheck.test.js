@@ -11,6 +11,8 @@ const {
   scanStorySemantics,
 } = require("../dist/inklecate");
 const { explore, playtest, mergeMinRepro, stateKey } = require("../dist/explore");
+const { runSubmission, webConfigFromEnv } = require("../dist/web");
+const { validateSubmission } = require("../dist/web-validation");
 
 const MANOR = path.join(__dirname, "..", "examples", "manor.ink");
 const BROKEN = path.join(__dirname, "..", "examples", "broken.ink");
@@ -227,6 +229,46 @@ test("markdown output is suitable for a GitHub Actions step summary", () => {
   assert.match(failed.stdout, /Runtime failures found/);
 });
 
+test("hosted runner checks an uploaded story and deletes its job", async () => {
+  const source = require("node:fs").readFileSync(CLEAN_BRANCH, "utf8");
+  const config = webConfigFromEnv();
+  const submission = validateSubmission(
+    {
+      root: "story.ink",
+      files: { "story.ink": source },
+      authorized: true,
+      privacyAcknowledged: true,
+      maxDepth: 30,
+      maxStates: 500,
+    },
+    config
+  );
+  const result = await runSubmission(submission, config);
+  assert.strictEqual(result.report.compile.success, true);
+  assert.strictEqual(result.report.explore.endingsFound.length, 2);
+  assert.strictEqual(result.meta.uploadedFiles, 1);
+  assert.strictEqual(result.meta.retained, false);
+  assert.doesNotMatch(JSON.stringify(result.report), /inkcheck-web-/);
+});
+
+test("hosted runner returns compile failures as reports", async () => {
+  const source = require("node:fs").readFileSync(BROKEN, "utf8");
+  const config = webConfigFromEnv();
+  const submission = validateSubmission(
+    {
+      root: "broken.ink",
+      files: { "broken.ink": source },
+      authorized: true,
+      privacyAcknowledged: true,
+    },
+    config
+  );
+  const result = await runSubmission(submission, config);
+  assert.strictEqual(result.report.compile.success, false);
+  assert.strictEqual(result.report.compile.errors, 3);
+  assert.strictEqual(result.meta.retained, false);
+});
+
 test("release version stays synchronized across package and manifests", () => {
   const readJson = (file) => JSON.parse(require("node:fs").readFileSync(path.join(ROOT, file)));
   const pkg = readJson("package.json");
@@ -241,8 +283,11 @@ test("release version stays synchronized across package and manifests", () => {
   assert.strictEqual(server.version, pkg.version);
   assert.strictEqual(server.packages[0].version, pkg.version);
   assert.strictEqual(VERSION, pkg.version);
+  assert.strictEqual(pkg.bin["inkcheck-web"], "dist/web.js");
   for (const required of [
     "dist",
+    "web",
+    "docs/hosted-checker.md",
     "docs/inkjam-qa-guide.md",
     "CHANGELOG.md",
     "llms.txt",

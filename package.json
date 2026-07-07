@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "tsc",
-    "test": "tsc && node --test \"test/**/*.test.js\""
+    "test": "tsc && node --test \"test/**/*.test.js\"",
+    "web": "node dist/web.js"
   },
   "keywords": [
     "ink",
@@ -32,11 +33,14 @@
   },
   "bin": {
     "inkcheck": "dist/cli.js",
-    "inkcheck-mcp": "dist/server.js"
+    "inkcheck-mcp": "dist/server.js",
+    "inkcheck-web": "dist/web.js"
   },
   "files": [
     "dist",
+    "web",
     "docs/inkjam-qa-guide.md",
+    "docs/hosted-checker.md",
     "CHANGELOG.md",
     "llms.txt",
     "server.json",

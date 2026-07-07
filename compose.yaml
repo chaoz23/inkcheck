@@ -1,0 +1,58 @@
+services:
+  inkcheck:
+    build: .
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=96m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 768m
+    cpus: 1.0
+    environment:
+      INKCHECK_WEB_CONCURRENCY: "1"
+      INKCHECK_WEB_TIMEOUT_MS: "45000"
+      INKCHECK_WEB_MAX_BODY_BYTES: "524288"
+      INKCHECK_WEB_MAX_FILES: "20"
+      INKCHECK_WEB_MAX_FILE_BYTES: "262144"
+      INKCHECK_WEB_MAX_DEPTH: "100"
+      INKCHECK_WEB_MAX_STATES: "5000"
+      INKCHECK_WEB_RATE_LIMIT: "10"
+      INKCHECK_WEB_GLOBAL_RATE_LIMIT: "60"
+      INKCHECK_WEB_RATE_WINDOW_MS: "3600000"
+      INKCHECK_WEB_TRUST_PROXY: "1"
+      INKCHECK_WEB_ACCESS_CODE: ${INKCHECK_WEB_ACCESS_CODE:-}
+    networks:
+      - backend
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      inkcheck:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      INKCHECK_HOST: ${INKCHECK_HOST:?Set INKCHECK_HOST to the public hostname}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+      - backend
+
+networks:
+  edge: {}
+  backend:
+    internal: true
+
+volumes:
+  caddy_data: {}
+  caddy_config: {}

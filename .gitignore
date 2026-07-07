@@ -1,5 +1,8 @@
 node_modules/
 dist/
 *.tgz
+.env
+.env.*
+!.env.example
 # The Intercept is inkle's content — downloaded for demos, not redistributed
 examples/TheIntercept.ink
