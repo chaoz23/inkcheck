@@ -6,6 +6,7 @@ import { createServer, IncomingMessage, Server, ServerResponse } from "http";
 import * as os from "os";
 import * as path from "path";
 import { VERSION } from "./version";
+import { BrowserUsageEvent, FileUsageStore, UsageRecorder } from "./usage";
 import {
   HostedLimits,
   HostedSubmission,
@@ -26,6 +27,7 @@ export interface WebConfig extends HostedLimits {
   allowedOrigins: string[];
   trustProxy: boolean;
   staticDir: string;
+  usageFile?: string;
 }
 
 export interface HostedCheckResponse {
@@ -96,6 +98,7 @@ export function webConfigFromEnv(): WebConfig {
     allowedOrigins: allowedOriginsFromEnv(),
     trustProxy: process.env.INKCHECK_WEB_TRUST_PROXY === "1",
     staticDir: process.env.INKCHECK_WEB_STATIC_DIR ?? path.join(__dirname, "..", "web"),
+    usageFile: process.env.INKCHECK_WEB_USAGE_FILE || undefined,
   };
 }
 
@@ -315,6 +318,27 @@ async function readMultipart(req: IncomingMessage, limit: number): Promise<unkno
   return parseMultipartBody(contentType, body);
 }
 
+async function readBrowserUsageEvent(req: IncomingMessage): Promise<BrowserUsageEvent> {
+  const contentType = req.headers["content-type"];
+  if (typeof contentType !== "string" || !contentType.toLowerCase().startsWith("application/json")) {
+    throw new SubmissionError("Content-Type must be application/json", 415);
+  }
+  const body = await readRequestBody(req, 256);
+  let value: unknown;
+  try {
+    value = JSON.parse(body.toString("utf8"));
+  } catch {
+    throw new SubmissionError("Usage event must be valid JSON", 400);
+  }
+  const event = value && typeof value === "object"
+    ? (value as { event?: unknown }).event
+    : undefined;
+  if (event !== "page_view" && event !== "support_click") {
+    throw new SubmissionError("Usage event is not supported", 400);
+  }
+  return event;
+}
+
 export async function parseMultipartBody(contentType: string, body: Buffer): Promise<unknown> {
   try {
     const form = await new Request("http://localhost/api/check", {
@@ -389,6 +413,13 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+function sendNoContent(res: ServerResponse): void {
+  securityHeaders(res);
+  res.statusCode = 204;
+  res.setHeader("Cache-Control", "no-store");
+  res.end();
+}
+
 function sendAsset(res: ServerResponse, file: string, contentType: string): void {
   securityHeaders(res);
   try {
@@ -405,25 +436,35 @@ function sendAsset(res: ServerResponse, file: string, contentType: string): void
 export function createInkcheckWebServer(options: {
   config?: WebConfig;
   runner?: SubmissionRunner;
+  usage?: UsageRecorder;
 } = {}): Server {
   const config = options.config ?? webConfigFromEnv();
   const runner = options.runner ?? runSubmission;
+  const usage = options.usage ?? (config.usageFile ? new FileUsageStore(config.usageFile) : undefined);
   const limiter = new RateLimiter(config.rateLimit, config.rateWindowMs);
   const globalLimiter = new RateLimiter(config.globalRateLimit, config.rateWindowMs);
+  const browserEventLimiter = new RateLimiter(120, config.rateWindowMs);
   let active = 0;
+
+  const recordUsage = (event: Parameters<UsageRecorder["record"]>[0], details?: { durationMs?: number }) => {
+    try {
+      usage?.record(event, details);
+    } catch {
+      console.warn(JSON.stringify({ event: "usage_write_failed" }));
+    }
+  };
 
   return createServer(async (req, res) => {
     const requestId = randomUUID();
     res.setHeader("X-Request-Id", requestId);
+    let pathname = "";
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
-      if (url.pathname === "/api/check") {
+      pathname = url.pathname;
+      if (url.pathname === "/api/check" || url.pathname === "/api/event") {
         applyBrowserOrigin(req, res, config.allowedOrigins);
         if (req.method === "OPTIONS") {
-          securityHeaders(res);
-          res.statusCode = 204;
-          res.setHeader("Cache-Control", "no-store");
-          res.end();
+          sendNoContent(res);
           return;
         }
       }
@@ -441,6 +482,15 @@ export function createInkcheckWebServer(options: {
       }
       if (req.method === "GET" && url.pathname === "/style.css") {
         sendAsset(res, path.join(config.staticDir, "style.css"), "text/css; charset=utf-8");
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/api/event") {
+        if (!browserEventLimiter.take(requestIp(req, config.trustProxy))) {
+          sendNoContent(res);
+          return;
+        }
+        recordUsage(await readBrowserUsageEvent(req));
+        sendNoContent(res);
         return;
       }
       if (req.method === "POST" && url.pathname === "/api/check") {
@@ -470,6 +520,7 @@ export function createInkcheckWebServer(options: {
               durationMs: result.meta.durationMs,
             })
           );
+          recordUsage("check_complete", { durationMs: result.meta.durationMs });
           sendJson(res, 200, { requestId, ...result });
         } finally {
           active--;
@@ -480,7 +531,10 @@ export function createInkcheckWebServer(options: {
     } catch (error) {
       const status = error instanceof SubmissionError ? error.status : 500;
       const message = error instanceof Error ? error.message : "Unexpected service error";
-      console.warn(JSON.stringify({ event: "check_rejected", requestId, status }));
+      if (pathname === "/api/check" && req.method === "POST") {
+        console.warn(JSON.stringify({ event: "check_rejected", requestId, status }));
+        recordUsage("check_rejected");
+      }
       sendJson(res, status, { requestId, error: message });
     }
   });

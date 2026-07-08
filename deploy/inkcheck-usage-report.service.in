@@ -1,0 +1,10 @@
+[Unit]
+Description=Write the weekly Inkcheck aggregate usage report
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=__REPO_DIR__
+Environment=INKCHECK_USAGE_REPORT_DIR=/var/log/inkcheck
+ExecStart=__REPO_DIR__/deploy/write-usage-report.sh

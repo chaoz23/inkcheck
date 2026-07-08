@@ -7,7 +7,8 @@
     "build": "tsc",
     "prepublishOnly": "tsc",
     "test": "tsc && node --test \"test/**/*.test.js\"",
-    "web": "node dist/web.js"
+    "web": "node dist/web.js",
+    "usage-report": "node dist/usage-report.js"
   },
   "keywords": [
     "ink",

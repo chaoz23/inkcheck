@@ -26,6 +26,14 @@ services:
       INKCHECK_WEB_TRUST_PROXY: "1"
       INKCHECK_WEB_ACCESS_CODE: ${INKCHECK_WEB_ACCESS_CODE:-}
       INKCHECK_WEB_ALLOWED_ORIGINS: ${INKCHECK_WEB_ALLOWED_ORIGINS:-https://secondlandings.com}
+      INKCHECK_WEB_USAGE_FILE: /var/lib/inkcheck/usage.json
+    volumes:
+      - inkcheck_usage:/var/lib/inkcheck
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
     networks:
       - backend
 
@@ -48,6 +56,11 @@ services:
     networks:
       - edge
       - backend
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
 
 networks:
   edge: {}
@@ -55,5 +68,6 @@ networks:
     internal: true
 
 volumes:
+  inkcheck_usage: {}
   caddy_data: {}
   caddy_config: {}

@@ -18,7 +18,7 @@ Want to see the failure-path report before trying your own story? Run the [two-m
 
 ## Hosted checker
 
-The repository now includes a self-hosted web interface for writers who do not want to use a terminal. Hosted mode temporarily uploads authorized `.ink` source, runs a bounded check, returns the report, and deletes the temporary job directory. It does not make reports public or retain story text in application logs.
+The repository now includes a self-hosted web interface for writers who do not want to use a terminal. Hosted mode temporarily uploads authorized `.ink` source, runs a bounded check, returns the report, and deletes the temporary job directory. It does not make reports public or retain story text in application logs. Optional first-party usage metrics keep only daily aggregate counts and can produce unattended weekly reports without an analytics vendor.
 
 The local CLI remains the privacy-first option because no story upload occurs. See [Hosted checker deployment](docs/hosted-checker.md) for the threat model, Docker deployment, operating limits, and a current sub-$50/month budget.
 

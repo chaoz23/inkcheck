@@ -13,6 +13,7 @@ The hosted checker lowers the terminal barrier, but it changes the privacy bound
 - Support a runtime-only pilot access code and a global hourly capacity ceiling.
 - Return reports only in the request that created them.
 - Never log request bodies, story text, report contents, or final story prose.
+- Keep only daily aggregate visit, support-click, completion, rejection, and duration totals; never persist IP addresses, user agents, request IDs, or visitor profiles.
 - Delete the temporary job directory in a `finally` block. Docker stores `/tmp` in memory so a crash cannot create durable story storage.
 
 The report can contain authored choice text, final text, variable names, and values. Treat the report itself as story material.
@@ -30,6 +31,8 @@ The browser offers three source-native choices:
 3. for a project using `INCLUDE`, add the unchanged supporting files or select the existing project folder.
 
 When pilot protection is configured, the browser sends the code in `X-Inkcheck-Access-Code`. Successful responses contain `{ requestId, report, meta }`; compile and runtime findings are successful reports, not HTTP failures. Validation, capacity, timeout, and internal failures use appropriate 4xx/5xx responses. `GET /healthz` returns only service health and version.
+
+`POST /api/event` accepts only `page_view` and `support_click` JSON events from an allowed browser origin. It returns `204` and stores no event-level record. The server immediately folds each event into a UTC daily counter. Completed and rejected checks are counted inside the API, so the browser never reports those separately.
 
 ## Production architecture
 
@@ -60,12 +63,33 @@ Alternatively, copy `.env.example` to `.env` and replace both values. `.env` fil
 
 Caddy obtains and renews TLS certificates automatically. Do not expose the Inkcheck container's port directly. Permit inbound TCP 80/443 and UDP 443; keep administrative SSH restricted by key and source address where possible.
 
+The Compose deployment keeps aggregate counters in the `inkcheck_usage` volume. The file contains only daily totals, is pruned to 400 days, and survives container rebuilds. Caddy access logging is disabled so source addresses and user agents are not retained; bounded application and operational logs remain available through Docker.
+
 Update with:
 
 ```sh
 git pull --ff-only
 docker compose up -d --build
 docker image prune -f
+```
+
+Install the unattended weekly report once after the first metrics-enabled deployment:
+
+```sh
+sudo ./deploy/install-usage-timer.sh
+```
+
+The systemd timer runs each Monday at 09:00 UTC, catches up after downtime, and writes `/var/log/inkcheck/usage-latest.txt` plus an append-only `/var/log/inkcheck/usage-history.txt`. It needs no API key, third-party analytics account, or AI service. Inspect it at any time with:
+
+```sh
+cat /var/log/inkcheck/usage-latest.txt
+systemctl list-timers inkcheck-usage-report.timer
+```
+
+To generate an arbitrary window without changing the timer:
+
+```sh
+docker compose exec -T inkcheck node dist/usage-report.js --days 30
 ```
 
 ## Default limits
