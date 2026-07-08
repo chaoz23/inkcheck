@@ -7,9 +7,4 @@
     Permissions-Policy "camera=(), geolocation=(), microphone=()"
     -Server
   }
-
-  log {
-    output stdout
-    format json
-  }
 }

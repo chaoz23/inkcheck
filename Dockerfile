@@ -32,6 +32,8 @@ ENV HOME=/home/node \
     NODE_ENV=production \
     INKLECATE_PATH=/opt/inkcheck/.cache/inkcheck/inklecate-1.2.1/inklecate
 
+RUN mkdir -p /var/lib/inkcheck && chown node:node /var/lib/inkcheck
+
 USER node
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \

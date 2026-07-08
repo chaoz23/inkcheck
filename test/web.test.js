@@ -131,8 +131,10 @@ test("web API validates input and returns a no-retention report", async (t) => {
     allowedOrigins: ["https://secondlandings.com"],
   };
   let calls = 0;
+  const usageEvents = [];
   const server = createInkcheckWebServer({
     config,
+    usage: { record: (event, details) => usageEvents.push({ event, details }) },
     runner: async (submission) => {
       calls++;
       return {
@@ -186,6 +188,30 @@ test("web API validates input and returns a no-retention report", async (t) => {
   });
   assert.strictEqual(rejectedOrigin.status, 403);
 
+  const pageView = await fetch(`${base}/api/event`, {
+    method: "POST",
+    headers: {
+      Origin: "https://secondlandings.com",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ event: "page_view" }),
+  });
+  assert.strictEqual(pageView.status, 204);
+  assert.strictEqual(
+    pageView.headers.get("access-control-allow-origin"),
+    "https://secondlandings.com"
+  );
+
+  const invalidEvent = await fetch(`${base}/api/event`, {
+    method: "POST",
+    headers: {
+      Origin: "https://secondlandings.com",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ event: "visitor_identity" }),
+  });
+  assert.strictEqual(invalidEvent.status, 400);
+
   const unauthorized = await fetch(`${base}/api/check`, {
     method: "POST",
     body: multipartBody(),
@@ -220,4 +246,10 @@ test("web API validates input and returns a no-retention report", async (t) => {
   assert.strictEqual(body.report.compile.success, true);
   assert.strictEqual(body.meta.retained, false);
   assert.strictEqual(calls, 1);
+  assert.deepStrictEqual(usageEvents, [
+    { event: "page_view", details: undefined },
+    { event: "check_rejected", details: undefined },
+    { event: "check_rejected", details: undefined },
+    { event: "check_complete", details: { durationMs: 7 } },
+  ]);
 });
