@@ -359,7 +359,7 @@ test("release version stays synchronized across package and manifests", () => {
   const tool = readJson("tool.json");
   const server = readJson("server.json");
   const { VERSION } = require("../dist/version");
-  assert.strictEqual(pkg.version, "0.3.0");
+  assert.strictEqual(pkg.version, "0.3.1");
   assert.strictEqual(lock.version, pkg.version);
   assert.strictEqual(lock.packages[""].version, pkg.version);
   assert.strictEqual(tool.version, pkg.version);

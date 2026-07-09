@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 — 2026-07-09
+
+- Map content-exhaustion runtime errors to the authored choice that triggered the dead end when inkjs does not provide a runtime address, so CLI and human reports can include an approximate file/line reference for “ran out of content” failures.
+
 ## 0.3.0 — 2026-07-09
 
 - Add a self-hosted web checker with direct `.ink` upload or paste, optional unchanged `INCLUDE` files/folders, consent gates, safe path validation, pilot access codes, rate limits, one-job concurrency, child-process timeouts, and immediate temporary-file deletion.
