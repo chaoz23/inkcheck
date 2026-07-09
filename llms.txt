@@ -8,7 +8,7 @@ inkcheck exists because compiling an ink story only proves the syntax is valid. 
 
 inkcheck itself does not use AI, machine learning, LLMs, or generative models. It does not train on story source, infer prose changes, rewrite text, or send story content to an AI service. Humans, CI systems, and optional AI coding agents can drive inkcheck, but the checking remains deterministic mechanical QA.
 
-The CLI uses a bounded exploration portfolio rather than a single traversal order. It spends the requested `--max-states` budget across complementary DFS views of the choice tree (last-choice-first, first-choice-first, and inside-out), then by default reserves a small BFS slice to shorten repro paths. This improves coverage at the same limit but remains partial when the report says traversal was truncated.
+The CLI uses a bounded exploration portfolio rather than a single traversal order. It spends the requested `--max-states` budget across complementary DFS views of the choice tree (last-choice-first, first-choice-first, and inside-out), then by default reserves a small BFS slice to shorten repro paths. This improves coverage at the same limit but remains partial when the report says traversal was truncated. The default state budget is 100,000 and the maximum accepted budget is 1,000,000.
 
 ## Install / run
 
@@ -17,7 +17,7 @@ The CLI uses a bounded exploration portfolio rather than a single traversal orde
 - Human fix list: `npx -y inkcheck <story.ink> --human`
 - Human-readable CI output: `npx -y inkcheck <story.ink> --markdown`
 - CI: `npx -y inkcheck story/main.ink --strict`
-- Broader bounded check: `npx -y inkcheck story/main.ink --max-states 50000`
+- Broader bounded check: `npx -y inkcheck story/main.ink --max-states 1000000`
 - Skip BFS repro shortening: `npx -y inkcheck story/main.ink --no-min-repro`
 - MCP (Claude Code): `claude mcp add inkcheck -- npx -y inkcheck mcp`
 - MCP config: `{ "mcpServers": { "inkcheck": { "command": "npx", "args": ["-y", "inkcheck", "mcp"] } } }`
@@ -47,6 +47,7 @@ Not a writing tool, not an authoring aid, and not an AI system. It generates zer
 ## Coverage limits
 
 - `--max-states` is the total exploration budget across portfolio passes, not a single DFS count.
+- Inkcheck is systematic and reproducible inside its budget; random sampling can still be complementary for very large or random-heavy stories.
 - Truncation means the report is partial; strict mode fails.
 - EXTERNAL functions are stubbed to zero and named in the report; strict mode fails.
 - Random behavior is detected, but every possible seed is not enumerated.

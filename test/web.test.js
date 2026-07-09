@@ -17,7 +17,7 @@ const LIMITS = {
   maxFiles: 200,
   maxFileBytes: 2621440,
   maxDepth: 1000,
-  maxStates: 50000,
+  maxStates: 100000,
 };
 
 function validBody(overrides = {}) {

@@ -1,6 +1,6 @@
 {
   "name": "inkcheck",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Mechanical QA for ink stories — compile checks, bounded branch exploration, repro paths, and dead-content review.",
   "main": "dist/server.js",
   "scripts": {

@@ -63,9 +63,26 @@ $ inkcheck examples/manor.ink
 
 Exit code is non-zero on compile or runtime errors. Add `--strict` to also fail on warnings, unvisited knots, truncation, or external stubs, so partial coverage cannot silently pass CI.
 
-Large stories can exceed the defaults. On inkle's published [*The Intercept*](https://github.com/inkle/the-intercept), inkcheck reaches a 5,000-state cap and marks the report as truncated. That is a useful partial check, not proof of complete coverage; increase the limits deliberately and keep the limitation visible in CI. The hosted checker uses a deeper 50,000-state ceiling by default and asks authors to file an issue if that still is not enough.
+Large stories can exceed the defaults. On inkle's published [*The Intercept*](https://github.com/inkle/the-intercept), inkcheck marks the report as truncated even when the state budget is raised well beyond the default. That is a useful partial check, not proof of complete coverage; increase the limits deliberately and keep the limitation visible in CI. The hosted checker uses a 100,000-state default and asks authors to file an issue if that still is not enough.
 
 Within a single run, inkcheck spends its state budget across complementary search passes rather than betting everything on one traversal order. The current CLI portfolio explores last-choice-first, first-choice-first, and inside-out DFS slices, then reserves a small breadth-first slice to shorten repro paths. This often finds more endings and reachable knots at the same `--max-states` limit, but it is still bounded QA: a truncated report is useful evidence, not an exhaustive proof.
+
+### Bounded search vs random sampling
+
+Inkcheck is not a promise to visit every possible state in a non-trivial story. Branches, loops, variables, random behavior, and host-game integrations can make exhaustive coverage physically impractical. Its practical advantage over random sampling is reproducibility: given the same story and limits, inkcheck walks the choice graph systematically, returns exact choice paths for failures, reports unvisited-knot clues, and says explicitly when the run was partial.
+
+Random sampling remains useful, especially for stories with randomness or huge state spaces. Treat the approaches as complementary: random play can stumble into surprising paths, while inkcheck gives deterministic CI-friendly evidence inside a declared budget.
+
+In a local test of *The Intercept* at the default depth of 30, higher budgets found more terminal states but still did not prove complete coverage. Timings are from one local development machine and should be read as scale evidence, not a universal benchmark:
+
+| State budget | Time | Distinct terminal states | Runtime errors | Unvisited knots | Result |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 50,000 | 9.4s | 7 | 0 | 9 | truncated |
+| 100,000 | 19.9s | 10 | 0 | 9 | truncated |
+| 500,000 | 100.2s | 17 | 0 | 8 | truncated |
+| 1,000,000 | 205.5s | 25 | 0 | 8 | truncated |
+
+That is the intended interpretation: each run tests real reachable states and can surface real broken paths, but a truncated report is evidence about what was visited, not proof that everything was reachable or correct.
 
 ## MCP server
 
@@ -103,7 +120,7 @@ inkcheck <story.ink> [--max-depth N] [--max-states N] [--no-min-repro] [--strict
 inkcheck mcp    # start the MCP server on stdio
 ```
 
-`--max-depth` accepts 1–1,000 and `--max-states` accepts 1–50,000. These hard ceilings prevent malformed automation inputs from accidentally disabling the exploration bounds.
+`--max-depth` accepts 1–1,000 and `--max-states` accepts 1–1,000,000. These hard ceilings prevent malformed automation inputs from accidentally disabling the exploration bounds. The default state budget is 100,000.
 
 `--max-states` is a total budget for the run, not a promise that one single DFS walk will spend all states. By default the CLI divides most of that budget across three complementary DFS views of the choice tree and keeps a small breadth-first slice for shorter failure and ending repro paths. Use `--no-min-repro` to spend that repro slice on the DFS portfolio instead when breadth-first shortening is less important than broader search.
 

@@ -19,7 +19,7 @@ Usage: inkcheck <story.ink> [options]
 
 Options:
   --max-depth <n>    Max choices deep to explore, 1–1000 (default 30)
-  --max-states <n>   Max story states to visit, 1–50000 (default 500)
+  --max-states <n>   Max story states to visit, 1–1000000 (default 100000)
   --no-min-repro     Skip the small breadth-first repro-shortening slice
   --strict           Also fail on warnings, unvisited knots, truncation, or external stubs
   --human            Emit a prioritized human-readable fix list
@@ -53,7 +53,7 @@ async function main() {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--max-depth") maxDepth = boundedInt(arg, args[++i], 1_000);
-    else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 50_000);
+    else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 1_000_000);
     else if (arg === "--strict") strict = true;
     else if (arg === "--human") asHuman = true;
     else if (arg === "--json") asJson = true;
@@ -89,7 +89,7 @@ async function main() {
   const externals = scanExternals(file);
   const semantics = scanStorySemantics(file);
   const st = await stats(file);
-  const totalMaxStates = maxStates ?? 500;
+  const totalMaxStates = maxStates ?? 100_000;
   const reproStates = minRepro && totalMaxStates > 1 ? Math.max(1, Math.floor(totalMaxStates * 0.1)) : 0;
   const portfolioStates = totalMaxStates - reproStates;
   const exploreOptions = {
