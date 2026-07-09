@@ -4,6 +4,8 @@
 
 inkcheck exists because compiling an ink story only proves the syntax is valid. It does not exercise choice paths or reproduce runtime failures. inkcheck systematically walks the choice graph within explicit limits, reports terminal states and possible dead content, and exits non-zero on failures so it drops into CI.
 
+The CLI uses a bounded exploration portfolio rather than a single traversal order. It spends the requested `--max-states` budget across complementary DFS views of the choice tree (last-choice-first, first-choice-first, and inside-out), then by default reserves a small BFS slice to shorten repro paths. This improves coverage at the same limit but remains partial when the report says traversal was truncated.
+
 ## Install / run
 
 - CLI: `npx -y inkcheck <story.ink>`
@@ -11,6 +13,8 @@ inkcheck exists because compiling an ink story only proves the syntax is valid. 
 - Human fix list: `npx -y inkcheck <story.ink> --human`
 - Human-readable CI output: `npx -y inkcheck <story.ink> --markdown`
 - CI: `npx -y inkcheck story/main.ink --strict`
+- Broader bounded check: `npx -y inkcheck story/main.ink --max-states 50000`
+- Skip BFS repro shortening: `npx -y inkcheck story/main.ink --no-min-repro`
 - MCP (Claude Code): `claude mcp add inkcheck -- npx -y inkcheck mcp`
 - MCP config: `{ "mcpServers": { "inkcheck": { "command": "npx", "args": ["-y", "inkcheck", "mcp"] } } }`
 - Self-hosted web service: `inkcheck-web` or `npm run web` (temporary upload; local CLI remains private by default)
@@ -38,6 +42,7 @@ Not a writing tool and not an authoring aid. It generates zero prose. It is pure
 
 ## Coverage limits
 
+- `--max-states` is the total exploration budget across portfolio passes, not a single DFS count.
 - Truncation means the report is partial; strict mode fails.
 - EXTERNAL functions are stubbed to zero and named in the report; strict mode fails.
 - Random behavior is detected, but every possible seed is not enumerated.

@@ -18,12 +18,14 @@ npx -y inkcheck path/to/main.ink --strict
 
 The first run downloads the pinned official `inklecate` compiler into the local inkcheck cache and verifies its SHA-256 hash. Story text is processed on the same machine.
 
+Inkcheck does not click one path and stop. It spends the configured state budget across several complementary search passes, then merges what they find into one report. That means two runs with the same `--max-states` setting can find more useful coverage after an inkcheck upgrade without raising your CI limits. It is still bounded, though: when the report says `truncated`, treat it as a useful partial pass rather than a guarantee that every possible playthrough was checked.
+
 ## What to do with the report
 
 - **Compile error:** fix this first; the story could not be explored.
 - **Runtime error:** replay the printed choice path, then fix the failing expression, divert, or external integration.
 - **Unvisited knot:** review it. It may be dead content, intentionally dormant, or entered by the host game rather than another ink knot.
-- **Truncated:** raise `--max-depth` or `--max-states`, or record that the check was partial.
+- **Truncated:** raise `--max-depth` or `--max-states`, run the story locally with more time, or record that the check was partial. A truncated report can still contain valuable runtime errors, endings, and unvisited-content clues.
 - **EXTERNAL stub:** test the real host-game behavior too. inkcheck used zero because it cannot know what the engine returns.
 - **Randomness detected:** inkcheck follows deterministic runtime states, but it does not try every possible seed. Keep human or repeated randomized playtesting in the loop.
 

@@ -19,8 +19,8 @@
       { "flag": "--markdown", "description": "Emit a GitHub Step Summary-friendly Markdown report." },
       { "flag": "--strict", "description": "Also fail on warnings, unvisited knots, truncation, or external stubs (exit 1)." },
       { "flag": "--max-depth <n>", "description": "Max choices deep to explore, from 1 to 1000. Default 30." },
-      { "flag": "--max-states <n>", "description": "Max story states to visit, from 1 to 50000. Default 500." },
-      { "flag": "--no-min-repro", "description": "Skip the second pass that shortens repro paths." }
+      { "flag": "--max-states <n>", "description": "Total exploration state budget across the complementary DFS portfolio and repro-shortening slice, from 1 to 50000. Default 500." },
+      { "flag": "--no-min-repro", "description": "Skip the small BFS repro-shortening slice and spend that budget on the DFS portfolio instead." }
     ],
     "exitCodes": {
       "0": "Clean — compiled and explored with no errors (and, under --strict, no warnings, unvisited knots, truncation, or external stubs).",
