@@ -10,6 +10,7 @@ const submit = document.querySelector("#submit");
 const status = document.querySelector("#form-status");
 const result = document.querySelector("#result");
 const summary = document.querySelector("#result-summary");
+const findings = document.querySelector("#result-findings");
 const resultJson = document.querySelector("#result-json");
 const download = document.querySelector("#download");
 let lastResponse = null;
@@ -94,6 +95,109 @@ function reportSummary(report) {
   return limitations.length ? `${base} · limitations: ${limitations.join(", ")}` : base;
 }
 
+const SEVERITY_LABELS = {
+  error: "Errors to fix first",
+  warning: "Warnings to review",
+  note: "Coverage notes",
+};
+
+function fallbackHumanFindings(report) {
+  const out = [];
+  const compile = report?.compile || {};
+  for (const issue of compile.issues || []) {
+    const severity = issue.severity === "ERROR" || issue.severity === "RUNTIME ERROR"
+      ? "error"
+      : issue.severity === "WARNING"
+        ? "warning"
+        : "note";
+    out.push({
+      severity,
+      category: issue.severity === "ERROR" ? "Compiler error" : issue.severity === "WARNING" ? "Compiler warning" : "Compiler note",
+      title: issue.message || issue.raw || "Compiler finding",
+      message: issue.message || issue.raw || "Compiler returned a finding without details.",
+      file: issue.file,
+      line: issue.line,
+      action: severity === "error"
+        ? "Fix this source line first; Inkcheck cannot explore the story until it compiles."
+        : "Review this compiler note and decide whether the story should change.",
+    });
+  }
+  const explore = report?.explore || {};
+  for (const error of explore.runtimeErrors || []) {
+    out.push({
+      severity: "error",
+      category: "Runtime error",
+      title: (error.message || "Runtime error").replace(/\s*\(at [^)]+\)\s*$/, ""),
+      message: error.message || "Ink hit a runtime error on this path.",
+      file: error.sourceLocation?.file,
+      line: error.sourceLocation?.line,
+      approximateLocation: error.sourceLocation?.approximate,
+      path: error.path,
+      action: "Follow the choice path, then inspect the source near this location for a bad divert, variable, expression, or runtime-only edge case.",
+    });
+  }
+  for (const knot of explore.unvisitedKnots || []) {
+    out.push({
+      severity: "warning",
+      category: "Unvisited content",
+      title: `No explored path reached ${knot.name}`,
+      message: `The knot ${knot.name} was not visited by any explored path.`,
+      file: knot.file,
+      line: knot.line,
+      action: "If this scene should be reachable, add or repair a divert/choice that leads here. If it is intentionally unused, mark it for yourself or remove it.",
+    });
+  }
+  return out;
+}
+
+function renderFindings(items) {
+  findings.replaceChildren();
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.className = "clear";
+    empty.textContent = "No compiler errors, runtime errors, or unreachable knots were found in this check.";
+    findings.append(empty);
+    return;
+  }
+  for (const severity of ["error", "warning", "note"]) {
+    const group = items.filter((item) => item.severity === severity);
+    if (!group.length) continue;
+    const section = document.createElement("section");
+    const heading = document.createElement("h3");
+    const list = document.createElement("ol");
+    heading.textContent = SEVERITY_LABELS[severity];
+    for (const item of group) {
+      const row = document.createElement("li");
+      const title = document.createElement("strong");
+      const meta = document.createElement("p");
+      const message = document.createElement("p");
+      title.textContent = item.title || item.message || "Finding";
+      meta.className = "finding-meta";
+      meta.textContent = [
+        item.category,
+        item.file && `${item.file}${item.line ? `:${item.line}` : ""}${item.approximateLocation ? " (approx.)" : ""}`,
+      ].filter(Boolean).join(" · ");
+      message.textContent = item.message || "";
+      row.append(title, meta, message);
+      if (item.path?.length) {
+        const path = document.createElement("p");
+        path.className = "finding-path";
+        path.textContent = `Choice path: ${item.path.join(" → ")}`;
+        row.append(path);
+      }
+      if (item.action) {
+        const action = document.createElement("p");
+        action.className = "finding-action";
+        action.textContent = `Next step: ${item.action}`;
+        row.append(action);
+      }
+      list.append(row);
+    }
+    section.append(heading, list);
+    findings.append(section);
+  }
+}
+
 function addStoryParts(data) {
   const folder = folderEntries();
   const entries = folder.length ? folder : individualEntries();
@@ -138,6 +242,7 @@ form.addEventListener("submit", async (event) => {
     }
     lastResponse = body;
     summary.textContent = `${reportSummary(body.report)} · processed in ${body.meta.durationMs} ms · files deleted after the response.`;
+    renderFindings(Array.isArray(body.humanFindings) ? body.humanFindings : fallbackHumanFindings(body.report));
     resultJson.textContent = JSON.stringify(body.report, null, 2);
     result.hidden = false;
     result.scrollIntoView({ behavior: "smooth", block: "start" });

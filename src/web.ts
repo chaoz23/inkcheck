@@ -7,6 +7,7 @@ import * as os from "os";
 import * as path from "path";
 import { VERSION } from "./version";
 import { BrowserUsageEvent, FileUsageStore, UsageRecorder } from "./usage";
+import { buildHumanFindings, HumanFinding } from "./human-report";
 import {
   HostedLimits,
   HostedSubmission,
@@ -33,6 +34,7 @@ export interface WebConfig extends HostedLimits {
 
 export interface HostedCheckResponse {
   report: unknown;
+  humanFindings?: HumanFinding[];
   meta: {
     durationMs: number;
     uploadedFiles: number;
@@ -248,6 +250,7 @@ export async function runSubmission(
     }
     return {
       report,
+      humanFindings: buildHumanFindings(report as Parameters<typeof buildHumanFindings>[0]),
       meta: {
         durationMs: Date.now() - started,
         uploadedFiles: submission.files.length,

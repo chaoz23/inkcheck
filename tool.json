@@ -15,6 +15,7 @@
     "machineOutput": "--json",
     "flags": [
       { "flag": "--json", "description": "Emit the full report as a single JSON object on stdout. Use this for programmatic consumption." },
+      { "flag": "--human", "description": "Emit a prioritized human-readable fix list grouped by severity, with file/line locations and choice paths where available." },
       { "flag": "--markdown", "description": "Emit a GitHub Step Summary-friendly Markdown report." },
       { "flag": "--strict", "description": "Also fail on warnings, unvisited knots, truncation, or external stubs (exit 1)." },
       { "flag": "--max-depth <n>", "description": "Max choices deep to explore, from 1 to 1000. Default 30." },
@@ -29,7 +30,7 @@
     "jsonSchema": {
       "compile": "{ success: bool, issues: [{severity, file, line, message}], errors: int, warnings: int, todos: int }",
       "stats": "{ words, knots, stitches, functions, choices, gathers, diverts }",
-      "explore": "{ statesExplored: int, endingsFound: [{path: string[], finalText, variables}], runtimeErrors: [{message, path}], unvisitedKnots: [{name, file, line}], externalFunctionsStubbed: string[], randomnessDetected: bool, truncated: bool, limits: {maxDepth, maxStates} }"
+      "explore": "{ statesExplored: int, endingsFound: [{path: string[], finalText, variables}], runtimeErrors: [{message, path, sourceLocation?}], unvisitedKnots: [{name, file, line}], externalFunctionsStubbed: string[], randomnessDetected: bool, truncated: bool, limits: {maxDepth, maxStates} }"
     }
   },
   "mcp": {

@@ -165,7 +165,13 @@ test("CLI accepts limit flags before the story path", () => {
     encoding: "utf8",
   });
   assert.strictEqual(proc.status, 1);
-  assert.strictEqual(JSON.parse(proc.stdout).compile.success, true);
+  const report = JSON.parse(proc.stdout);
+  assert.strictEqual(report.compile.success, true);
+  assert.deepStrictEqual(report.explore.runtimeErrors[0].sourceLocation, {
+    file: "manor.ink",
+    line: 25,
+    approximate: true,
+  });
 });
 
 test("CLI rejects invalid numeric and unknown options as usage errors", () => {
@@ -229,6 +235,28 @@ test("markdown output is suitable for a GitHub Actions step summary", () => {
   assert.match(failed.stdout, /Runtime failures found/);
 });
 
+test("human output groups actionable findings by severity", () => {
+  const broken = spawnSync(process.execPath, [CLI, BROKEN, "--human"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(broken.status, 1);
+  assert.match(broken.stdout, /ERRORS/);
+  assert.match(broken.stdout, /Compiler error/);
+  assert.match(broken.stdout, /broken\.ink:5/);
+  assert.match(broken.stdout, /Next step: Fix this source line first/);
+
+  const runtime = spawnSync(process.execPath, [CLI, MANOR, "--human"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(runtime.status, 1);
+  assert.match(runtime.stdout, /Runtime error/);
+  assert.match(runtime.stdout, /manor\.ink:25 \(approx\.\)/);
+  assert.match(runtime.stdout, /Path: Enter in darkness → Descend to the cellar/);
+  assert.match(runtime.stdout, /WARNINGS/);
+  assert.match(runtime.stdout, /Unvisited content/);
+  assert.match(runtime.stdout, /treasure_vault/);
+});
+
 test("hosted runner checks an uploaded story and deletes its job", async () => {
   const source = require("node:fs").readFileSync(CLEAN_BRANCH, "utf8");
   const config = webConfigFromEnv();
@@ -246,6 +274,7 @@ test("hosted runner checks an uploaded story and deletes its job", async () => {
   const result = await runSubmission(submission, config);
   assert.strictEqual(result.report.compile.success, true);
   assert.strictEqual(result.report.explore.endingsFound.length, 2);
+  assert.deepStrictEqual(result.humanFindings, []);
   assert.strictEqual(result.meta.uploadedFiles, 1);
   assert.strictEqual(result.meta.retained, false);
   assert.doesNotMatch(JSON.stringify(result.report), /inkcheck-web-/);

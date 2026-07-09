@@ -8,6 +8,7 @@ import {
   scanStorySemantics,
 } from "./inklecate";
 import { ExploreResult, explore, mergeMinRepro } from "./explore";
+import { buildHumanFindings, renderHumanFindings } from "./human-report";
 
 function usage(message?: string): never {
   if (message) console.error(`inkcheck: ${message}\n`);
@@ -21,6 +22,7 @@ Options:
   --max-states <n>   Max story states to visit, 1–50000 (default 500)
   --no-min-repro     Skip the second pass that shortens repro paths
   --strict           Also fail on warnings, unvisited knots, truncation, or external stubs
+  --human            Emit a prioritized human-readable fix list
   --json             Emit the full report as JSON
   --markdown         Emit a GitHub-friendly Markdown report
 `);
@@ -39,6 +41,7 @@ async function main() {
   let strict = false;
   let asJson = false;
   let asMarkdown = false;
+  let asHuman = false;
   let minRepro = true;
   const boundedInt = (flag: string, raw: string | undefined, max: number): number => {
     const value = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
@@ -52,6 +55,7 @@ async function main() {
     if (arg === "--max-depth") maxDepth = boundedInt(arg, args[++i], 1_000);
     else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 50_000);
     else if (arg === "--strict") strict = true;
+    else if (arg === "--human") asHuman = true;
     else if (arg === "--json") asJson = true;
     else if (arg === "--markdown") asMarkdown = true;
     else if (arg === "--no-min-repro") minRepro = false;
@@ -60,7 +64,9 @@ async function main() {
     else file = arg;
   }
   if (!file) usage("missing story file");
-  if (asJson && asMarkdown) usage("--json and --markdown cannot be used together");
+  if ([asJson, asMarkdown, asHuman].filter(Boolean).length > 1) {
+    usage("--json, --markdown, and --human cannot be used together");
+  }
 
   const compiled = await compile(file);
 
@@ -69,6 +75,8 @@ async function main() {
       console.log(JSON.stringify({ compile: { ...compiled, storyJson: undefined } }, null, 2));
     } else if (asMarkdown) {
       console.log(renderCompileFailureMarkdown(compiled));
+    } else if (asHuman) {
+      console.log(renderHumanFindings(buildHumanFindings({ compile: compiled })));
     } else {
       console.log(`✗ compile failed — ${compiled.errors} error(s), ${compiled.warnings} warning(s)\n`);
       for (const i of compiled.issues) console.log(`  ${i.raw}`);
@@ -100,16 +108,19 @@ async function main() {
     report = mergeMinRepro(report, bfs);
   }
 
+  const outputReport = { compile: { ...compiled, storyJson: undefined }, stats: st, explore: report };
   if (asJson) {
     console.log(
       JSON.stringify(
-        { compile: { ...compiled, storyJson: undefined }, stats: st, explore: report },
+        outputReport,
         null,
         2
       )
     );
   } else if (asMarkdown) {
     console.log(renderMarkdown(compiled, st, report));
+  } else if (asHuman) {
+    console.log(renderHumanFindings(buildHumanFindings(outputReport)));
   } else {
     console.log(
       `✓ compiled — ${st.words ?? "?"} words, ${st.knots ?? knots.length} knots, ${st.choices ?? "?"} choices`
