@@ -10,7 +10,7 @@ const {
   scanExternals,
   scanStorySemantics,
 } = require("../dist/inklecate");
-const { explore, playtest, mergeMinRepro, stateKey } = require("../dist/explore");
+const { explore, explorePortfolio, playtest, mergeMinRepro, stateKey } = require("../dist/explore");
 const { runSubmission, webConfigFromEnv } = require("../dist/web");
 const { SubmissionError, validateSubmission } = require("../dist/web-validation");
 
@@ -93,6 +93,17 @@ test("BFS strategy reaches the same endings", async () => {
   assert.strictEqual(bfs.endingsFound.length, dfs.endingsFound.length);
   const merged = mergeMinRepro(dfs, bfs);
   for (const e of merged.endingsFound) assert.ok(e.path.length <= 3);
+});
+
+test("portfolio exploration spends one total state budget across complementary DFS passes", async () => {
+  const compiled = await compile(CLEAN_BRANCH);
+  const report = explorePortfolio(compiled.storyJson, scanKnots(CLEAN_BRANCH), [], {
+    maxDepth: 5,
+    maxStates: 2,
+  });
+  assert.strictEqual(report.statesExplored, 2);
+  assert.strictEqual(report.limits.maxStates, 2);
+  assert.strictEqual(report.endingsFound.length, 2);
 });
 
 test("playtest follows a scripted path and reports variables", async () => {
