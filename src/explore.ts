@@ -210,23 +210,42 @@ function dfsPushOrder(
   return desired.reverse();
 }
 
+function sourceLocationForPath(
+  pathString: string,
+  knots: KnotInfo[],
+  instructionOffset: number
+): RuntimeErrorReport["sourceLocation"] {
+  const [root, ...segments] = pathString.split(".");
+  const knot = knots.find((candidate) => candidate.name === root);
+  if (!knot) return undefined;
+  const numeric = segments
+    .map((segment) => Number(segment))
+    .filter((segment) => Number.isSafeInteger(segment) && segment >= 0);
+  const offset = numeric.length ? Math.max(0, numeric[numeric.length - 1] - instructionOffset) : 0;
+  return { file: knot.file, line: knot.line + offset, approximate: true };
+}
+
 function sourceLocationForRuntimeError(
   message: string,
   knots: KnotInfo[]
 ): RuntimeErrorReport["sourceLocation"] {
   const position = message.match(/\(at ([^)]+)\)\s*$/)?.[1];
   if (!position) return undefined;
-  const [root, ...segments] = position.split(".");
-  const knot = knots.find((candidate) => candidate.name === root);
-  if (!knot) return undefined;
-  const numeric = segments
-    .map((segment) => Number(segment))
-    .filter((segment) => Number.isSafeInteger(segment) && segment >= 0);
   // Ink runtime paths are compiled instruction positions, not source line
   // numbers. For authored knots they are close enough to point humans at the
   // right neighborhood, so label the mapped location as approximate.
-  const offset = numeric.length ? Math.max(0, numeric[numeric.length - 1] - 2) : 0;
-  return { file: knot.file, line: knot.line + offset, approximate: true };
+  return sourceLocationForPath(position, knots, 2);
+}
+
+function sourceLocationForChoiceSourcePath(
+  sourcePath: unknown,
+  knots: KnotInfo[]
+): RuntimeErrorReport["sourceLocation"] {
+  if (typeof sourcePath !== "string" || !sourcePath) return undefined;
+  // Choice source paths point at generated instruction positions near the
+  // authored choice. Use them only as a fallback when inkjs emits an error
+  // without its own runtime address, such as "ran out of content".
+  return sourceLocationForPath(sourcePath, knots, 4);
 }
 
 export interface ExploreOptions {
@@ -353,20 +372,30 @@ export function explore(
       }
       resetSession();
       s.story.state.LoadJson(frame.stateJson);
-      const choiceText = s.story.currentChoices[i]?.text ?? `#${i}`;
+      const choice = s.story.currentChoices[i] as { text?: string; sourcePath?: string } | undefined;
+      const choiceText = choice?.text ?? `#${i}`;
       const path = [...frame.path, choiceText];
+      const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
       try {
         s.story.ChooseChoiceIndex(i);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) });
+        runtimeErrors.set(msg, {
+          message: msg,
+          path,
+          sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
+        });
         continue;
       }
       const step = continueMaximally(s);
       statesExplored++;
       s.errors.forEach((msg) => {
         if (!runtimeErrors.has(msg)) {
-          runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) });
+          runtimeErrors.set(msg, {
+            message: msg,
+            path,
+            sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
+          });
         }
       });
       s.warnings.forEach((w) => runtimeWarnings.add(w));
