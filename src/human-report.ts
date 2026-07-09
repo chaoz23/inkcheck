@@ -122,12 +122,12 @@ export function buildHumanFindings(input: HumanReportInput): HumanFinding[] {
     const limits = input.explore.limits;
     findings.push({
       severity: "warning",
-      category: "Coverage limit",
-      title: "Inkcheck stopped before covering every reachable state",
+      category: "Coverage note",
+      title: "Inkcheck found useful results before stopping its hosted pass",
       message: limits
-        ? `The check stopped at max depth ${limits.maxDepth} or max states ${limits.maxStates}.`
-        : "The check stopped at its configured traversal limit.",
-      action: "Treat this as a partial report. Increase limits locally or file an issue if the hosted checker needs more room.",
+        ? `This hosted run explored until max depth ${limits.maxDepth} or max states ${limits.maxStates}, so there may be more paths beyond this report.`
+        : "This hosted run explored until its configured coverage boundary, so there may be more paths beyond this report.",
+      action: "Use the findings below as real review leads. If you need a deeper hosted pass, file an issue and we can tune the service.",
     });
   }
 

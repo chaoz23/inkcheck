@@ -40,6 +40,7 @@ export interface HostedCheckResponse {
     uploadedFiles: number;
     uploadedBytes: number;
     retained: false;
+    coverageLimitHit?: boolean;
   };
 }
 
@@ -240,14 +241,11 @@ export async function runSubmission(
     } catch {
       throw new SubmissionError("Inkcheck returned an unreadable report", 500);
     }
-    if (
+    const coverageLimitHit =
       report &&
       typeof report === "object" &&
       "explore" in report &&
-      (report as { explore?: { truncated?: unknown } }).explore?.truncated === true
-    ) {
-      throw new SubmissionError(LIMIT_HIT_MESSAGE, 413, "limit_hit");
-    }
+      (report as { explore?: { truncated?: unknown } }).explore?.truncated === true;
     return {
       report,
       humanFindings: buildHumanFindings(report as Parameters<typeof buildHumanFindings>[0]),
@@ -256,6 +254,7 @@ export async function runSubmission(
         uploadedFiles: submission.files.length,
         uploadedBytes: submission.files.reduce((sum, file) => sum + file.bytes, 0),
         retained: false,
+        ...(coverageLimitHit ? { coverageLimitHit: true } : {}),
       },
     };
   } finally {
@@ -530,9 +529,14 @@ export function createInkcheckWebServer(options: {
               files: result.meta.uploadedFiles,
               bytes: result.meta.uploadedBytes,
               durationMs: result.meta.durationMs,
+              coverageLimitHit: result.meta.coverageLimitHit === true,
             })
           );
           recordUsage("check_complete", { durationMs: result.meta.durationMs });
+          if (result.meta.coverageLimitHit === true) {
+            console.warn(JSON.stringify({ event: "check_limit_hit", requestId, status: 200 }));
+            recordUsage("check_limit_hit");
+          }
           sendJson(res, 200, { requestId, ...result });
         } finally {
           active--;

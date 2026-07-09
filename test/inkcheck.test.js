@@ -280,7 +280,7 @@ test("hosted runner checks an uploaded story and deletes its job", async () => {
   assert.doesNotMatch(JSON.stringify(result.report), /inkcheck-web-/);
 });
 
-test("hosted runner treats traversal truncation as a friendly limit hit", async () => {
+test("hosted runner returns truncated exploration as a useful partial report", async () => {
   const source = require("node:fs").readFileSync(CLEAN_BRANCH, "utf8");
   const config = webConfigFromEnv();
   const submission = validateSubmission(
@@ -294,13 +294,16 @@ test("hosted runner treats traversal truncation as a friendly limit hit", async 
     },
     config
   );
-  await assert.rejects(
-    () => runSubmission(submission, config),
-    (error) =>
-      error instanceof SubmissionError &&
-      error.status === 413 &&
-      error.reason === "limit_hit" &&
-      /Our bad/.test(error.message)
+  const result = await runSubmission(submission, config);
+  assert.strictEqual(result.report.compile.success, true);
+  assert.strictEqual(result.report.explore.truncated, true);
+  assert.strictEqual(result.meta.coverageLimitHit, true);
+  assert.ok(
+    result.humanFindings.some(
+      (finding) =>
+        finding.category === "Coverage note" &&
+        /found useful results/.test(finding.title)
+    )
   );
 });
 
