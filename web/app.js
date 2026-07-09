@@ -160,18 +160,6 @@ function fallbackHumanFindings(report) {
       action: "If this scene should be reachable, add or repair a divert/choice that leads here. If it is intentionally unused, mark it for yourself or remove it.",
     });
   }
-  if (explore.truncated) {
-    const limits = explore.limits || {};
-    out.push({
-      severity: "warning",
-      category: "Coverage note",
-      title: "Inkcheck found useful results before stopping its hosted pass",
-      message: limits.maxDepth || limits.maxStates
-        ? `This hosted run explored until max depth ${limits.maxDepth || "?"} or max states ${limits.maxStates || "?"}, so there may be more paths beyond this report.`
-        : "This hosted run explored until its configured coverage boundary, so there may be more paths beyond this report.",
-      action: "Use the findings above as real review leads. If you need a deeper hosted pass, file an issue and we can tune the service.",
-    });
-  }
   return out;
 }
 

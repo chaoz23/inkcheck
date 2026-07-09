@@ -310,10 +310,12 @@ test("hosted runner returns truncated exploration as a useful partial report", a
   assert.strictEqual(result.report.explore.truncated, true);
   assert.strictEqual(result.meta.coverageLimitHit, true);
   assert.ok(
-    result.humanFindings.some(
+    !result.humanFindings.some(
       (finding) =>
         finding.category === "Coverage note" &&
-        /found useful results/.test(finding.title)
+        /hosted pass|coverage boundary|deeper hosted pass/i.test(
+          `${finding.title} ${finding.message} ${finding.action}`
+        )
     )
   );
 });

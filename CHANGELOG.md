@@ -6,6 +6,9 @@
 - Support an exact browser-origin allowlist so a static community page can call the checker without opening the API to arbitrary websites.
 - Add a hardened Docker/Caddy deployment whose application container has no runtime internet route.
 - Document a production budget under $50/month and keep residential Windows hosting for development rather than the public trust boundary.
+- Improve bounded exploration coverage with a complementary DFS portfolio and a smaller BFS repro-shortening slice while keeping the same public state limits.
+- Document that `--max-states` is a total portfolio budget and that truncated reports can still contain useful endings, runtime errors, and coverage clues.
+- Keep human reports focused on actionable findings by omitting the hosted truncation coverage note from the finding list.
 
 ## 0.2.0 — 2026-07-07
 

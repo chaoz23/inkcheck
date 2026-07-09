@@ -59,6 +59,8 @@ Exit code is non-zero on compile or runtime errors. Add `--strict` to also fail 
 
 Large stories can exceed the defaults. On inkle's published [*The Intercept*](https://github.com/inkle/the-intercept), inkcheck reaches a 5,000-state cap and marks the report as truncated. That is a useful partial check, not proof of complete coverage; increase the limits deliberately and keep the limitation visible in CI. The hosted checker uses a deeper 50,000-state ceiling by default and asks authors to file an issue if that still is not enough.
 
+Within a single run, inkcheck spends its state budget across complementary search passes rather than betting everything on one traversal order. The current CLI portfolio explores last-choice-first, first-choice-first, and inside-out DFS slices, then reserves a small breadth-first slice to shorten repro paths. This often finds more endings and reachable knots at the same `--max-states` limit, but it is still bounded QA: a truncated report is useful evidence, not an exhaustive proof.
+
 ## MCP server
 
 Four tools for AI agents working on ink stories:
@@ -97,6 +99,8 @@ inkcheck mcp    # start the MCP server on stdio
 
 `--max-depth` accepts 1–1,000 and `--max-states` accepts 1–50,000. These hard ceilings prevent malformed automation inputs from accidentally disabling the exploration bounds.
 
+`--max-states` is a total budget for the run, not a promise that one single DFS walk will spend all states. By default the CLI divides most of that budget across three complementary DFS views of the choice tree and keeps a small breadth-first slice for shorter failure and ending repro paths. Use `--no-min-repro` to spend that repro slice on the DFS portfolio instead when breadth-first shortening is less important than broader search.
+
 GitHub Actions:
 
 ```yaml
@@ -132,8 +136,9 @@ inkcheck is built to be driven by an AI coding agent, not just a human at a term
 ## How it works
 
 - **Compilation** uses `inklecate`, the canonical compiler — found via `$INKLECATE_PATH`, then `PATH`, then auto-downloaded from the pinned official ink 1.2.1 release into `~/.cache/inkcheck` on first run. Downloaded archives are verified against pinned SHA-256 hashes before extraction. Stories are compiled with `-c` so all knot visits are counted.
-- **Exploration** runs the compiled story in [inkjs](https://github.com/y-lohse/inkjs) (the official JS runtime port), walking the choice tree depth-first from a single pooled story instance (the compiled JSON is parsed once, states rewind via `LoadJson`). States are deduplicated by content hash. Turn and RNG state are preserved whenever the source uses those features; otherwise that bookkeeping is safely canonicalized so ordinary loops can converge. `INCLUDE`s are followed.
-- A second breadth-first pass shortens error and ending repro paths to minimal choice trails where they're reachable within limits (skip with `--no-min-repro`).
+- **Exploration** runs the compiled story in [inkjs](https://github.com/y-lohse/inkjs) (the official JS runtime port), reusing pooled story instances so the compiled JSON is parsed once per pass and states rewind via `LoadJson`. States are deduplicated by content hash. Turn and RNG state are preserved whenever the source uses those features; otherwise that bookkeeping is safely canonicalized so ordinary loops can converge. `INCLUDE`s are followed.
+- The CLI uses a bounded portfolio search: roughly 30% last-choice-first DFS, 30% first-choice-first DFS, and 40% inside-out DFS. Those passes are complementary; for example, one ordering may find a runtime error while another reaches an ending or late knot. Their findings are merged into one report.
+- Unless skipped with `--no-min-repro`, the CLI reserves about 10% of the requested `--max-states` budget for a breadth-first repro-shortening slice. BFS reaches shared findings by shorter choice trails where possible and may contribute extra shallow findings.
 - Bounds (`--max-depth`, `--max-states`) keep worst-case combinatorics in check; the report says explicitly when it was truncated.
 
 ## Coverage limits
