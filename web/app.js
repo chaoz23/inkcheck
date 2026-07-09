@@ -101,6 +101,11 @@ const SEVERITY_LABELS = {
   note: "Coverage notes",
 };
 
+function locationText(item) {
+  if (!item.file) return "";
+  return `${item.file}${item.line ? ` line ${item.line}` : ""}${item.approximateLocation ? " (approx.)" : ""}`;
+}
+
 function fallbackHumanFindings(report) {
   const out = [];
   const compile = report?.compile || {};
@@ -175,7 +180,7 @@ function renderFindings(items) {
       meta.className = "finding-meta";
       meta.textContent = [
         item.category,
-        item.file && `${item.file}${item.line ? `:${item.line}` : ""}${item.approximateLocation ? " (approx.)" : ""}`,
+        locationText(item),
       ].filter(Boolean).join(" · ");
       message.textContent = item.message || "";
       row.append(title, meta, message);

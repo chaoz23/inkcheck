@@ -140,7 +140,7 @@ async function main() {
     if (report.unvisitedKnots.length) {
       console.log(`⚠ ${report.unvisitedKnots.length} knot(s) never visited on any explored path:`);
       for (const k of report.unvisitedKnots)
-        console.log(`    ${k.name} (${k.file}:${k.line})`);
+        console.log(`    ${k.name} (${humanLocation(k.file, k.line)})`);
     }
     if (report.runtimeWarnings.length) {
       console.log(`⚠ ${report.runtimeWarnings.length} runtime warning(s):`);
@@ -178,10 +178,14 @@ function escapeCell(value: unknown): string {
   return String(value).replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 }
 
+function humanLocation(file: string, line: number | null | undefined): string {
+  return `${file}${line ? ` line ${line}` : ""}`;
+}
+
 function renderCompileFailureMarkdown(compiled: CompileResult): string {
   const lines = ["# inkcheck report", "", "❌ **Compilation failed.**", ""];
   for (const issue of compiled.issues) {
-    const location = issue.file ? `${issue.file}${issue.line ? `:${issue.line}` : ""}: ` : "";
+    const location = issue.file ? `${humanLocation(issue.file, issue.line)}: ` : "";
     lines.push(`- **${issue.severity}** ${location}${issue.message}`);
   }
   return lines.join("\n");
@@ -222,7 +226,7 @@ function renderMarkdown(
   }
   if (report.unvisitedKnots.length) {
     lines.push("", "## Unvisited knots", "");
-    for (const knot of report.unvisitedKnots) lines.push(`- \`${knot.name}\` (${knot.file}:${knot.line})`);
+    for (const knot of report.unvisitedKnots) lines.push(`- \`${knot.name}\` (${humanLocation(knot.file, knot.line)})`);
   }
   const limitations: string[] = [];
   if (report.truncated) {

@@ -159,7 +159,7 @@ export function buildHumanFindings(input: HumanReportInput): HumanFinding[] {
 
 function locationText(finding: HumanFinding): string {
   if (!finding.file) return "";
-  const location = `${finding.file}${finding.line ? `:${finding.line}` : ""}`;
+  const location = `${finding.file}${finding.line ? ` line ${finding.line}` : ""}`;
   return finding.approximateLocation ? `${location} (approx.)` : location;
 }
 

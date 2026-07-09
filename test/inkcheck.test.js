@@ -242,7 +242,7 @@ test("human output groups actionable findings by severity", () => {
   assert.strictEqual(broken.status, 1);
   assert.match(broken.stdout, /ERRORS/);
   assert.match(broken.stdout, /Compiler error/);
-  assert.match(broken.stdout, /broken\.ink:5/);
+  assert.match(broken.stdout, /broken\.ink line 5/);
   assert.match(broken.stdout, /Next step: Fix this source line first/);
 
   const runtime = spawnSync(process.execPath, [CLI, MANOR, "--human"], {
@@ -250,7 +250,7 @@ test("human output groups actionable findings by severity", () => {
   });
   assert.strictEqual(runtime.status, 1);
   assert.match(runtime.stdout, /Runtime error/);
-  assert.match(runtime.stdout, /manor\.ink:25 \(approx\.\)/);
+  assert.match(runtime.stdout, /manor\.ink line 25 \(approx\.\)/);
   assert.match(runtime.stdout, /Path: Enter in darkness → Descend to the cellar/);
   assert.match(runtime.stdout, /WARNINGS/);
   assert.match(runtime.stdout, /Unvisited content/);
