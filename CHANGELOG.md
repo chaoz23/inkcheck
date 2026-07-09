@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2 — 2026-07-09
+
+- Raise the default exploration state budget to 100,000 and the maximum accepted `--max-states` value to 1,000,000 across CLI, MCP, and hosted checker validation.
+- Add a technical coverage/performance note for bounded exploration. The CLI spends each state budget across a deterministic portfolio of last-choice-first DFS, first-choice-first DFS, inside-out DFS, and a small BFS repro-shortening slice. In local *The Intercept* runs at default depth 30, higher budgets found more terminal states but still reported truncation: 50,000 states in 9.4s found 7 terminal states and 9 unvisited knots; 100,000 states in 19.9s found 10 terminal states and 9 unvisited knots; 500,000 states in 100.2s found 17 terminal states and 8 unvisited knots; 1,000,000 states in 205.5s found 25 terminal states and 8 unvisited knots. These results document real bounded QA behavior rather than exhaustive verification.
+
 ## 0.3.1 — 2026-07-09
 
 - Map content-exhaustion runtime errors to the authored choice that triggered the dead end when inkjs does not provide a runtime address, so CLI and human reports can include an approximate file/line reference for “ran out of content” failures.

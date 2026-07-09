@@ -204,14 +204,14 @@ test("CLI rejects invalid numeric and unknown options as usage errors", () => {
     encoding: "utf8",
   });
   assert.strictEqual(invalid.status, 2);
-  assert.match(invalid.stderr, /requires an integer from 1 to 50000/);
+  assert.match(invalid.stderr, /requires an integer from 1 to 1000000/);
   const unbounded = spawnSync(
     process.execPath,
     [CLI, CLEAN_BRANCH, "--max-states", "999999999999999999999999"],
     { encoding: "utf8" }
   );
   assert.strictEqual(unbounded.status, 2);
-  assert.match(unbounded.stderr, /requires an integer from 1 to 50000/);
+  assert.match(unbounded.stderr, /requires an integer from 1 to 1000000/);
   const unknown = spawnSync(process.execPath, [CLI, CLEAN_BRANCH, "--surprise"], {
     encoding: "utf8",
   });
@@ -359,7 +359,7 @@ test("release version stays synchronized across package and manifests", () => {
   const tool = readJson("tool.json");
   const server = readJson("server.json");
   const { VERSION } = require("../dist/version");
-  assert.strictEqual(pkg.version, "0.3.1");
+  assert.strictEqual(pkg.version, "0.3.2");
   assert.strictEqual(lock.version, pkg.version);
   assert.strictEqual(lock.packages[""].version, pkg.version);
   assert.strictEqual(tool.version, pkg.version);

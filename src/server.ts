@@ -80,8 +80,8 @@ server.registerTool(
       file: z.string().describe("Path to the root .ink file"),
       maxDepth: z.number().int().min(1).max(1000).optional()
         .describe("Max choices deep to explore (default 30)"),
-      maxStates: z.number().int().min(1).max(50000).optional()
-        .describe("Max story states to visit (default 500)"),
+      maxStates: z.number().int().min(1).max(1000000).optional()
+        .describe("Max story states to visit (default 100000)"),
       minRepro: z.boolean().optional()
         .describe("Reserve a small breadth-first slice to shorten repro paths (default true)"),
     },
@@ -97,7 +97,7 @@ server.registerTool(
     const knots = scanKnots(file);
     const externals = scanExternals(file);
     const semantics = scanStorySemantics(file);
-    const totalMaxStates = maxStates ?? 500;
+    const totalMaxStates = maxStates ?? 100_000;
     const reproStates = minRepro !== false && totalMaxStates > 1 ? Math.max(1, Math.floor(totalMaxStates * 0.1)) : 0;
     const portfolioStates = totalMaxStates - reproStates;
     const options = {
