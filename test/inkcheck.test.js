@@ -23,6 +23,7 @@ const LINEAR_RUNTIME_ERROR = path.join(
   "linear-runtime-error.ink"
 );
 const CLEAN_BRANCH = path.join(__dirname, "..", "examples", "clean-branch.ink");
+const CONTENT_EXHAUSTION = path.join(__dirname, "..", "examples", "content-exhaustion.ink");
 const EXTERNAL_STORY = path.join(__dirname, "..", "examples", "external-story.ink");
 const CLI = path.join(__dirname, "..", "dist", "cli.js");
 const ROOT = path.join(__dirname, "..");
@@ -142,6 +143,19 @@ test("explore does not report a crashing linear story as an ending", async () =>
   const report = explore(compiled.storyJson, scanKnots(LINEAR_RUNTIME_ERROR));
   assert.strictEqual(report.runtimeErrors.length, 1);
   assert.strictEqual(report.endingsFound.length, 0);
+});
+
+test("explore maps content-exhaustion runtime errors to the triggering choice", async () => {
+  const compiled = await compile(CONTENT_EXHAUSTION);
+  assert.strictEqual(compiled.success, true);
+  const report = explore(compiled.storyJson, scanKnots(CONTENT_EXHAUSTION));
+  assert.strictEqual(report.runtimeErrors.length, 1);
+  assert.match(report.runtimeErrors[0].message, /ran out of content/);
+  assert.deepStrictEqual(report.runtimeErrors[0].sourceLocation, {
+    file: "content-exhaustion.ink",
+    line: 4,
+    approximate: true,
+  });
 });
 
 test("state identity preserves turn and random state", () => {
