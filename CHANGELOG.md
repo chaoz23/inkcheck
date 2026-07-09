@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-07-09
 
 - Add a self-hosted web checker with direct `.ink` upload or paste, optional unchanged `INCLUDE` files/folders, consent gates, safe path validation, pilot access codes, rate limits, one-job concurrency, child-process timeouts, and immediate temporary-file deletion.
 - Support an exact browser-origin allowlist so a static community page can call the checker without opening the API to arbitrary websites.
