@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { compile, stats, scanKnots, scanExternals, scanStorySemantics } from "./inklecate";
-import { playtest, explore, mergeMinRepro } from "./explore";
+import { playtest, explore, explorePortfolio, mergeMinRepro } from "./explore";
 import { VERSION } from "./version";
 
 const server = new McpServer({ name: "inkcheck", version: VERSION });
@@ -83,7 +83,7 @@ server.registerTool(
       maxStates: z.number().int().min(1).max(50000).optional()
         .describe("Max story states to visit (default 500)"),
       minRepro: z.boolean().optional()
-        .describe("Run a second BFS pass to shorten repro paths (default true)"),
+        .describe("Reserve a small breadth-first slice to shorten repro paths (default true)"),
     },
   },
   async ({ file, maxDepth, maxStates, minRepro }) => {
@@ -97,18 +97,21 @@ server.registerTool(
     const knots = scanKnots(file);
     const externals = scanExternals(file);
     const semantics = scanStorySemantics(file);
+    const totalMaxStates = maxStates ?? 500;
+    const reproStates = minRepro !== false && totalMaxStates > 1 ? Math.max(1, Math.floor(totalMaxStates * 0.1)) : 0;
+    const portfolioStates = totalMaxStates - reproStates;
     const options = {
       maxDepth,
-      maxStates,
+      maxStates: Math.max(1, portfolioStates),
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
     };
-    let result = explore(compiled.storyJson, knots, externals, options);
-    if (minRepro !== false) {
+    let result = explorePortfolio(compiled.storyJson, knots, externals, options);
+    if (reproStates > 0) {
       const bfs = explore(compiled.storyJson, knots, externals, {
         maxDepth,
-        maxStates,
+        maxStates: reproStates,
         strategy: "bfs",
         preserveTurnState: semantics.usesTurns,
         preserveRandomState: semantics.usesRandomness,

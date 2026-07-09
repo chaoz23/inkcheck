@@ -7,7 +7,7 @@ import {
   scanExternals,
   scanStorySemantics,
 } from "./inklecate";
-import { ExploreResult, explore, mergeMinRepro } from "./explore";
+import { ExploreResult, explore, explorePortfolio, mergeMinRepro } from "./explore";
 import { buildHumanFindings, renderHumanFindings } from "./human-report";
 
 function usage(message?: string): never {
@@ -20,7 +20,7 @@ Usage: inkcheck <story.ink> [options]
 Options:
   --max-depth <n>    Max choices deep to explore, 1–1000 (default 30)
   --max-states <n>   Max story states to visit, 1–50000 (default 500)
-  --no-min-repro     Skip the second pass that shortens repro paths
+  --no-min-repro     Skip the small breadth-first repro-shortening slice
   --strict           Also fail on warnings, unvisited knots, truncation, or external stubs
   --human            Emit a prioritized human-readable fix list
   --json             Emit the full report as JSON
@@ -81,25 +81,29 @@ async function main() {
       console.log(`✗ compile failed — ${compiled.errors} error(s), ${compiled.warnings} warning(s)\n`);
       for (const i of compiled.issues) console.log(`  ${i.raw}`);
     }
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   const knots = scanKnots(file);
   const externals = scanExternals(file);
   const semantics = scanStorySemantics(file);
   const st = await stats(file);
+  const totalMaxStates = maxStates ?? 500;
+  const reproStates = minRepro && totalMaxStates > 1 ? Math.max(1, Math.floor(totalMaxStates * 0.1)) : 0;
+  const portfolioStates = totalMaxStates - reproStates;
   const exploreOptions = {
     maxDepth,
-    maxStates,
+    maxStates: Math.max(1, portfolioStates),
     preserveTurnState: semantics.usesTurns,
     preserveRandomState: semantics.usesRandomness,
     randomnessDetected: semantics.usesRandomness,
   };
-  let report = explore(compiled.storyJson!, knots, externals, exploreOptions);
-  if (minRepro) {
+  let report = explorePortfolio(compiled.storyJson!, knots, externals, exploreOptions);
+  if (reproStates > 0) {
     const bfs = explore(compiled.storyJson!, knots, externals, {
       maxDepth,
-      maxStates,
+      maxStates: reproStates,
       strategy: "bfs",
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
@@ -171,7 +175,7 @@ async function main() {
       report.runtimeWarnings.length > 0 ||
       report.truncated ||
       report.externalFunctionsStubbed.length > 0);
-  process.exit(hardFail || softFail ? 1 : 0);
+  process.exitCode = hardFail || softFail ? 1 : 0;
 }
 
 function escapeCell(value: unknown): string {

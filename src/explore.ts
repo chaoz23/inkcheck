@@ -187,6 +187,29 @@ interface Frame {
   depth: number;
 }
 
+function dfsPushOrder(
+  numChoices: number,
+  priority: NonNullable<ExploreOptions["dfsChoicePriority"]>
+): number[] {
+  const source = Array.from({ length: numChoices }, (_, i) => i);
+  let desired: number[];
+  if (priority === "first") {
+    desired = source;
+  } else if (priority === "inside-out") {
+    desired = [];
+    const center = Math.floor((source.length - 1) / 2);
+    for (let offset = 0; desired.length < source.length; offset++) {
+      const left = center - offset;
+      const right = center + offset;
+      if (left >= 0) desired.push(left);
+      if (right < source.length && right !== left) desired.push(right);
+    }
+  } else {
+    desired = source.reverse();
+  }
+  return desired.reverse();
+}
+
 function sourceLocationForRuntimeError(
   message: string,
   knots: KnotInfo[]
@@ -211,6 +234,8 @@ export interface ExploreOptions {
   maxStates?: number;
   /** "dfs" (default) surfaces endings early; "bfs" yields shortest paths. */
   strategy?: "dfs" | "bfs";
+  /** In DFS, choose which authored choices are explored first. Default "last". */
+  dfsChoicePriority?: "first" | "last" | "inside-out";
   /** Preserve turn counters when the source uses TURNS()/TURNS_SINCE(). Default true. */
   preserveTurnState?: boolean;
   /** Preserve RNG bookkeeping when the source uses random behavior. Default true. */
@@ -242,6 +267,7 @@ export function explore(
     throw new RangeError("maxStates must be an integer from 1 to 50000");
   }
   const strategy = opts.strategy ?? "dfs";
+  const dfsChoicePriority = opts.dfsChoicePriority ?? "last";
   const stateSensitivity = {
     turns: opts.preserveTurnState ?? true,
     randomness: opts.preserveRandomState ?? true,
@@ -315,8 +341,12 @@ export function explore(
       continue;
     }
     const numChoices = s.story.currentChoices.length;
+    const choiceIndices =
+      strategy === "dfs"
+        ? dfsPushOrder(numChoices, dfsChoicePriority)
+        : Array.from({ length: numChoices }, (_, i) => i);
 
-    for (let i = 0; i < numChoices; i++) {
+    for (const i of choiceIndices) {
       if (statesExplored >= maxStates) {
         truncated = true;
         break;
@@ -379,37 +409,81 @@ export function explore(
   };
 }
 
+export function explorePortfolio(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {}
+): ExploreResult {
+  const maxStates = opts.maxStates ?? 500;
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 50_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 50000");
+  }
+  if (maxStates === 1) return explore(storyJson, knots, externals, opts);
+
+  const insideBudget = maxStates >= 3 ? Math.max(1, Math.floor(maxStates * 0.4)) : 0;
+  const edgeBudget = maxStates - insideBudget;
+  const lastBudget = Math.ceil(edgeBudget / 2);
+  const firstBudget = edgeBudget - lastBudget;
+  const shared = { ...opts };
+  const runs = [
+    { maxStates: lastBudget, dfsChoicePriority: "last" as const },
+    { maxStates: firstBudget, dfsChoicePriority: "first" as const },
+    { maxStates: insideBudget, dfsChoicePriority: "inside-out" as const },
+  ].filter((run) => run.maxStates > 0);
+  const [firstRun, ...rest] = runs.map((run) =>
+    explore(storyJson, knots, externals, {
+      ...shared,
+      ...run,
+      strategy: "dfs",
+    })
+  );
+  return rest.reduce((merged, result) => mergeExploreResults(merged, result), firstRun);
+}
+
 function endingKey(e: EndingReport): string {
   return e.finalText + "|" + JSON.stringify(e.variables);
 }
 
-/**
- * Shorten the repro paths in `main` (a DFS result) using a BFS pass over the
- * same story: BFS reaches everything by its shortest choice trail, so any
- * error or ending both passes found gets the minimal reproduction.
- */
-export function mergeMinRepro(main: ExploreResult, bfs: ExploreResult): ExploreResult {
+export function mergeExploreResults(main: ExploreResult, other: ExploreResult): ExploreResult {
   for (const err of main.runtimeErrors) {
-    const match = bfs.runtimeErrors.find((e) => e.message === err.message);
+    const match = other.runtimeErrors.find((e) => e.message === err.message);
     if (match && match.path.length < err.path.length) err.path = match.path;
   }
-  const bfsEndings = new Map(bfs.endingsFound.map((e) => [endingKey(e), e]));
+  const otherEndings = new Map(other.endingsFound.map((e) => [endingKey(e), e]));
   for (const end of main.endingsFound) {
-    const match = bfsEndings.get(endingKey(end));
+    const match = otherEndings.get(endingKey(end));
     if (match && match.path.length < end.path.length) end.path = match.path;
   }
-  // BFS may also have reached endings/errors/knots DFS missed within limits.
+  // A complementary pass may also have reached endings/errors/knots the first pass missed within limits.
   const mainEndingKeys = new Set(main.endingsFound.map(endingKey));
-  for (const e of bfs.endingsFound) {
+  for (const e of other.endingsFound) {
     if (!mainEndingKeys.has(endingKey(e))) main.endingsFound.push(e);
   }
   const mainErrs = new Set(main.runtimeErrors.map((e) => e.message));
-  for (const e of bfs.runtimeErrors) {
+  for (const e of other.runtimeErrors) {
     if (!mainErrs.has(e.message)) main.runtimeErrors.push(e);
   }
-  main.runtimeWarnings = [...new Set([...main.runtimeWarnings, ...bfs.runtimeWarnings])];
-  const visited = new Set([...main.visitedKnots, ...bfs.visitedKnots]);
+  main.runtimeWarnings = [...new Set([...main.runtimeWarnings, ...other.runtimeWarnings])];
+  const visited = new Set([...main.visitedKnots, ...other.visitedKnots]);
   main.visitedKnots = [...visited];
   main.unvisitedKnots = main.unvisitedKnots.filter((k) => !visited.has(k.name));
+  main.statesExplored += other.statesExplored;
+  main.truncated ||= other.truncated;
+  main.externalFunctionsStubbed = [...new Set([...main.externalFunctionsStubbed, ...other.externalFunctionsStubbed])];
+  main.randomnessDetected ||= other.randomnessDetected;
+  main.limits = {
+    maxDepth: Math.max(main.limits.maxDepth, other.limits.maxDepth),
+    maxStates: main.limits.maxStates + other.limits.maxStates,
+  };
   return main;
+}
+
+/**
+ * Shorten repro paths in `main` using a BFS pass over the same story. BFS reaches
+ * shared findings by their shortest choice trail, and may also contribute extra
+ * shallow findings within its own limits.
+ */
+export function mergeMinRepro(main: ExploreResult, bfs: ExploreResult): ExploreResult {
+  return mergeExploreResults(main, bfs);
 }
