@@ -1,6 +1,6 @@
 {
   "name": "inkcheck",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Mechanical QA for ink interactive-fiction stories — compile checks, bounded systematic branch exploration, runtime-error repro paths, and dead-content review. Writes no prose.",
   "homepage": "https://github.com/chaoz23/inkcheck",
   "license": "MIT",
@@ -8,19 +8,43 @@
     "npx": "npx -y inkcheck <story.ink>",
     "npm": "npm install -g inkcheck"
   },
-  "interfaces": ["cli", "mcp"],
+  "interfaces": [
+    "cli",
+    "mcp"
+  ],
   "cli": {
     "command": "inkcheck",
     "usage": "inkcheck <story.ink> [options]",
     "machineOutput": "--json",
     "flags": [
-      { "flag": "--json", "description": "Emit the full report as a single JSON object on stdout. Use this for programmatic consumption." },
-      { "flag": "--human", "description": "Emit a prioritized human-readable fix list grouped by severity, with file/line locations and choice paths where available." },
-      { "flag": "--markdown", "description": "Emit a GitHub Step Summary-friendly Markdown report." },
-      { "flag": "--strict", "description": "Also fail on warnings, unvisited knots, truncation, or external stubs (exit 1)." },
-      { "flag": "--max-depth <n>", "description": "Max choices deep to explore, from 1 to 1000. Default 30." },
-      { "flag": "--max-states <n>", "description": "Total exploration state budget across the complementary DFS portfolio and repro-shortening slice, from 1 to 50000. Default 500." },
-      { "flag": "--no-min-repro", "description": "Skip the small BFS repro-shortening slice and spend that budget on the DFS portfolio instead." }
+      {
+        "flag": "--json",
+        "description": "Emit the full report as a single JSON object on stdout. Use this for programmatic consumption."
+      },
+      {
+        "flag": "--human",
+        "description": "Emit a prioritized human-readable fix list grouped by severity, with file/line locations and choice paths where available."
+      },
+      {
+        "flag": "--markdown",
+        "description": "Emit a GitHub Step Summary-friendly Markdown report."
+      },
+      {
+        "flag": "--strict",
+        "description": "Also fail on warnings, unvisited knots, truncation, or external stubs (exit 1)."
+      },
+      {
+        "flag": "--max-depth <n>",
+        "description": "Max choices deep to explore, from 1 to 1000. Default 30."
+      },
+      {
+        "flag": "--max-states <n>",
+        "description": "Total exploration state budget across the complementary DFS portfolio and repro-shortening slice, from 1 to 50000. Default 500."
+      },
+      {
+        "flag": "--no-min-repro",
+        "description": "Skip the small BFS repro-shortening slice and spend that budget on the DFS portfolio instead."
+      }
     ],
     "exitCodes": {
       "0": "Clean — compiled and explored with no errors (and, under --strict, no warnings, unvisited knots, truncation, or external stubs).",
@@ -35,13 +59,40 @@
   },
   "mcp": {
     "command": "npx",
-    "args": ["-y", "inkcheck", "mcp"],
-    "config": { "mcpServers": { "inkcheck": { "command": "npx", "args": ["-y", "inkcheck", "mcp"] } } },
+    "args": [
+      "-y",
+      "inkcheck",
+      "mcp"
+    ],
+    "config": {
+      "mcpServers": {
+        "inkcheck": {
+          "command": "npx",
+          "args": [
+            "-y",
+            "inkcheck",
+            "mcp"
+          ]
+        }
+      }
+    },
     "tools": [
-      { "name": "compile_story", "description": "Structured compile issues (severity, file, line)." },
-      { "name": "story_stats", "description": "Word/knot/choice counts plus the full knot list with locations." },
-      { "name": "playtest_story", "description": "Play one scripted choice path headlessly; returns transcript, tags, variables, errors." },
-      { "name": "explore_story", "description": "Bounded systematic walk: terminal states, error repro paths, knot coverage, and explicit coverage limits." }
+      {
+        "name": "compile_story",
+        "description": "Structured compile issues (severity, file, line)."
+      },
+      {
+        "name": "story_stats",
+        "description": "Word/knot/choice counts plus the full knot list with locations."
+      },
+      {
+        "name": "playtest_story",
+        "description": "Play one scripted choice path headlessly; returns transcript, tags, variables, errors."
+      },
+      {
+        "name": "explore_story",
+        "description": "Bounded systematic walk: terminal states, error repro paths, knot coverage, and explicit coverage limits."
+      }
     ]
   },
   "agentLoop": "edit .ink → compile_story → explore_story → fix confirmed failures → review coverage limitations → repeat. Never infer that a truncated, randomized, or externally driven story was completely verified."

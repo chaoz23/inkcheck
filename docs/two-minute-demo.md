@@ -5,7 +5,7 @@ This repository includes a small synthetic story with one intentional runtime fa
 From a clone of this repository, run the exact released version:
 
 ```sh
-npx -y inkcheck@0.2.0 examples/manor.ink
+npx -y inkcheck@0.3.0 examples/manor.ink
 ```
 
 The useful signal is the reproducible choice trail, not merely the red status:
