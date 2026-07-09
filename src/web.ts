@@ -7,9 +7,11 @@ import * as os from "os";
 import * as path from "path";
 import { VERSION } from "./version";
 import { BrowserUsageEvent, FileUsageStore, UsageRecorder } from "./usage";
+import { buildHumanFindings, HumanFinding } from "./human-report";
 import {
   HostedLimits,
   HostedSubmission,
+  LIMIT_HIT_MESSAGE,
   SubmissionError,
   validateSubmission,
 } from "./web-validation";
@@ -32,6 +34,7 @@ export interface WebConfig extends HostedLimits {
 
 export interface HostedCheckResponse {
   report: unknown;
+  humanFindings?: HumanFinding[];
   meta: {
     durationMs: number;
     uploadedFiles: number;
@@ -84,13 +87,13 @@ export function webConfigFromEnv(): WebConfig {
     host: process.env.HOST ?? "127.0.0.1",
     port: integerEnv("PORT", 8080, 1, 65535),
     concurrency: integerEnv("INKCHECK_WEB_CONCURRENCY", 1, 1, 4),
-    timeoutMs: integerEnv("INKCHECK_WEB_TIMEOUT_MS", 45_000, 1_000, 120_000),
-    maxBodyBytes: integerEnv("INKCHECK_WEB_MAX_BODY_BYTES", 524_288, 1_024, 2_097_152),
-    maxFiles: integerEnv("INKCHECK_WEB_MAX_FILES", 20, 1, 100),
-    maxFileBytes: integerEnv("INKCHECK_WEB_MAX_FILE_BYTES", 262_144, 1_024, 1_048_576),
-    maxDepth: integerEnv("INKCHECK_WEB_MAX_DEPTH", 100, 1, 200),
-    maxStates: integerEnv("INKCHECK_WEB_MAX_STATES", 5_000, 1, 20_000),
-    maxReportBytes: integerEnv("INKCHECK_WEB_MAX_REPORT_BYTES", 8_388_608, 65_536, 33_554_432),
+    timeoutMs: integerEnv("INKCHECK_WEB_TIMEOUT_MS", 450_000, 1_000, 900_000),
+    maxBodyBytes: integerEnv("INKCHECK_WEB_MAX_BODY_BYTES", 5_242_880, 1_024, 20_971_520),
+    maxFiles: integerEnv("INKCHECK_WEB_MAX_FILES", 200, 1, 500),
+    maxFileBytes: integerEnv("INKCHECK_WEB_MAX_FILE_BYTES", 2_621_440, 1_024, 10_485_760),
+    maxDepth: integerEnv("INKCHECK_WEB_MAX_DEPTH", 1_000, 1, 2_000),
+    maxStates: integerEnv("INKCHECK_WEB_MAX_STATES", 50_000, 1, 100_000),
+    maxReportBytes: integerEnv("INKCHECK_WEB_MAX_REPORT_BYTES", 83_886_080, 65_536, 209_715_200),
     rateLimit: integerEnv("INKCHECK_WEB_RATE_LIMIT", 10, 1, 1_000),
     globalRateLimit: integerEnv("INKCHECK_WEB_GLOBAL_RATE_LIMIT", 60, 1, 10_000),
     rateWindowMs: integerEnv("INKCHECK_WEB_RATE_WINDOW_MS", 3_600_000, 1_000, 86_400_000),
@@ -160,7 +163,7 @@ export async function runSubmission(
     const root = path.join(jobDir, ...submission.root.split("/"));
     const cli = path.join(__dirname, "cli.js");
     const args = [
-      "--max-old-space-size=384",
+      "--max-old-space-size=768",
       cli,
       root,
       "--json",
@@ -195,7 +198,7 @@ export async function runSubmission(
         const next = Buffer.concat([current, chunk]);
         if (next.length > config.maxReportBytes) {
           stopProcessTree(child);
-          finish(new SubmissionError("Generated report exceeded the service limit", 413));
+          finish(new SubmissionError(LIMIT_HIT_MESSAGE, 413, "limit_hit"));
         }
         return next;
       };
@@ -226,7 +229,7 @@ export async function runSubmission(
       });
       const timer = setTimeout(() => {
         stopProcessTree(child);
-        finish(new SubmissionError("Check exceeded the hosted time limit", 504));
+        finish(new SubmissionError(LIMIT_HIT_MESSAGE, 504, "limit_hit"));
       }, config.timeoutMs);
       timer.unref();
     });
@@ -237,8 +240,17 @@ export async function runSubmission(
     } catch {
       throw new SubmissionError("Inkcheck returned an unreadable report", 500);
     }
+    if (
+      report &&
+      typeof report === "object" &&
+      "explore" in report &&
+      (report as { explore?: { truncated?: unknown } }).explore?.truncated === true
+    ) {
+      throw new SubmissionError(LIMIT_HIT_MESSAGE, 413, "limit_hit");
+    }
     return {
       report,
+      humanFindings: buildHumanFindings(report as Parameters<typeof buildHumanFindings>[0]),
       meta: {
         durationMs: Date.now() - started,
         uploadedFiles: submission.files.length,
@@ -296,14 +308,14 @@ function validAccessCode(req: IncomingMessage, expected: string | undefined): bo
 async function readRequestBody(req: IncomingMessage, limit: number): Promise<Buffer> {
   const declared = Number(req.headers["content-length"] ?? 0);
   if (Number.isFinite(declared) && declared > limit) {
-    throw new SubmissionError("Request body exceeds the hosted upload limit", 413);
+    throw new SubmissionError(LIMIT_HIT_MESSAGE, 413, "limit_hit");
   }
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += data.length;
-    if (size > limit) throw new SubmissionError("Request body exceeds the hosted upload limit", 413);
+    if (size > limit) throw new SubmissionError(LIMIT_HIT_MESSAGE, 413, "limit_hit");
     chunks.push(data);
   }
   return Buffer.concat(chunks);
@@ -532,10 +544,20 @@ export function createInkcheckWebServer(options: {
       const status = error instanceof SubmissionError ? error.status : 500;
       const message = error instanceof Error ? error.message : "Unexpected service error";
       if (pathname === "/api/check" && req.method === "POST") {
+        if (error instanceof SubmissionError && error.reason === "limit_hit") {
+          console.warn(JSON.stringify({ event: "check_limit_hit", requestId, status }));
+          recordUsage("check_limit_hit");
+        }
         console.warn(JSON.stringify({ event: "check_rejected", requestId, status }));
         recordUsage("check_rejected");
       }
-      sendJson(res, status, { requestId, error: message });
+      sendJson(res, status, {
+        requestId,
+        error: message,
+        ...(error instanceof SubmissionError && error.reason === "limit_hit"
+          ? { issueUrl: "https://github.com/chaoz23/inkcheck/issues" }
+          : {}),
+      });
     }
   });
 }

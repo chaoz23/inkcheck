@@ -78,9 +78,9 @@ server.registerTool(
       "Systematically explore an ink story's choice tree within explicit bounds. Reports distinct terminal states with choice trails, runtime errors with reproduction paths, unvisited knots, external stubs, randomness, and truncation. This is mechanical narrative QA and never writes prose.",
     inputSchema: {
       file: z.string().describe("Path to the root .ink file"),
-      maxDepth: z.number().int().min(1).max(200).optional()
+      maxDepth: z.number().int().min(1).max(1000).optional()
         .describe("Max choices deep to explore (default 30)"),
-      maxStates: z.number().int().min(1).max(20000).optional()
+      maxStates: z.number().int().min(1).max(50000).optional()
         .describe("Max story states to visit (default 500)"),
       minRepro: z.boolean().optional()
         .describe("Run a second BFS pass to shorten repro paths (default true)"),

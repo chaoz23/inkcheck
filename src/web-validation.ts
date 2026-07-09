@@ -24,11 +24,19 @@ export interface HostedSubmission {
 export class SubmissionError extends Error {
   constructor(
     message: string,
-    readonly status = 400
+    readonly status = 400,
+    readonly reason?: "limit_hit"
   ) {
     super(message);
     this.name = "SubmissionError";
   }
+}
+
+export const LIMIT_HIT_MESSAGE =
+  "Our bad — your story is so detailed and long that it hit our current hosted limit. Please file an issue and we’ll raise it.";
+
+function limitHit(message = LIMIT_HIT_MESSAGE, status = 413): SubmissionError {
+  return new SubmissionError(message, status, "limit_hit");
 }
 
 function safeInkPath(value: unknown, label: string): string {
@@ -59,9 +67,10 @@ function boundedInteger(
   label: string
 ): number {
   if (value === undefined) return fallback;
-  if (!Number.isSafeInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+  if (!Number.isSafeInteger(value) || (value as number) < minimum) {
     throw new SubmissionError(`${label} must be an integer from ${minimum} to ${maximum}`);
   }
+  if ((value as number) > maximum) throw limitHit();
   return value as number;
 }
 
@@ -109,7 +118,7 @@ export function validateSubmission(input: unknown, limits: HostedLimits): Hosted
 
   const entries = Object.entries(body.files as Record<string, unknown>);
   if (entries.length < 1 || entries.length > limits.maxFiles) {
-    throw new SubmissionError(`Upload between 1 and ${limits.maxFiles} .ink files`, 413);
+    throw limitHit();
   }
   const seen = new Set<string>();
   const files: HostedFile[] = entries.map(([rawName, rawContent]) => {
@@ -124,7 +133,7 @@ export function validateSubmission(input: unknown, limits: HostedLimits): Hosted
     }
     const bytes = Buffer.byteLength(rawContent, "utf8");
     if (bytes > limits.maxFileBytes) {
-      throw new SubmissionError(`${name} exceeds the ${limits.maxFileBytes}-byte file limit`, 413);
+      throw limitHit();
     }
     return { name, content: rawContent, bytes };
   });
@@ -136,7 +145,7 @@ export function validateSubmission(input: unknown, limits: HostedLimits): Hosted
   return {
     root,
     files,
-    maxDepth: boundedInteger(body.maxDepth, 30, 1, limits.maxDepth, "maxDepth"),
-    maxStates: boundedInteger(body.maxStates, 500, 1, limits.maxStates, "maxStates"),
+    maxDepth: boundedInteger(body.maxDepth, limits.maxDepth, 1, limits.maxDepth, "maxDepth"),
+    maxStates: boundedInteger(body.maxStates, limits.maxStates, 1, limits.maxStates, "maxStates"),
   };
 }

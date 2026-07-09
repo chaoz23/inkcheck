@@ -8,6 +8,7 @@ inkcheck exists because compiling an ink story only proves the syntax is valid. 
 
 - CLI: `npx -y inkcheck <story.ink>`
 - CLI machine output: `npx -y inkcheck <story.ink> --json`
+- Human fix list: `npx -y inkcheck <story.ink> --human`
 - Human-readable CI output: `npx -y inkcheck <story.ink> --markdown`
 - CI: `npx -y inkcheck story/main.ink --strict`
 - MCP (Claude Code): `claude mcp add inkcheck -- npx -y inkcheck mcp`

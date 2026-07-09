@@ -21,6 +21,7 @@ test("usage store persists only daily aggregate counters", (t) => {
   store.record("support_click", {}, now);
   store.record("check_complete", { durationMs: 1250 }, now);
   store.record("check_rejected", {}, now);
+  store.record("check_limit_hit", {}, now);
 
   assert.deepStrictEqual(loadUsageData(file), {
     version: 1,
@@ -30,6 +31,7 @@ test("usage store persists only daily aggregate counters", (t) => {
         supportClicks: 1,
         checksCompleted: 1,
         checksRejected: 1,
+        checkLimitHits: 1,
         totalCheckDurationMs: 1250,
       },
     },
@@ -47,12 +49,14 @@ test("usage report covers a fixed UTC window and handles quiet days", () => {
         supportClicks: 1,
         checksCompleted: 2,
         checksRejected: 1,
+        checkLimitHits: 1,
         totalCheckDurationMs: 3000,
       },
     },
   }, 2, new Date("2026-07-08T18:00:00Z"));
   assert.match(report, /2026-07-07 through 2026-07-08/);
   assert.match(report, /Page visits: 4/);
+  assert.match(report, /Hosted limit hits: 1/);
   assert.match(report, /Visit-to-check conversion: 50\.0%/);
   assert.match(report, /Average completed-check time: 1500 ms/);
 });

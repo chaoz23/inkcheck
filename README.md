@@ -57,7 +57,7 @@ $ inkcheck examples/manor.ink
 
 Exit code is non-zero on compile or runtime errors. Add `--strict` to also fail on warnings, unvisited knots, truncation, or external stubs, so partial coverage cannot silently pass CI.
 
-Large stories can exceed the defaults. On inkle's published [*The Intercept*](https://github.com/inkle/the-intercept), inkcheck reaches a 5,000-state cap and marks the report as truncated. That is a useful partial check, not proof of complete coverage; increase the limits deliberately and keep the limitation visible in CI.
+Large stories can exceed the defaults. On inkle's published [*The Intercept*](https://github.com/inkle/the-intercept), inkcheck reaches a 5,000-state cap and marks the report as truncated. That is a useful partial check, not proof of complete coverage; increase the limits deliberately and keep the limitation visible in CI. The hosted checker uses a deeper 50,000-state ceiling by default and asks authors to file an issue if that still is not enough.
 
 ## MCP server
 
@@ -91,11 +91,11 @@ The intended loop for an agent editing a story: edit `.ink` → `compile_story` 
 ## CLI
 
 ```
-inkcheck <story.ink> [--max-depth N] [--max-states N] [--no-min-repro] [--strict] [--json|--markdown]
+inkcheck <story.ink> [--max-depth N] [--max-states N] [--no-min-repro] [--strict] [--human|--json|--markdown]
 inkcheck mcp    # start the MCP server on stdio
 ```
 
-`--max-depth` accepts 1–200 and `--max-states` accepts 1–20,000. These hard ceilings prevent malformed automation inputs from accidentally disabling the exploration bounds.
+`--max-depth` accepts 1–1,000 and `--max-states` accepts 1–50,000. These hard ceilings prevent malformed automation inputs from accidentally disabling the exploration bounds.
 
 GitHub Actions:
 
@@ -121,6 +121,7 @@ inkcheck is built to be driven by an AI coding agent, not just a human at a term
 
 - **Machine-readable interface:** `tool.json` at the repo root describes the CLI flags, MCP tools, exit codes, and `--json` output shape in one file.
 - **`--json`** emits the entire report as a single JSON object (`{ compile, stats, explore }`) on stdout — parse that instead of scraping the pretty output.
+- **`--human`** emits a prioritized fix list grouped by errors, warnings, and notes, with file/line locations where available, choice paths for runtime failures, and a next step for each finding.
 - **`--markdown`** emits a GitHub Step Summary-friendly report for humans reviewing CI.
 - **Deterministic exit codes:** `0` clean · `1` compile/runtime errors (or, under `--strict`, warnings, unvisited knots, truncation, or external stubs) · `2` usage error. Branch on the exit code; don't grep the text.
 - **MCP:** `claude mcp add inkcheck -- npx -y inkcheck mcp` exposes `compile_story`, `story_stats`, `playtest_story`, and `explore_story` as tools.

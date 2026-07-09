@@ -31,6 +31,7 @@ export interface EndingReport {
 export interface RuntimeErrorReport {
   message: string;
   path: string[];
+  sourceLocation?: { file: string; line: number; approximate: boolean };
 }
 
 export interface ExploreResult {
@@ -186,6 +187,25 @@ interface Frame {
   depth: number;
 }
 
+function sourceLocationForRuntimeError(
+  message: string,
+  knots: KnotInfo[]
+): RuntimeErrorReport["sourceLocation"] {
+  const position = message.match(/\(at ([^)]+)\)\s*$/)?.[1];
+  if (!position) return undefined;
+  const [root, ...segments] = position.split(".");
+  const knot = knots.find((candidate) => candidate.name === root);
+  if (!knot) return undefined;
+  const numeric = segments
+    .map((segment) => Number(segment))
+    .filter((segment) => Number.isSafeInteger(segment) && segment >= 0);
+  // Ink runtime paths are compiled instruction positions, not source line
+  // numbers. For authored knots they are close enough to point humans at the
+  // right neighborhood, so label the mapped location as approximate.
+  const offset = numeric.length ? Math.max(0, numeric[numeric.length - 1] - 2) : 0;
+  return { file: knot.file, line: knot.line + offset, approximate: true };
+}
+
 export interface ExploreOptions {
   maxDepth?: number;
   maxStates?: number;
@@ -215,11 +235,11 @@ export function explore(
 ): ExploreResult {
   const maxDepth = opts.maxDepth ?? 30;
   const maxStates = opts.maxStates ?? 500;
-  if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 200) {
-    throw new RangeError("maxDepth must be an integer from 1 to 200");
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
+    throw new RangeError("maxDepth must be an integer from 1 to 1000");
   }
-  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 20_000) {
-    throw new RangeError("maxStates must be an integer from 1 to 20000");
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 50_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 50000");
   }
   const strategy = opts.strategy ?? "dfs";
   const stateSensitivity = {
@@ -258,7 +278,9 @@ export function explore(
 
   // Root: continue the fresh story to the first choice point.
   const rootStep = continueMaximally(s);
-  s.errors.forEach((e) => runtimeErrors.set(e, { message: e, path: [] }));
+  s.errors.forEach((e) =>
+    runtimeErrors.set(e, { message: e, path: [], sourceLocation: sourceLocationForRuntimeError(e, knots) })
+  );
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
 
@@ -307,13 +329,15 @@ export function explore(
         s.story.ChooseChoiceIndex(i);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        runtimeErrors.set(msg, { message: msg, path });
+        runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) });
         continue;
       }
       const step = continueMaximally(s);
       statesExplored++;
       s.errors.forEach((msg) => {
-        if (!runtimeErrors.has(msg)) runtimeErrors.set(msg, { message: msg, path });
+        if (!runtimeErrors.has(msg)) {
+          runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) });
+        }
       });
       s.warnings.forEach((w) => runtimeWarnings.add(w));
       recordKnotCoverage(s);

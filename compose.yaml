@@ -4,22 +4,23 @@ services:
     restart: unless-stopped
     read_only: true
     tmpfs:
-      - /tmp:size=96m,mode=1777
+      - /tmp:size=512m,mode=1777
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     pids_limit: 128
-    mem_limit: 768m
+    mem_limit: 1536m
     cpus: 1.0
     environment:
       INKCHECK_WEB_CONCURRENCY: "1"
-      INKCHECK_WEB_TIMEOUT_MS: "45000"
-      INKCHECK_WEB_MAX_BODY_BYTES: "524288"
-      INKCHECK_WEB_MAX_FILES: "20"
-      INKCHECK_WEB_MAX_FILE_BYTES: "262144"
-      INKCHECK_WEB_MAX_DEPTH: "100"
-      INKCHECK_WEB_MAX_STATES: "5000"
+      INKCHECK_WEB_TIMEOUT_MS: "450000"
+      INKCHECK_WEB_MAX_BODY_BYTES: "5242880"
+      INKCHECK_WEB_MAX_FILES: "200"
+      INKCHECK_WEB_MAX_FILE_BYTES: "2621440"
+      INKCHECK_WEB_MAX_DEPTH: "1000"
+      INKCHECK_WEB_MAX_STATES: "50000"
+      INKCHECK_WEB_MAX_REPORT_BYTES: "83886080"
       INKCHECK_WEB_RATE_LIMIT: "10"
       INKCHECK_WEB_GLOBAL_RATE_LIMIT: "60"
       INKCHECK_WEB_RATE_WINDOW_MS: "3600000"

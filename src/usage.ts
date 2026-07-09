@@ -2,13 +2,14 @@ import * as fs from "fs";
 import * as path from "path";
 
 export type BrowserUsageEvent = "page_view" | "support_click";
-export type UsageEvent = BrowserUsageEvent | "check_complete" | "check_rejected";
+export type UsageEvent = BrowserUsageEvent | "check_complete" | "check_rejected" | "check_limit_hit";
 
 export interface DailyUsage {
   pageViews: number;
   supportClicks: number;
   checksCompleted: number;
   checksRejected: number;
+  checkLimitHits: number;
   totalCheckDurationMs: number;
 }
 
@@ -30,6 +31,7 @@ const EMPTY_DAY: DailyUsage = {
   supportClicks: 0,
   checksCompleted: 0,
   checksRejected: 0,
+  checkLimitHits: 0,
   totalCheckDurationMs: 0,
 };
 
@@ -53,9 +55,13 @@ function readUsageData(file: string): UsageData {
       supportClicks: candidate.supportClicks,
       checksCompleted: candidate.checksCompleted,
       checksRejected: candidate.checksRejected,
+      checkLimitHits: candidate.checkLimitHits ?? 0,
       totalCheckDurationMs: candidate.totalCheckDurationMs,
     }).every(isNonNegativeInteger)) {
       throw new Error("Usage data contains an invalid counter");
+    }
+    if (candidate.checkLimitHits === undefined) {
+      candidate.checkLimitHits = 0;
     }
   }
   return value as UsageData;
@@ -76,7 +82,8 @@ export class FileUsageStore implements UsageRecorder {
     else if (event === "check_complete") {
       day.checksCompleted++;
       day.totalCheckDurationMs += Math.max(0, Math.round(details.durationMs ?? 0));
-    } else day.checksRejected++;
+    } else if (event === "check_limit_hit") day.checkLimitHits++;
+    else day.checksRejected++;
     data.days[date] = day;
 
     const cutoff = new Date(now);
@@ -114,6 +121,7 @@ export function renderUsageReport(data: UsageData, days = 7, now = new Date()): 
     supportClicks: sum.supportClicks + day.supportClicks,
     checksCompleted: sum.checksCompleted + day.checksCompleted,
     checksRejected: sum.checksRejected + day.checksRejected,
+    checkLimitHits: sum.checkLimitHits + day.checkLimitHits,
     totalCheckDurationMs: sum.totalCheckDurationMs + day.totalCheckDurationMs,
   }), { ...EMPTY_DAY });
   const conversion = total.pageViews > 0
@@ -127,6 +135,7 @@ export function renderUsageReport(data: UsageData, days = 7, now = new Date()): 
     `Page visits: ${total.pageViews}`,
     `Checks completed: ${total.checksCompleted}`,
     `Checks rejected: ${total.checksRejected}`,
+    `Hosted limit hits: ${total.checkLimitHits}`,
     `Support-link clicks: ${total.supportClicks}`,
     `Visit-to-check conversion: ${conversion}`,
     `Average completed-check time: ${average}`,
