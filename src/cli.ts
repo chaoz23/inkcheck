@@ -17,8 +17,8 @@ Usage: inkcheck <story.ink> [options]
        inkcheck mcp              Start the MCP server (stdio)
 
 Options:
-  --max-depth <n>    Max choices deep to explore, 1–200 (default 30)
-  --max-states <n>   Max story states to visit, 1–20000 (default 500)
+  --max-depth <n>    Max choices deep to explore, 1–1000 (default 30)
+  --max-states <n>   Max story states to visit, 1–50000 (default 500)
   --no-min-repro     Skip the second pass that shortens repro paths
   --strict           Also fail on warnings, unvisited knots, truncation, or external stubs
   --json             Emit the full report as JSON
@@ -49,8 +49,8 @@ async function main() {
   };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "--max-depth") maxDepth = boundedInt(arg, args[++i], 200);
-    else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 20_000);
+    if (arg === "--max-depth") maxDepth = boundedInt(arg, args[++i], 1_000);
+    else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 50_000);
     else if (arg === "--strict") strict = true;
     else if (arg === "--json") asJson = true;
     else if (arg === "--markdown") asMarkdown = true;

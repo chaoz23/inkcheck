@@ -57,7 +57,7 @@ $ inkcheck examples/manor.ink
 
 Exit code is non-zero on compile or runtime errors. Add `--strict` to also fail on warnings, unvisited knots, truncation, or external stubs, so partial coverage cannot silently pass CI.
 
-Large stories can exceed the defaults. On inkle's published [*The Intercept*](https://github.com/inkle/the-intercept), inkcheck reaches a 5,000-state cap and marks the report as truncated. That is a useful partial check, not proof of complete coverage; increase the limits deliberately and keep the limitation visible in CI.
+Large stories can exceed the defaults. On inkle's published [*The Intercept*](https://github.com/inkle/the-intercept), inkcheck reaches a 5,000-state cap and marks the report as truncated. That is a useful partial check, not proof of complete coverage; increase the limits deliberately and keep the limitation visible in CI. The hosted checker uses a deeper 50,000-state ceiling by default and asks authors to file an issue if that still is not enough.
 
 ## MCP server
 
@@ -95,7 +95,7 @@ inkcheck <story.ink> [--max-depth N] [--max-states N] [--no-min-repro] [--strict
 inkcheck mcp    # start the MCP server on stdio
 ```
 
-`--max-depth` accepts 1–200 and `--max-states` accepts 1–20,000. These hard ceilings prevent malformed automation inputs from accidentally disabling the exploration bounds.
+`--max-depth` accepts 1–1,000 and `--max-states` accepts 1–50,000. These hard ceilings prevent malformed automation inputs from accidentally disabling the exploration bounds.
 
 GitHub Actions:
 

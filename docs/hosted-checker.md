@@ -8,19 +8,19 @@ The hosted checker lowers the terminal barrier, but it changes the privacy bound
 - Require separate authorization and temporary-processing confirmations.
 - Reject absolute, parent-traversing, duplicate, oversized, or non-`.ink` paths.
 - Require every `INCLUDE` target to exist inside the uploaded bundle.
-- Run Inkcheck in a child process with lower hosted limits, a memory ceiling, an output ceiling, and a hard timeout.
+- Run Inkcheck in a child process with generous hosted ceilings, a memory ceiling, an output ceiling, and a hard timeout.
 - Process one story at a time by default and rate-limit each client address.
 - Support a runtime-only pilot access code and a global hourly capacity ceiling.
 - Return reports only in the request that created them.
 - Never log request bodies, story text, report contents, or final story prose.
-- Keep only daily aggregate visit, support-click, completion, rejection, and duration totals; never persist IP addresses, user agents, request IDs, or visitor profiles.
+- Keep only daily aggregate visit, support-click, completion, rejection, hosted-limit-hit, and duration totals; never persist IP addresses, user agents, request IDs, or visitor profiles.
 - Delete the temporary job directory in a `finally` block. Docker stores `/tmp` in memory so a crash cannot create durable story storage.
 
 The report can contain authored choice text, final text, variable names, and values. Treat the report itself as story material.
 
 ## HTTP API
 
-`POST /api/check` accepts `multipart/form-data`, the same transport used by ordinary browser file uploads. The main file, optional unchanged `INCLUDE` files, limits, and consent confirmations are separate form parts. Relative project paths travel as hidden part names when a folder is selected; the author does not create or edit that metadata.
+`POST /api/check` accepts `multipart/form-data`, the same transport used by ordinary browser file uploads. The main file, optional unchanged `INCLUDE` files, and consent confirmations are separate form parts. Relative project paths travel as hidden part names when a folder is selected; the author does not create or edit that metadata. Browser users do not choose traversal limits; hosted mode uses the service ceilings by default.
 
 For a form hosted on another origin, set `INKCHECK_WEB_ALLOWED_ORIGINS` to an exact comma-separated allowlist such as `https://secondlandings.com`. The API answers browser preflight requests only for configured origins and never emits a wildcard. Command-line and same-origin requests without an `Origin` header continue to work.
 
@@ -30,7 +30,7 @@ The browser offers three source-native choices:
 2. paste the main file's contents directly; or
 3. for a project using `INCLUDE`, add the unchanged supporting files or select the existing project folder.
 
-When pilot protection is configured, the browser sends the code in `X-Inkcheck-Access-Code`. Successful responses contain `{ requestId, report, meta }`; compile and runtime findings are successful reports, not HTTP failures. Validation, capacity, timeout, and internal failures use appropriate 4xx/5xx responses. `GET /healthz` returns only service health and version.
+When pilot protection is configured, the browser sends the code in `X-Inkcheck-Access-Code`. Successful responses contain `{ requestId, report, meta }`; compile and runtime findings are successful reports, not HTTP failures. Validation, capacity, timeout, and internal failures use appropriate 4xx/5xx responses. If a story hits the hosted ceiling after the 10x increase, the API returns a friendly `issueUrl` pointing to GitHub issues and increments the hosted-limit-hit counter. `GET /healthz` returns only service health and version.
 
 `POST /api/event` accepts only `page_view` and `support_click` JSON events from an allowed browser origin. It returns `204` and stores no event-level record. The server immediately folds each event into a UTC daily counter. Completed and rejected checks are counted inside the API, so the browser never reports those separately.
 
@@ -43,7 +43,7 @@ Internet → Caddy (TLS) → internal Docker network → Inkcheck web container
 
 Caddy is attached to public and internal networks. The application is attached only to Docker's `internal` network, so it has no runtime route to the internet or the host LAN. The official inklecate 1.2.1 binary is downloaded and SHA-256 verified while building the image, then baked into the image.
 
-The container runs as a non-root user with a read-only root filesystem, all Linux capabilities dropped, `no-new-privileges`, a 768 MiB memory ceiling, one CPU, and a PID ceiling. These controls reduce risk; they are not a substitute for timely host and image updates.
+The container runs as a non-root user with a read-only root filesystem, all Linux capabilities dropped, `no-new-privileges`, a 1.5 GiB memory ceiling, one CPU, and a PID ceiling. These controls reduce risk; they are not a substitute for timely host and image updates.
 
 ## Deploy on a small VPS
 
@@ -96,18 +96,18 @@ docker compose exec -T inkcheck node dist/usage-report.js --days 30
 
 | Control | Default |
 | --- | ---: |
-| Request body | 512 KiB |
-| Files | 20 |
-| Individual file | 256 KiB |
-| Maximum choice depth | 100 |
-| Maximum states | 5,000 |
-| Check timeout | 45 seconds |
+| Request body | 5 MiB |
+| Files | 200 |
+| Individual file | 2.5 MiB |
+| Maximum choice depth | 1,000 |
+| Maximum states | 50,000 |
+| Check timeout | 450 seconds |
 | Concurrent checks | 1 |
 | Checks per client | 10 per hour |
 | Checks across the service | 60 per hour |
-| Report output | 8 MiB |
+| Report output | 80 MiB |
 
-Environment variables in `compose.yaml` can lower these values. Raising them should follow measured pilot demand, not guesses.
+Environment variables in `compose.yaml` can lower these values if measured abuse or cost pressure appears. Keep the public UI free of traversal controls unless real community usage proves authors need them.
 
 ## Monthly budget ceiling
 

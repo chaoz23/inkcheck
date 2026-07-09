@@ -215,11 +215,11 @@ export function explore(
 ): ExploreResult {
   const maxDepth = opts.maxDepth ?? 30;
   const maxStates = opts.maxStates ?? 500;
-  if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 200) {
-    throw new RangeError("maxDepth must be an integer from 1 to 200");
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
+    throw new RangeError("maxDepth must be an integer from 1 to 1000");
   }
-  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 20_000) {
-    throw new RangeError("maxStates must be an integer from 1 to 20000");
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 50_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 50000");
   }
   const strategy = opts.strategy ?? "dfs";
   const stateSensitivity = {

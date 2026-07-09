@@ -13,11 +13,11 @@ const {
 } = require("../dist/web");
 
 const LIMITS = {
-  maxBodyBytes: 524288,
-  maxFiles: 20,
-  maxFileBytes: 262144,
-  maxDepth: 100,
-  maxStates: 5000,
+  maxBodyBytes: 5242880,
+  maxFiles: 200,
+  maxFileBytes: 2621440,
+  maxDepth: 1000,
+  maxStates: 50000,
 };
 
 function validBody(overrides = {}) {
@@ -53,6 +53,15 @@ test("hosted submission accepts an authorized include bundle", () => {
   assert.strictEqual(result.root, "main.ink");
   assert.strictEqual(result.files.length, 2);
   assert.strictEqual(result.maxStates, 500);
+});
+
+test("hosted submission uses service ceilings when browser limits are omitted", () => {
+  const { maxDepth, maxStates } = validateSubmission(
+    validBody({ maxDepth: undefined, maxStates: undefined }),
+    LIMITS
+  );
+  assert.strictEqual(maxDepth, LIMITS.maxDepth);
+  assert.strictEqual(maxStates, LIMITS.maxStates);
 });
 
 test("hosted submission rejects unsafe paths and missing includes", () => {
@@ -229,6 +238,20 @@ test("web API validates input and returns a no-retention report", async (t) => {
   assert.strictEqual(rejected.status, 422);
   assert.strictEqual(calls, 0);
 
+  const limitHit = await fetch(`${base}/api/check`, {
+    method: "POST",
+    headers: {
+      Origin: "https://secondlandings.com",
+      "X-Inkcheck-Access-Code": "pilot-code",
+    },
+    body: multipartBody(validBody({ maxStates: config.maxStates + 1 })),
+  });
+  assert.strictEqual(limitHit.status, 413);
+  const limitBody = await limitHit.json();
+  assert.match(limitBody.error, /Our bad/);
+  assert.strictEqual(limitBody.issueUrl, "https://github.com/chaoz23/inkcheck/issues");
+  assert.strictEqual(calls, 0);
+
   const accepted = await fetch(`${base}/api/check`, {
     method: "POST",
     headers: {
@@ -249,6 +272,8 @@ test("web API validates input and returns a no-retention report", async (t) => {
   assert.deepStrictEqual(usageEvents, [
     { event: "page_view", details: undefined },
     { event: "check_rejected", details: undefined },
+    { event: "check_rejected", details: undefined },
+    { event: "check_limit_hit", details: undefined },
     { event: "check_rejected", details: undefined },
     { event: "check_complete", details: { durationMs: 7 } },
   ]);

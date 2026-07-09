@@ -119,12 +119,10 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   submit.disabled = true;
   result.hidden = true;
-  status.textContent = "Running a bounded check…";
+  setStatus("Running a deeper hosted check…");
   try {
     const data = new FormData();
     addStoryParts(data);
-    data.append("maxDepth", document.querySelector("#max-depth").value);
-    data.append("maxStates", document.querySelector("#max-states").value);
     data.append("authorized", String(document.querySelector("#authorized").checked));
     data.append("privacyAcknowledged", String(document.querySelector("#privacy").checked));
 
@@ -133,19 +131,34 @@ form.addEventListener("submit", async (event) => {
     if (accessCode) headers["X-Inkcheck-Access-Code"] = accessCode;
     const response = await fetch("/api/check", { method: "POST", headers, body: data });
     const body = await response.json();
-    if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+    if (!response.ok) {
+      const error = new Error(body.error || `Request failed (${response.status})`);
+      error.issueUrl = body.issueUrl;
+      throw error;
+    }
     lastResponse = body;
     summary.textContent = `${reportSummary(body.report)} · processed in ${body.meta.durationMs} ms · files deleted after the response.`;
     resultJson.textContent = JSON.stringify(body.report, null, 2);
     result.hidden = false;
     result.scrollIntoView({ behavior: "smooth", block: "start" });
-    status.textContent = "Check complete.";
+    setStatus("Check complete.");
   } catch (error) {
-    status.textContent = error instanceof Error ? error.message : String(error);
+    setStatus(error instanceof Error ? error.message : String(error), error.issueUrl);
   } finally {
     submit.disabled = false;
   }
 });
+
+function setStatus(message, issueUrl) {
+  status.replaceChildren(document.createTextNode(message));
+  if (issueUrl) {
+    status.append(" ");
+    const link = document.createElement("a");
+    link.href = issueUrl;
+    link.textContent = "File an issue";
+    status.append(link, ".");
+  }
+}
 
 download.addEventListener("click", () => {
   if (!lastResponse) return;

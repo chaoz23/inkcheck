@@ -12,7 +12,7 @@ const {
 } = require("../dist/inklecate");
 const { explore, playtest, mergeMinRepro, stateKey } = require("../dist/explore");
 const { runSubmission, webConfigFromEnv } = require("../dist/web");
-const { validateSubmission } = require("../dist/web-validation");
+const { SubmissionError, validateSubmission } = require("../dist/web-validation");
 
 const MANOR = path.join(__dirname, "..", "examples", "manor.ink");
 const BROKEN = path.join(__dirname, "..", "examples", "broken.ink");
@@ -173,14 +173,14 @@ test("CLI rejects invalid numeric and unknown options as usage errors", () => {
     encoding: "utf8",
   });
   assert.strictEqual(invalid.status, 2);
-  assert.match(invalid.stderr, /requires an integer from 1 to 20000/);
+  assert.match(invalid.stderr, /requires an integer from 1 to 50000/);
   const unbounded = spawnSync(
     process.execPath,
     [CLI, CLEAN_BRANCH, "--max-states", "999999999999999999999999"],
     { encoding: "utf8" }
   );
   assert.strictEqual(unbounded.status, 2);
-  assert.match(unbounded.stderr, /requires an integer from 1 to 20000/);
+  assert.match(unbounded.stderr, /requires an integer from 1 to 50000/);
   const unknown = spawnSync(process.execPath, [CLI, CLEAN_BRANCH, "--surprise"], {
     encoding: "utf8",
   });
@@ -249,6 +249,30 @@ test("hosted runner checks an uploaded story and deletes its job", async () => {
   assert.strictEqual(result.meta.uploadedFiles, 1);
   assert.strictEqual(result.meta.retained, false);
   assert.doesNotMatch(JSON.stringify(result.report), /inkcheck-web-/);
+});
+
+test("hosted runner treats traversal truncation as a friendly limit hit", async () => {
+  const source = require("node:fs").readFileSync(CLEAN_BRANCH, "utf8");
+  const config = webConfigFromEnv();
+  const submission = validateSubmission(
+    {
+      root: "story.ink",
+      files: { "story.ink": source },
+      authorized: true,
+      privacyAcknowledged: true,
+      maxDepth: 30,
+      maxStates: 1,
+    },
+    config
+  );
+  await assert.rejects(
+    () => runSubmission(submission, config),
+    (error) =>
+      error instanceof SubmissionError &&
+      error.status === 413 &&
+      error.reason === "limit_hit" &&
+      /Our bad/.test(error.message)
+  );
 });
 
 test("hosted runner returns compile failures as reports", async () => {
