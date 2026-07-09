@@ -10,6 +10,14 @@ No. inkcheck itself does not use AI, machine learning, LLMs, or generative model
 
 It is designed so humans, CI systems, and optional AI coding agents can all drive the same mechanical QA checks. The actual checking is deterministic code: the official ink compiler, the ink runtime, bounded branch exploration, and structured reports.
 
+## Product promise
+
+Inkcheck will not prove that a large interactive story has no bugs. Combinatorial explosion is real: loops, variables, randomness, and host-game code can create more possible states than any tool can exhaustively visit.
+
+The promise is narrower and more useful: make mechanical story QA cheap, repeatable, and actionable. Inkcheck walks real reachable choice states within explicit limits, tells you when the run was partial, and turns failures into repro paths you can run again after a fix. If it finds a broken path today, that same configured check should be able to look for that path again tomorrow.
+
+This is an open-source QA project because that boundary matters. If a report overclaims, misses an obvious pattern, needs a better traversal strategy, or fails on a story shape you can share safely, please bring a fixture or issue. The roadmap is about making partial coverage more transparent and more valuable, not pretending partial coverage becomes proof.
+
 ## Quick start
 
 With Node.js 18 or newer:
@@ -44,7 +52,7 @@ The local CLI remains the privacy-first option because no story upload occurs. S
 | **Ink-Tester** | ✓ | random repeated runs | line coverage | limited | manual/CLI |
 | **inkcheck** | ✓ | systematic, bounded | knot coverage | ✓ | ✓ |
 
-The compiler tells you the story is *valid*. Clicking through tells you the paths you *happened to click* work. [Ink-Tester](https://github.com/wildwinter/Ink-Tester) repeatedly samples random playthroughs and reports line-level frequency; inkcheck instead walks choice states systematically and returns short failure paths. The approaches are complementary, especially for stories with randomness or engine integrations.
+The compiler tells you the story is *valid*. Clicking through tells you the paths you *happened to click* work. [Ink-Tester](https://github.com/wildwinter/Ink-Tester) repeatedly samples random playthroughs and reports line-level frequency; inkcheck instead walks choice states systematically and returns short failure paths. The key difference is repeatability: after you fix a reported path, the same configured run can check that path again. The approaches are complementary, especially for stories with randomness or engine integrations.
 
 ## Example
 
@@ -152,7 +160,7 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 - **`--markdown`** emits a GitHub Step Summary-friendly report for humans reviewing CI.
 - **Deterministic exit codes:** `0` clean · `1` compile/runtime errors (or, under `--strict`, warnings, unvisited knots, truncation, or external stubs) · `2` usage error. Branch on the exit code; don't grep the text.
 - **MCP:** `claude mcp add inkcheck -- npx -y inkcheck mcp` exposes `compile_story`, `story_stats`, `playtest_story`, and `explore_story` as tools.
-- **The loop:** edit `.ink` → `compile_story` → `explore_story` → fix what it reports → repeat. inkcheck is a deterministic oracle for a story graph you generated or edited — use it to verify your own work before returning it.
+- **The loop:** edit `.ink` → `compile_story` → `explore_story` → fix what it reports → repeat. inkcheck is a repeatable mechanical check for a story graph you generated or edited — use it to verify your own work before returning it.
 
 `llms.txt` at the repo root is a compact, model-friendly summary of all of the above.
 
@@ -173,10 +181,13 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 
 ## Roadmap
 
-- Coverage transparency: clearer reporting for truncation, depth limits, and what was or was not explored.
-- Report quality: better source locations, shorter repro paths, and clearer grouping of runtime errors, unvisited knots, and coverage limits.
-- Author-defined story assertions: project rules such as "gold never goes negative", "health never exceeds max", or "required variables are set before endings."
-- Public compatibility fixtures: consent-safe examples and synthetic edge cases for regression testing and trust-building.
+The roadmap is focused on earning trust in bounded QA: clearer limits, better evidence, and project-specific checks authors can understand.
+
+- Coverage transparency: clearer reporting for truncation, depth limits, visited endings, skipped search space, and what was or was not explored.
+- Report quality: better source locations, shorter repro paths, stable issue identities, and clearer grouping of runtime errors, unvisited knots, and coverage limits.
+- Author-defined story assertions: deterministic project rules such as "gold never goes negative", "health never exceeds max", or "required variables are set before endings."
+- Repro persistence: remember known failing paths and make sure future runs keep checking them even as traversal strategies improve.
+- Public compatibility fixtures: consent-safe examples and synthetic edge cases for regression testing, performance comparisons, and trust-building.
 - Large-story performance controls: quick, standard, and deep check presets with clearer time/coverage tradeoffs.
 - Structural lint checks: optional checks for missing tags, inconsistent tag schemas, or project-specific metadata conventions.
 
