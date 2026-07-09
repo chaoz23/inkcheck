@@ -173,9 +173,12 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 
 ## Roadmap
 
-- Localization/tag lint (untagged lines, inconsistent tag schemas)
-- State assertions ("gold must never go negative on any path")
-- Yarn Spinner support via `ysc`
+- Coverage transparency: clearer reporting for truncation, depth limits, and what was or was not explored.
+- Report quality: better source locations, shorter repro paths, and clearer grouping of runtime errors, unvisited knots, and coverage limits.
+- Author-defined story assertions: project rules such as "gold never goes negative", "health never exceeds max", or "required variables are set before endings."
+- Public compatibility fixtures: consent-safe examples and synthetic edge cases for regression testing and trust-building.
+- Large-story performance controls: quick, standard, and deep check presets with clearer time/coverage tradeoffs.
+- Structural lint checks: optional checks for missing tags, inconsistent tag schemas, or project-specific metadata conventions.
 
 ## License
 
