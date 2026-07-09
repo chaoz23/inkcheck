@@ -4,6 +4,10 @@
 
 inkcheck exists because compiling an ink story only proves the syntax is valid. It does not exercise choice paths or reproduce runtime failures. inkcheck systematically walks the choice graph within explicit limits, reports terminal states and possible dead content, and exits non-zero on failures so it drops into CI.
 
+## AI / ethics boundary
+
+inkcheck itself does not use AI, machine learning, LLMs, or generative models. It does not train on story source, infer prose changes, rewrite text, or send story content to an AI service. Humans, CI systems, and optional AI coding agents can drive inkcheck, but the checking remains deterministic mechanical QA.
+
 The CLI uses a bounded exploration portfolio rather than a single traversal order. It spends the requested `--max-states` budget across complementary DFS views of the choice tree (last-choice-first, first-choice-first, and inside-out), then by default reserves a small BFS slice to shorten repro paths. This improves coverage at the same limit but remains partial when the report says traversal was truncated.
 
 ## Install / run
@@ -38,7 +42,7 @@ edit .ink → compile_story → explore_story → fix what it reports → repeat
 
 ## What it is not
 
-Not a writing tool and not an authoring aid. It generates zero prose. It is pure QA for the [ink](https://github.com/inkle/ink) language (inkle's scripting language for interactive fiction).
+Not a writing tool, not an authoring aid, and not an AI system. It generates zero prose. It is pure QA for the [ink](https://github.com/inkle/ink) language (inkle's scripting language for interactive fiction).
 
 ## Coverage limits
 
