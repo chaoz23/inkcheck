@@ -1,5 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
@@ -914,6 +915,8 @@ test("CLI defaults the state budget to 10,000,000", () => {
 test("hosted checker defaults and caps the state budget at 1,000,000", () => {
   const config = webConfigFromEnv();
   assert.strictEqual(config.maxStates, 1_000_000);
+  const compose = fs.readFileSync(path.join(ROOT, "compose.yaml"), "utf8");
+  assert.match(compose, /INKCHECK_WEB_MAX_STATES:\s*"1000000"/);
   const submission = validateSubmission(
     {
       root: "story.ink",
