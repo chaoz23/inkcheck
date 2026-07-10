@@ -372,6 +372,69 @@ test("portfolio weights control which passes run", async () => {
   assert.ok([...passes].every((p) => p.startsWith("dfs:")), `unexpected passes: ${[...passes]}`);
 });
 
+// Issue #28: lifetime per-pass telemetry so agents can see which pass
+// earned its budget on this story shape without parsing progress logs.
+test("portfolio reports per-pass telemetry consistent with the schedule", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  const report = explorePortfolio(compiled.storyJson, knots, [], { maxStates: 3000 });
+  assert.ok(Array.isArray(report.passes) && report.passes.length >= 4);
+
+  // Marginal (portfolio-wide first-discovery) totals must equal the sums
+  // of the per-round schedule entries for the same pass.
+  const scheduleSums = new Map();
+  for (const round of report.schedule) {
+    for (const entry of round.entries) {
+      const sums = scheduleSums.get(entry.pass) ?? { endings: 0, knots: 0, errors: 0 };
+      sums.endings += entry.newEndings;
+      sums.knots += entry.newKnots;
+      sums.errors += entry.newRuntimeErrors;
+      scheduleSums.set(entry.pass, sums);
+    }
+  }
+  for (const t of report.passes) {
+    const sums = scheduleSums.get(t.pass) ?? { endings: 0, knots: 0, errors: 0 };
+    assert.strictEqual(t.newEndings, sums.endings, `${t.pass} newEndings`);
+    assert.strictEqual(t.newKnots, sums.knots, `${t.pass} newKnots`);
+    assert.strictEqual(t.newRuntimeErrors, sums.errors, `${t.pass} newRuntimeErrors`);
+    assert.ok(t.statesExplored <= t.granted, `${t.pass} overspent its grants`);
+    assert.ok(t.maxDepthReached <= 30);
+    if (t.lastDiscoveryAtState !== null) {
+      assert.ok(t.lastDiscoveryAtState <= t.statesExplored);
+    }
+  }
+  const beam = report.passes.find((t) => t.pass.startsWith("beam:"));
+  assert.ok(beam.peakFrontier >= 1);
+  assert.ok(typeof beam.prunes === "number");
+  const random = report.passes.find((t) => t.pass.startsWith("random:"));
+  assert.strictEqual(random.systematic, false);
+  assert.strictEqual(random.dedupeHits, 0, "random never deduplicates");
+});
+
+test("standalone passes attach their own telemetry entry", async () => {
+  const compiled = await compile(MANOR);
+  const report = explore(compiled.storyJson, scanKnots(MANOR));
+  assert.strictEqual(report.passes.length, 1);
+  const t = report.passes[0];
+  assert.strictEqual(t.pass, "dfs:last");
+  assert.strictEqual(t.exhaustive, true);
+  assert.strictEqual(t.endingsFound, 5);
+  assert.strictEqual(t.runtimeErrorsFound, 1);
+  assert.ok(t.maxDepthReached >= 2);
+  assert.ok(t.lastDiscoveryAtState !== null && t.lastDiscoveryAtState <= t.statesExplored);
+});
+
+test("CLI JSON includes telemetry for every pass including the repro slice", () => {
+  const proc = spawnSync(process.execPath, [CLI, MANOR, "--json"], { encoding: "utf8" });
+  const passes = JSON.parse(proc.stdout).explore.passes;
+  const labels = passes.map((t) => t.pass);
+  assert.ok(labels.includes("bfs"), `bfs missing from ${labels}`);
+  assert.ok(labels.some((l) => l.startsWith("dfs:")));
+  for (const t of passes) {
+    assert.ok("dedupeHits" in t && "lastDiscoveryAtState" in t && "truncatedBy" in t);
+  }
+});
+
 test("an exhaustive systematic pass clears sampling-slice truncation", async () => {
   const compiled = await compile(MANOR);
   const knots = scanKnots(MANOR);

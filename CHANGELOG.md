@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Emit lifetime per-pass telemetry in JSON reports (#28): a `passes` array with, per pass, states explored vs granted, own finding counts, portfolio-marginal first discoveries (consistent with the schedule's per-round sums), dedupe hits, max depth reached, `lastDiscoveryAtState` (the cheap discovery-curve signal), truncation causes, and exhaustiveness — plus peak frontier size and prune count for the beam. Standalone pass runs and the CLI's BFS repro slice attach their own entry, so `--json` consumers see every pass that contributed to a report without parsing progress logs. Telemetry reports facts and leaves stop/continue judgments to the consumer: a long gap since a pass's last discovery does not prove the pass is done.
+
 ## 0.3.3 — 2026-07-10
 
 - Spend the exploration budget adaptively (#29): portfolio passes now run interleaved in ten deterministic rounds, with each round's grants reallocated toward passes whose findings are still growing (guaranteed per-pass floor so dry spells never defund a pass), and the whole portfolio stops the moment a systematic pass proves every reachable state visited — a small fully-explorable story at the default 100,000-state budget now finishes in the ~10 states it actually has instead of resampling for the full budget. The executed schedule (grants, consumption, and marginal discoveries per pass per round) is recorded in `--json` output. Runs remain fully deterministic; a budget-bound random slice is now always reported truncated (sampling never proves completeness) unless a systematic pass proved exhaustion.

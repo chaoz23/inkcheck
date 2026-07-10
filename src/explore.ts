@@ -82,6 +82,8 @@ export interface ExploreResult {
   limits: { maxDepth: number; maxStates: number; seed?: number };
   /** Portfolio runs only: the adaptive schedule that was actually executed. */
   schedule?: ScheduleRound[];
+  /** Lifetime per-pass telemetry; merges concatenate contributing passes. */
+  passes?: PassTelemetry[];
 }
 
 /**
@@ -340,6 +342,42 @@ export interface ScheduleRound {
 }
 
 /**
+ * Lifetime telemetry for one exploration pass (issue #28), so agents and CI
+ * can see which pass earned its budget on this story shape without parsing
+ * progress logs. A long gap since `lastDiscoveryAtState` does not prove a
+ * pass is done — late discoveries after long dry spells are real — so this
+ * reports facts and leaves stop/continue judgments to the consumer.
+ */
+export interface PassTelemetry {
+  pass: string;
+  /** Systematic passes can prove exhaustive coverage; sampling passes cannot. */
+  systematic: boolean;
+  statesExplored: number;
+  /** Total state allowance issued to this pass. */
+  granted: number;
+  /** Findings this pass recorded itself, regardless of other passes. */
+  endingsFound: number;
+  runtimeErrorsFound: number;
+  knotsVisited: number;
+  /** Portfolio-wide first discoveries credited to this pass (equal to the own counts outside a portfolio run). */
+  newEndings: number;
+  newKnots: number;
+  newRuntimeErrors: number;
+  /** Transitions whose resulting state was already seen (always 0 for random: it never deduplicates). */
+  dedupeHits: number;
+  /** Deepest choice trail this pass followed. */
+  maxDepthReached: number;
+  /** This pass's transition count when it last recorded a finding new to itself; null if it found nothing. */
+  lastDiscoveryAtState: number | null;
+  truncatedBy: TruncationCauses;
+  exhaustive: boolean;
+  /** Beam only: largest frontier kept between levels. */
+  peakFrontier?: number;
+  /** Beam only: levels where reachable children were pruned at the width cap. */
+  prunes?: number;
+}
+
+/**
  * A pausable exploration pass. `run(grant)` consumes up to `grant` more
  * story-state transitions and pauses exactly where it stopped, so the
  * portfolio scheduler can interleave passes in rounds without changing any
@@ -360,6 +398,8 @@ interface PassEngine {
   snapshot(): ExploreResult;
   /** Final result: marks maxStates truncation when work remained. */
   finalize(): ExploreResult;
+  /** Lifetime counters for this pass; call after finalize for final flags. */
+  telemetry(): PassTelemetry;
 }
 
 function createSearchEngine(
@@ -389,6 +429,17 @@ function createSearchEngine(
   let totalGranted = 0;
   let truncated = false;
   const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false };
+  let dedupeHits = 0;
+  let maxDepthReached = 0;
+  let lastDiscoveryAtState: number | null = null;
+  let findingWatermark = 0;
+  const noteDiscoveryProgress = () => {
+    const total = endings.size + runtimeErrors.size + visitedKnots.size;
+    if (total > findingWatermark) {
+      findingWatermark = total;
+      lastDiscoveryAtState = statesExplored;
+    }
+  };
 
   const nonFunctionKnots = knots.filter((k) => !k.isFunction);
 
@@ -428,6 +479,7 @@ function createSearchEngine(
       foundBy,
     });
   }
+  noteDiscoveryProgress();
 
   const rootState = s.story.state.ToJson();
   seenStates.add(stateKey(rootState, stateSensitivity));
@@ -487,10 +539,12 @@ function createSearchEngine(
         sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
         foundBy,
       });
+      noteDiscoveryProgress();
       return true;
     }
     const step = continueMaximally(s);
     statesExplored++;
+    if (path.length > maxDepthReached) maxDepthReached = path.length;
     s.errors.forEach((msg) => {
       if (!runtimeErrors.has(msg)) {
         runtimeErrors.set(msg, {
@@ -503,6 +557,7 @@ function createSearchEngine(
     });
     s.warnings.forEach((w) => runtimeWarnings.add(w));
     recordKnotCoverage(s);
+    noteDiscoveryProgress();
 
     const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
     if (ended && s.errors.length === 0) {
@@ -510,6 +565,7 @@ function createSearchEngine(
       const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
       if (!endings.has(key)) {
         endings.set(key, { path, finalText, variables: extractVariables(s.story), foundBy });
+        noteDiscoveryProgress();
       }
       return true;
     }
@@ -520,7 +576,10 @@ function createSearchEngine(
     }
     const nextState = s.story.state.ToJson();
     const key = stateKey(nextState, stateSensitivity);
-    if (seenStates.has(key)) return true; // identical state: subtree already covered
+    if (seenStates.has(key)) {
+      dedupeHits++;
+      return true; // identical state: subtree already covered
+    }
     seenStates.add(key);
     frames.push({ stateJson: nextState, path, depth: frame.depth + 1 });
     return true;
@@ -572,6 +631,25 @@ function createSearchEngine(
       }
       return buildResult();
     },
+    telemetry(): PassTelemetry {
+      return {
+        pass: foundBy,
+        systematic: true,
+        statesExplored,
+        granted: totalGranted,
+        endingsFound: endings.size,
+        runtimeErrorsFound: runtimeErrors.size,
+        knotsVisited: visitedKnots.size,
+        newEndings: endings.size,
+        newKnots: visitedKnots.size,
+        newRuntimeErrors: runtimeErrors.size,
+        dedupeHits,
+        maxDepthReached,
+        lastDiscoveryAtState,
+        truncatedBy: { ...truncatedBy },
+        exhaustive: done() && !truncated,
+      };
+    },
   };
 }
 
@@ -595,7 +673,9 @@ export function explore(
   }
   const engine = createSearchEngine(storyJson, knots, externals, opts);
   engine.run(maxStates);
-  return engine.finalize();
+  const result = engine.finalize();
+  result.passes = [engine.telemetry()];
+  return result;
 }
 
 /** Deterministic PRNG (mulberry32) so random exploration stays reproducible in CI. */
@@ -634,6 +714,16 @@ function createRandomEngine(
   let totalGranted = 0;
   let truncated = false;
   const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false };
+  let maxDepthReached = 0;
+  let lastDiscoveryAtState: number | null = null;
+  let findingWatermark = 0;
+  const noteDiscoveryProgress = () => {
+    const total = endings.size + runtimeErrors.size + visitedKnots.size;
+    if (total > findingWatermark) {
+      findingWatermark = total;
+      lastDiscoveryAtState = statesExplored;
+    }
+  };
 
   const nonFunctionKnots = knots.filter((k) => !k.isFunction);
   const recordKnotCoverage = (session: StorySession) => {
@@ -671,6 +761,7 @@ function createRandomEngine(
       foundBy,
     });
   }
+  noteDiscoveryProgress();
 
   const rootState = linear ? "" : s.story.state.ToJson();
   // Pause state: the walk in progress. The pooled story instance holds the
@@ -697,6 +788,7 @@ function createRandomEngine(
     // Count the transition attempt up front so failing walks still consume
     // budget and the sampling loop always terminates.
     statesExplored++;
+    if (walkPath.length > maxDepthReached) maxDepthReached = walkPath.length;
     try {
       s.story.ChooseChoiceIndex(i);
     } catch (e) {
@@ -704,6 +796,7 @@ function createRandomEngine(
       if (!runtimeErrors.has(msg)) {
         runtimeErrors.set(msg, { message: msg, path: [...walkPath], sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
       }
+      noteDiscoveryProgress();
       walkPath = null;
       return;
     }
@@ -715,6 +808,7 @@ function createRandomEngine(
     });
     s.warnings.forEach((w) => runtimeWarnings.add(w));
     recordKnotCoverage(s);
+    noteDiscoveryProgress();
     if (s.errors.length > 0) {
       walkPath = null;
       return;
@@ -725,6 +819,7 @@ function createRandomEngine(
       const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
       if (!endings.has(key)) {
         endings.set(key, { path: [...walkPath], finalText, variables: extractVariables(s.story), foundBy });
+        noteDiscoveryProgress();
       }
       walkPath = null;
       return;
@@ -770,6 +865,25 @@ function createRandomEngine(
     // always has more walks to take.
     done: () => linear,
     exhaustive: () => false,
+    telemetry(): PassTelemetry {
+      return {
+        pass: foundBy,
+        systematic: false,
+        statesExplored,
+        granted: totalGranted,
+        endingsFound: endings.size,
+        runtimeErrorsFound: runtimeErrors.size,
+        knotsVisited: visitedKnots.size,
+        newEndings: endings.size,
+        newKnots: visitedKnots.size,
+        newRuntimeErrors: runtimeErrors.size,
+        dedupeHits: 0,
+        maxDepthReached,
+        lastDiscoveryAtState,
+        truncatedBy: { ...truncatedBy },
+        exhaustive: false,
+      };
+    },
     snapshot: buildResult,
     finalize(): ExploreResult {
       if (!linear) {
@@ -802,7 +916,9 @@ export function exploreRandom(
   }
   const engine = createRandomEngine(storyJson, knots, externals, opts);
   engine.run(maxStates);
-  return engine.finalize();
+  const result = engine.finalize();
+  result.passes = [engine.telemetry()];
+  return result;
 }
 
 /**
@@ -850,6 +966,19 @@ function createBeamEngine(
   let totalGranted = 0;
   let truncated = false;
   const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false };
+  let dedupeHits = 0;
+  let maxDepthReached = 0;
+  let peakFrontier = 0;
+  let prunes = 0;
+  let lastDiscoveryAtState: number | null = null;
+  let findingWatermark = 0;
+  const noteDiscoveryProgress = () => {
+    const total = endings.size + runtimeErrors.size + visitedKnots.size;
+    if (total > findingWatermark) {
+      findingWatermark = total;
+      lastDiscoveryAtState = statesExplored;
+    }
+  };
 
   const nonFunctionKnots = knots.filter((k) => !k.isFunction);
   const recordKnotCoverage = (session: StorySession) => {
@@ -911,7 +1040,9 @@ function createBeamEngine(
     seenVarSignatures.add(JSON.stringify(extractVariables(s.story)));
     seenChoiceSets.add(rootStep.choicesOffered.slice().sort().join(""));
     frontier = [{ stateJson: rootState, path: [] }];
+    peakFrontier = 1;
   }
+  noteDiscoveryProgress();
 
   /** Close out a fully expanded level: prune, select, start the next level. */
   const completeLevel = (): void => {
@@ -920,6 +1051,7 @@ function createBeamEngine(
     if (children.length > beamWidth) {
       truncated = true;
       truncatedBy.beamWidth = true;
+      prunes++;
     }
     // Diversity-first selection: round-robin across variable-signature
     // groups (discovery order), novelty-ranked within each group, so one
@@ -947,6 +1079,7 @@ function createBeamEngine(
       if (!took) break;
     }
     frontier = selected;
+    if (frontier.length > peakFrontier) peakFrontier = frontier.length;
     children = [];
     frameIdx = 0;
     expansion = null;
@@ -988,10 +1121,12 @@ function createBeamEngine(
       if (!runtimeErrors.has(msg)) {
         runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
       }
+      noteDiscoveryProgress();
       return true;
     }
     const step = continueMaximally(s);
     statesExplored++;
+    if (path.length > maxDepthReached) maxDepthReached = path.length;
     const knotsBefore = visitedKnots.size;
     s.errors.forEach((msg) => {
       if (!runtimeErrors.has(msg)) {
@@ -1000,6 +1135,7 @@ function createBeamEngine(
     });
     s.warnings.forEach((w) => runtimeWarnings.add(w));
     recordKnotCoverage(s);
+    noteDiscoveryProgress();
     const newKnots = visitedKnots.size - knotsBefore;
     if (s.errors.length > 0) return true;
 
@@ -1009,6 +1145,7 @@ function createBeamEngine(
       const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
       if (!endings.has(key)) {
         endings.set(key, { path, finalText, variables: extractVariables(s.story), foundBy });
+        noteDiscoveryProgress();
       }
       return true;
     }
@@ -1019,7 +1156,10 @@ function createBeamEngine(
     }
     const nextState = s.story.state.ToJson();
     const key = stateKey(nextState, stateSensitivity);
-    if (seenStates.has(key)) return true; // identical state: subtree already covered
+    if (seenStates.has(key)) {
+      dedupeHits++;
+      return true; // identical state: subtree already covered
+    }
     seenStates.add(key);
 
     const varSig = JSON.stringify(extractVariables(s.story));
@@ -1078,6 +1218,27 @@ function createBeamEngine(
       }
       return buildResult();
     },
+    telemetry(): PassTelemetry {
+      return {
+        pass: foundBy,
+        systematic: true,
+        statesExplored,
+        granted: totalGranted,
+        endingsFound: endings.size,
+        runtimeErrorsFound: runtimeErrors.size,
+        knotsVisited: visitedKnots.size,
+        newEndings: endings.size,
+        newKnots: visitedKnots.size,
+        newRuntimeErrors: runtimeErrors.size,
+        dedupeHits,
+        maxDepthReached,
+        lastDiscoveryAtState,
+        truncatedBy: { ...truncatedBy },
+        exhaustive: finished && !truncated,
+        peakFrontier,
+        prunes,
+      };
+    },
   };
 }
 
@@ -1093,7 +1254,9 @@ export function exploreBeam(
   }
   const engine = createBeamEngine(storyJson, knots, externals, opts);
   engine.run(maxStates);
-  return engine.finalize();
+  const result = engine.finalize();
+  result.passes = [engine.telemetry()];
+  return result;
 }
 
 /** Deterministic largest-remainder split of `total` units by weight. */
@@ -1214,6 +1377,7 @@ export function explorePortfolio(
   const seenEndings = new Set<string>();
   const seenKnots = new Set<string>();
   const seenErrors = new Set<string>();
+  const marginalTotals = engines.map(() => ({ endings: 0, knots: 0, errors: 0 }));
   let currentWeights = [...engineWeights];
   let remaining = maxStates;
   let exhaustedEarly = false;
@@ -1233,6 +1397,9 @@ export function explorePortfolio(
       const consumed = grants[a] > 0 ? engine.run(grants[a]) : 0;
       remaining -= consumed;
       const marginal = countMarginalFindings(engine.snapshot(), seenEndings, seenKnots, seenErrors);
+      marginalTotals[i].endings += marginal.newEndings;
+      marginalTotals[i].knots += marginal.newKnots;
+      marginalTotals[i].errors += marginal.newRuntimeErrors;
       entries.push({
         pass: engine.label,
         granted: grants[a],
@@ -1264,6 +1431,14 @@ export function explorePortfolio(
   // statesExplored and the schedule (early exit can leave budget unspent).
   merged.limits.maxStates = maxStates;
   merged.schedule = schedule;
+  // Per-pass lifetime telemetry, with new* replaced by the true
+  // portfolio-marginal totals the scheduler measured round by round.
+  merged.passes = engines.map((engine, i) => ({
+    ...engine.telemetry(),
+    newEndings: marginalTotals[i].endings,
+    newKnots: marginalTotals[i].knots,
+    newRuntimeErrors: marginalTotals[i].errors,
+  }));
   return merged;
 }
 
@@ -1335,6 +1510,7 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
   }
   main.externalFunctionsStubbed = [...new Set([...main.externalFunctionsStubbed, ...other.externalFunctionsStubbed])];
   main.randomnessDetected ||= other.randomnessDetected;
+  if (other.passes?.length) main.passes = [...(main.passes ?? []), ...other.passes];
   const seed = main.limits.seed ?? other.limits.seed;
   main.limits = {
     maxDepth: Math.max(main.limits.maxDepth, other.limits.maxDepth),
