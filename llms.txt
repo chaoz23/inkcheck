@@ -23,6 +23,7 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 - Show story shape + suggested settings: `npx -y inkcheck story/main.ink --profile`
 - Apply the shape profile (depth + pass weights): `npx -y inkcheck story/main.ink --auto`
 - Auto-escalate limits until nothing new is found: `npx -y inkcheck story/main.ink --next`
+- Cap memory (default 85% of V8 heap limit): `npx -y inkcheck story/main.ink --max-memory 2048`
 - MCP (Claude Code): `claude mcp add inkcheck -- npx -y inkcheck mcp`
 - MCP config: `{ "mcpServers": { "inkcheck": { "command": "npx", "args": ["-y", "inkcheck", "mcp"] } } }`
 - Self-hosted web service: `inkcheck-web` or `npm run web` (temporary upload; local CLI remains private by default)
@@ -55,7 +56,8 @@ Not a writing tool, not an authoring aid, and not an AI system. It generates zer
 - `--max-states` is the total exploration budget across portfolio passes, not a single DFS count.
 - Inkcheck is systematic and reproducible inside its budget; the built-in seeded random-sampling slice is itself reproducible, and rerunning with other `--seed` values samples different early-choice combinations. External random sampling can still be complementary for very large or random-heavy stories.
 - The beam pass caps its frontier at a fixed width and marks the run truncated whenever it prunes a reachable state, so bounded memory never turns into a silent completeness claim.
-- Truncation means the report is partial; strict mode fails. `truncatedBy` in JSON names the limit that cut coverage (maxDepth, maxStates, or the beam frontier cap) so tooling can raise the right flag.
+- Truncation means the report is partial; strict mode fails. `truncatedBy` in JSON names the limit that cut coverage (maxDepth, maxStates, the beam frontier cap, or memory) so tooling can raise the right flag.
+- A run that would run out of memory stops cleanly before the (uncatchable) V8 OOM and returns a partial report with `truncatedBy.memory`; the cap defaults to 85% of the V8 heap limit and is overridable with `--max-memory <mb>`. On a memory stop, `nextRun` recommends `investigate` (raise --max-old-space-size or lower --max-states), never `broaden`.
 - `exhaustive: true` means a systematic pass visited every reachable state without hitting a limit; sampling-slice budget exhaustion does not count as truncation in that case.
 - Unvisited knots carry `inboundDiverts` and `staticOrphanCandidate` triage hints: no authored divert found = possible orphan; inbound diverts present = likely cut off by this run's limits.
 - EXTERNAL functions are stubbed to zero and named in the report; strict mode fails.

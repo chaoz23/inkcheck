@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import * as v8 from "v8";
 import {
   CompileResult,
   KnotInfo,
@@ -41,6 +42,7 @@ Options:
   --max-depth <n>    Max choices deep to explore, 1–1000 (default 30)
   --max-states <n>   Max story states to visit, 1–1000000 (default 100000)
   --seed <n>         Seed for the random-sampling slice, 1–4294967295 (default 1)
+  --max-memory <mb>  Stop cleanly before heap use exceeds <mb> (default: 85% of the V8 heap limit)
   --profile          Print the story's shape profile and suggested settings, without exploring
   --auto             Apply the shape profile: suggested depth (unless --max-depth given) and pass weights
   --next             After the check, apply the recommended escalation automatically (up to 3 reruns)
@@ -73,6 +75,7 @@ async function main() {
   let auto = false;
   let followNext = false;
   let progressMode: "auto" | "human" | "ndjson" | "off" = process.stderr.isTTY ? "auto" : "off";
+  let maxMemoryMb: number | undefined;
   const boundedInt = (flag: string, raw: string | undefined, max: number): number => {
     const value = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
     if (!Number.isSafeInteger(value) || value < 1 || value > max) {
@@ -85,6 +88,7 @@ async function main() {
     if (arg === "--max-depth") maxDepth = boundedInt(arg, args[++i], 1_000);
     else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 1_000_000);
     else if (arg === "--seed") seed = boundedInt(arg, args[++i], 4_294_967_295);
+    else if (arg === "--max-memory") maxMemoryMb = boundedInt(arg, args[++i], 1_000_000);
     else if (arg === "--profile") profileOnly = true;
     else if (arg === "--auto") auto = true;
     else if (arg === "--next") followNext = true;
@@ -194,6 +198,15 @@ async function main() {
   const adviceProfile = profile ?? scanShapeProfile(file);
   emitProgress("phase_end", { phase: "source_scan" });
 
+  // Memory guard: a V8 heap OOM cannot be caught after the fact, so stop
+  // cleanly before it. The cap is an explicit --max-memory, or 85% of the
+  // V8 old-space limit (which honors any --max-old-space-size the user set).
+  const heapLimit = v8.getHeapStatistics().heap_size_limit;
+  const memoryCapBytes = maxMemoryMb !== undefined
+    ? maxMemoryMb * 1024 * 1024
+    : Math.floor(heapLimit * 0.85);
+  const memoryGuard = () => process.memoryUsage().heapUsed < memoryCapBytes;
+
   const runCheck = (bounds: { maxDepth?: number; maxStates?: number; seed?: number }): ExploreResult => {
     const runStates = bounds.maxStates ?? 100_000;
     const reproStates = minRepro && runStates > 1 ? Math.max(1, Math.floor(runStates * 0.1)) : 0;
@@ -207,6 +220,7 @@ async function main() {
       maxStates: Math.max(1, portfolioStates),
       seed: bounds.seed,
       weights: profile?.suggested.weights,
+      memoryGuard,
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
@@ -228,6 +242,7 @@ async function main() {
         maxDepth: bounds.maxDepth,
         maxStates: reproStates,
         strategy: "bfs",
+        memoryGuard,
         preserveTurnState: semantics.usesTurns,
         preserveRandomState: semantics.usesRandomness,
         randomnessDetected: semantics.usesRandomness,
@@ -365,7 +380,11 @@ async function main() {
         `⚠ random behavior detected; exploration follows reachable RNG states but does not enumerate every possible seed`
       );
     }
-    if (report.truncated) {
+    if (report.truncatedBy.memory) {
+      console.log(
+        `⚠ stopped early at ${report.statesExplored} states to stay under the memory guard (${Math.round(memoryCapBytes / 1048576)} MB) — the results above are partial but complete as far as they go`
+      );
+    } else if (report.truncated) {
       console.log(`⚠ coverage is partial, not a proof — ${truncationAdvice(report)}`);
     }
     if (advice.recommendation === "deepen" || advice.recommendation === "broaden" || advice.recommendation === "reseed") {
