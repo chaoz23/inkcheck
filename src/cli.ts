@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import {
   CompileResult,
+  StoryShapeProfile,
   compile,
   stats,
   scanKnots,
   scanExternals,
   scanInboundDiverts,
+  scanShapeProfile,
   scanStorySemantics,
 } from "./inklecate";
 import {
@@ -34,6 +36,8 @@ Options:
   --max-depth <n>    Max choices deep to explore, 1–1000 (default 30)
   --max-states <n>   Max story states to visit, 1–1000000 (default 100000)
   --seed <n>         Seed for the random-sampling slice, 1–4294967295 (default 1)
+  --profile          Print the story's shape profile and suggested settings, without exploring
+  --auto             Apply the shape profile: suggested depth (unless --max-depth given) and pass weights
   --no-min-repro     Skip the small breadth-first repro-shortening slice
   --strict           Also fail on warnings, unvisited knots, truncation, or external stubs
   --human            Emit a prioritized human-readable fix list
@@ -58,6 +62,8 @@ async function main() {
   let asMarkdown = false;
   let asHuman = false;
   let minRepro = true;
+  let profileOnly = false;
+  let auto = false;
   const boundedInt = (flag: string, raw: string | undefined, max: number): number => {
     const value = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
     if (!Number.isSafeInteger(value) || value < 1 || value > max) {
@@ -70,6 +76,8 @@ async function main() {
     if (arg === "--max-depth") maxDepth = boundedInt(arg, args[++i], 1_000);
     else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 1_000_000);
     else if (arg === "--seed") seed = boundedInt(arg, args[++i], 4_294_967_295);
+    else if (arg === "--profile") profileOnly = true;
+    else if (arg === "--auto") auto = true;
     else if (arg === "--strict") strict = true;
     else if (arg === "--human") asHuman = true;
     else if (arg === "--json") asJson = true;
@@ -83,6 +91,24 @@ async function main() {
   if ([asJson, asMarkdown, asHuman].filter(Boolean).length > 1) {
     usage("--json, --markdown, and --human cannot be used together");
   }
+
+  if (profileOnly) {
+    const profile = scanShapeProfile(file);
+    if (asJson) {
+      console.log(JSON.stringify({ profile }, null, 2));
+    } else {
+      console.log(renderProfile(file, profile, maxDepth));
+    }
+    return;
+  }
+
+  const profile = auto ? scanShapeProfile(file) : undefined;
+  // Explicit flags always win over the profile; --auto never lowers a limit.
+  const autoDepth =
+    profile && maxDepth === undefined && profile.suggested.maxDepth > 30
+      ? profile.suggested.maxDepth
+      : undefined;
+  if (autoDepth !== undefined) maxDepth = autoDepth;
 
   const compiled = await compile(file);
 
@@ -112,6 +138,7 @@ async function main() {
     maxDepth,
     maxStates: Math.max(1, portfolioStates),
     seed,
+    weights: profile?.suggested.weights,
     preserveTurnState: semantics.usesTurns,
     preserveRandomState: semantics.usesRandomness,
     randomnessDetected: semantics.usesRandomness,
@@ -130,7 +157,12 @@ async function main() {
   }
   classifyUnvisitedKnots(report, scanInboundDiverts(file));
 
-  const outputReport = { compile: { ...compiled, storyJson: undefined }, stats: st, explore: report };
+  const outputReport = {
+    compile: { ...compiled, storyJson: undefined },
+    stats: st,
+    ...(profile ? { profile } : {}),
+    explore: report,
+  };
   if (asJson) {
     console.log(
       JSON.stringify(
@@ -148,6 +180,13 @@ async function main() {
       `✓ compiled — ${st.words ?? "?"} words, ${st.knots ?? knots.length} knots, ${st.choices ?? "?"} choices`
     );
     for (const i of compiled.issues) console.log(`  ${i.raw}`);
+    if (profile) {
+      const w = profile.suggested.weights;
+      console.log(
+        `⚙ auto: shape profile applied — depth ${maxDepth ?? 30}${autoDepth !== undefined ? " (raised from 30)" : ""}, weights dfs ${Math.round((w.last + w.first + w.insideOut) * 100)}% / beam ${Math.round(w.beam * 100)}% / random ${Math.round(w.random * 100)}%`
+      );
+      for (const reason of profile.suggested.rationale) console.log(`    ${reason}`);
+    }
     const limitParts = [
       `depth ${report.limits.maxDepth}`,
       `${report.limits.maxStates} states`,
@@ -210,6 +249,26 @@ async function main() {
 
 function escapeCell(value: unknown): string {
   return String(value).replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+}
+
+function renderProfile(file: string, profile: StoryShapeProfile, userMaxDepth?: number): string {
+  const w = profile.suggested.weights;
+  const lines = [
+    `Story shape profile for ${file} (static scan; no exploration run)`,
+    "",
+    `  knots: ${profile.knots} (+${profile.functions} function(s))`,
+    `  variables: ${profile.variables}, assignments: ${profile.varAssignments} (${Math.round(profile.earlyAssignmentShare * 100)}% in the first third)`,
+    `  choice lines: ${profile.choiceLines}`,
+    `  longest divert path: ${profile.longestKnotPath} knot(s), ~${profile.choiceDepthEstimate} choice point(s)${profile.hasCycles ? " — loops present, so this is a lower bound" : ""}`,
+    "",
+    "Suggested settings (apply with --auto):",
+    `  --max-depth ${userMaxDepth ?? profile.suggested.maxDepth}${userMaxDepth !== undefined ? " (your flag wins over the profile)" : ""}`,
+    `  pass weights: dfs:last ${Math.round(w.last * 100)}% / dfs:first ${Math.round(w.first * 100)}% / dfs:inside-out ${Math.round(w.insideOut * 100)}% / beam ${Math.round(w.beam * 100)}% / random ${Math.round(w.random * 100)}%`,
+    "",
+    "Why:",
+    ...profile.suggested.rationale.map((reason) => `  - ${reason}`),
+  ];
+  return lines.join("\n");
 }
 
 function humanLocation(file: string, line: number | null | undefined): string {

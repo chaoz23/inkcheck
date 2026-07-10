@@ -281,6 +281,251 @@ export function scanInboundDiverts(
   return counts;
 }
 
+export interface StoryShapeProfile {
+  knots: number;
+  functions: number;
+  variables: number;
+  varAssignments: number;
+  /** Share of variable assignments in the first third of the (flattened) source. */
+  earlyAssignmentShare: number;
+  /** Total authored choice lines. */
+  choiceLines: number;
+  /** True when the knot divert graph contains a cycle. */
+  hasCycles: boolean;
+  /** Knots along the longest cycle-free divert path from the story start. */
+  longestKnotPath: number;
+  /**
+   * Choice-bearing knots along that path — a static lower bound on how many
+   * choices deep a playthrough can go (loops and gathers can go deeper).
+   */
+  choiceDepthEstimate: number;
+  suggested: {
+    maxDepth: number;
+    weights: { last: number; first: number; insideOut: number; beam: number; random: number };
+    rationale: string[];
+  };
+}
+
+interface KnotSegment {
+  name: string; // "(root)" for pre-knot content
+  isFunction: boolean;
+  choiceLines: number;
+  divertTargets: string[];
+}
+
+function collectSegments(
+  inkFile: string,
+  seen: Set<string>,
+  segments: KnotSegment[],
+  counters: { variables: number },
+  flattenedLines: string[],
+  assignmentPositions: number[]
+): void {
+  const abs = path.resolve(inkFile);
+  if (seen.has(abs) || !fs.existsSync(abs)) return;
+  seen.add(abs);
+  const source = fs.readFileSync(abs, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const rawLine of source.split(/\r?\n/)) {
+    const code = rawLine.replace(/\/\/.*$/, "");
+    const inc = code.match(/^\s*INCLUDE\s+(.+?)\s*$/);
+    if (inc) {
+      collectSegments(
+        path.join(path.dirname(abs), inc[1]),
+        seen,
+        segments,
+        counters,
+        flattenedLines,
+        assignmentPositions
+      );
+      continue;
+    }
+    flattenedLines.push(code);
+    const knot = code.match(/^\s*={2,}\s*(function\s+)?([A-Za-z_][A-Za-z0-9_]*)/);
+    if (knot) {
+      segments.push({ name: knot[2], isFunction: !!knot[1], choiceLines: 0, divertTargets: [] });
+      continue;
+    }
+    const current = segments[segments.length - 1];
+    if (/^\s*VAR\s+[A-Za-z_]/.test(code)) counters.variables++;
+    if (/^\s*~\s*(temp\s+)?[A-Za-z_][A-Za-z0-9_]*\s*(=[^=]|\+=|-=|\+\+|--)/.test(code)) {
+      assignmentPositions.push(flattenedLines.length);
+    }
+    if (/^\s*[*+]/.test(code)) current.choiceLines++;
+    for (const match of code.matchAll(/(?:->|<-)\s*([A-Za-z_][A-Za-z0-9_.]*)/g)) {
+      current.divertTargets.push(match[1].split(".")[0]);
+    }
+  }
+}
+
+/**
+ * Cheap static profile of a story's shape (issue #27), used to pick better
+ * default limits and portfolio weights before the first exploration state is
+ * spent. Heuristic by design: the depth estimate is a lower bound (loops and
+ * gathers deepen real playthroughs), and assignment positions are measured
+ * over the include-flattened source. Deterministic and source-only — no
+ * compilation or story execution.
+ */
+export function scanShapeProfile(inkFile: string): StoryShapeProfile {
+  const segments: KnotSegment[] = [
+    { name: "(root)", isFunction: false, choiceLines: 0, divertTargets: [] },
+  ];
+  const counters = { variables: 0 };
+  const flattenedLines: string[] = [];
+  const assignmentPositions: number[] = [];
+  collectSegments(inkFile, new Set(), segments, counters, flattenedLines, assignmentPositions);
+  const totalLines = Math.max(1, flattenedLines.length);
+
+  const knots = segments.filter((seg) => seg.name !== "(root)" && !seg.isFunction);
+  const functions = segments.filter((seg) => seg.isFunction).length;
+  const knownKnots = new Set(knots.map((k) => k.name));
+
+  // Build the divert graph over "(root)" + non-function knots.
+  const nodes = ["(root)", ...knots.map((k) => k.name)];
+  const nodeIndex = new Map(nodes.map((name, i) => [name, i]));
+  const weight = nodes.map((name) => {
+    const seg = segments.find((sg) => sg.name === name && !sg.isFunction);
+    return seg && seg.choiceLines > 0 ? 1 : 0;
+  });
+  const edges: number[][] = nodes.map(() => []);
+  for (const seg of segments) {
+    if (seg.isFunction) continue;
+    const from = nodeIndex.get(seg.name);
+    if (from === undefined) continue;
+    for (const target of seg.divertTargets) {
+      const to = nodeIndex.get(target);
+      if (to !== undefined && knownKnots.has(target)) edges[from].push(to);
+    }
+  }
+
+  // Tarjan strongly connected components (iterative), then longest path on
+  // the condensation DAG weighted by choice-bearing knots per component.
+  const n = nodes.length;
+  const index = new Array<number>(n).fill(-1);
+  const low = new Array<number>(n).fill(0);
+  const onStack = new Array<boolean>(n).fill(false);
+  const stack: number[] = [];
+  const comp = new Array<number>(n).fill(-1);
+  let nextIndex = 0;
+  let compCount = 0;
+  let hasCycles = false;
+  for (let start = 0; start < n; start++) {
+    if (index[start] !== -1) continue;
+    const work: { v: number; edgeIdx: number }[] = [{ v: start, edgeIdx: 0 }];
+    while (work.length) {
+      const frame = work[work.length - 1];
+      const v = frame.v;
+      if (frame.edgeIdx === 0) {
+        index[v] = low[v] = nextIndex++;
+        stack.push(v);
+        onStack[v] = true;
+      }
+      let advanced = false;
+      while (frame.edgeIdx < edges[v].length) {
+        const w = edges[v][frame.edgeIdx++];
+        if (w === v) hasCycles = true; // self-loop
+        if (index[w] === -1) {
+          work.push({ v: w, edgeIdx: 0 });
+          advanced = true;
+          break;
+        }
+        if (onStack[w]) low[v] = Math.min(low[v], index[w]);
+      }
+      if (advanced) continue;
+      if (low[v] === index[v]) {
+        let member = -1;
+        let size = 0;
+        do {
+          member = stack.pop()!;
+          onStack[member] = false;
+          comp[member] = compCount;
+          size++;
+        } while (member !== v);
+        if (size > 1) hasCycles = true;
+        compCount++;
+      }
+      work.pop();
+      if (work.length) {
+        const parent = work[work.length - 1];
+        low[parent.v] = Math.min(low[parent.v], low[v]);
+      }
+    }
+  }
+  const compWeight = new Array<number>(compCount).fill(0);
+  const compSize = new Array<number>(compCount).fill(0);
+  for (let v = 0; v < n; v++) {
+    compWeight[comp[v]] += weight[v];
+    compSize[comp[v]] += 1;
+  }
+  const compEdges: Set<number>[] = Array.from({ length: compCount }, () => new Set());
+  for (let v = 0; v < n; v++) {
+    for (const w of edges[v]) {
+      if (comp[v] !== comp[w]) compEdges[comp[v]].add(comp[w]);
+    }
+  }
+  // Tarjan numbers components in reverse topological order, so iterating
+  // components in increasing order visits successors before predecessors.
+  const bestWeight = new Array<number>(compCount).fill(0);
+  const bestSize = new Array<number>(compCount).fill(0);
+  for (let c = 0; c < compCount; c++) {
+    let maxW = 0;
+    let maxS = 0;
+    for (const next of compEdges[c]) {
+      if (bestWeight[next] > maxW) maxW = bestWeight[next];
+      if (bestSize[next] > maxS) maxS = bestSize[next];
+    }
+    bestWeight[c] = compWeight[c] + maxW;
+    bestSize[c] = compSize[c] + maxS;
+  }
+  const rootComp = comp[0];
+  const choiceDepthEstimate = bestWeight[rootComp];
+  const longestKnotPath = bestSize[rootComp];
+
+  const choiceLines = segments.reduce((sum, seg) => sum + (seg.isFunction ? 0 : seg.choiceLines), 0);
+  const varAssignments = assignmentPositions.length;
+  const earlyAssignmentShare =
+    varAssignments === 0
+      ? 0
+      : assignmentPositions.filter((line) => line <= totalLines / 3).length / varAssignments;
+
+  const rationale: string[] = [];
+  const suggestedMaxDepth = Math.min(1000, Math.max(30, choiceDepthEstimate * 2));
+  if (suggestedMaxDepth > 30) {
+    rationale.push(
+      `static divert paths pass ${choiceDepthEstimate} choice-bearing knots, so the default depth of 30 would cut them off; suggesting ${suggestedMaxDepth} with headroom`
+    );
+  }
+  if (hasCycles) {
+    rationale.push("the story has loops, so the static depth estimate is a lower bound");
+  }
+  let weights = { last: 0.195, first: 0.195, insideOut: 0.26, beam: 0.15, random: 0.2 };
+  if (counters.variables === 0) {
+    weights = { last: 0.3, first: 0.3, insideOut: 0.4, beam: 0, random: 0 };
+    rationale.push(
+      "no variables: distinct early-choice state combinations are impossible, so the deterministic DFS orderings cover the space best"
+    );
+  } else if (earlyAssignmentShare >= 0.5 && counters.variables >= 3 && varAssignments >= 3) {
+    weights = { last: 0.125, first: 0.125, insideOut: 0.15, beam: 0.25, random: 0.35 };
+    rationale.push(
+      `${Math.round(earlyAssignmentShare * 100)}% of variable assignments happen in the first third of the story, so early-choice state combinations matter; weighting the diversity beam and random sampling up`
+    );
+  } else {
+    rationale.push("no strong shape signal; keeping the default portfolio split");
+  }
+
+  return {
+    knots: knots.length,
+    functions,
+    variables: counters.variables,
+    varAssignments,
+    earlyAssignmentShare,
+    choiceLines,
+    hasCycles,
+    longestKnotPath,
+    choiceDepthEstimate,
+    suggested: { maxDepth: suggestedMaxDepth, weights, rationale },
+  };
+}
+
 /** Scan ink source (following INCLUDEs) for EXTERNAL function declarations. */
 export function scanExternals(inkFile: string, seen: Set<string> = new Set()): string[] {
   const abs = path.resolve(inkFile);

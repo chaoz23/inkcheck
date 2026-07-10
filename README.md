@@ -128,7 +128,7 @@ The intended loop for an agent editing a story: edit `.ink` → `compile_story` 
 ## CLI
 
 ```
-inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--no-min-repro] [--strict] [--human|--json|--markdown]
+inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--auto] [--profile] [--no-min-repro] [--strict] [--human|--json|--markdown]
 inkcheck mcp    # start the MCP server on stdio
 ```
 
@@ -137,6 +137,8 @@ inkcheck mcp    # start the MCP server on stdio
 `--max-states` is a total budget for the run, not a promise that one single DFS walk will spend all states. By default the CLI divides most of that budget across three complementary DFS views of the choice tree plus a seeded random-sampling slice, and keeps a small breadth-first slice for shorter failure and ending repro paths. Use `--no-min-repro` to spend that repro slice on the DFS portfolio instead when breadth-first shortening is less important than broader search.
 
 `--seed` (default 1) controls the random-sampling slice. The same seed always samples the same walks, so CI results stay reproducible; change the seed across scheduled runs to sample different early-choice combinations over time. Each finding's `foundBy` field in `--json` output names the pass that discovered it, e.g. `dfs:last` or `random:seed=1`.
+
+`--profile` prints a cheap static shape profile of the story — variables and where they are assigned, choice density, the longest divert path — plus the depth limit and pass weights inkcheck would choose for that shape, without running any exploration. `--auto` applies those suggestions: it raises `--max-depth` when static divert paths outrun the default (never lowers it, and your explicit flags always win) and hands the profile's pass weights to the portfolio. On a story whose main path is 40 choices deep, default settings find nothing while `--auto` reaches the ending and proves the story exhaustive in ~111 states.
 
 GitHub Actions:
 
@@ -174,7 +176,8 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 
 - **Compilation** uses `inklecate`, the canonical compiler — found via `$INKLECATE_PATH`, then `PATH`, then auto-downloaded from the pinned official ink 1.2.1 release into `~/.cache/inkcheck` on first run. Downloaded archives are verified against pinned SHA-256 hashes before extraction. Stories are compiled with `-c` so all knot visits are counted.
 - **Exploration** runs the compiled story in [inkjs](https://github.com/y-lohse/inkjs) (the official JS runtime port), reusing pooled story instances so the compiled JSON is parsed once per pass and states rewind via `LoadJson`. States are deduplicated by content hash. Turn and RNG state are preserved whenever the source uses those features; otherwise that bookkeeping is safely canonicalized so ordinary loops can converge. `INCLUDE`s are followed.
-- The CLI uses a bounded portfolio search: roughly 20% last-choice-first DFS, 20% first-choice-first DFS, 26% inside-out DFS, 15% diversity-first beam search, and 20% seeded random walks. The passes are complementary: the DFS orderings systematically exhaust subtrees (one ordering may find a runtime error another misses), the beam spreads budget across every variable-state lineage level-by-level within a hard frontier cap, and the random walks re-roll every choice point so early-choice state combinations get sampled instead of repeated. Their findings are merged into one report, each labeled with the pass that found it.
+- The CLI uses a bounded, adaptive portfolio search. Complementary passes — last-choice-first, first-choice-first, and inside-out DFS, a diversity-first beam, and seeded random walks — run interleaved in ten deterministic rounds. Initial weights (roughly 20/20/26/15/20%, or a shape profile's suggestion under `--auto`) are reallocated each round toward passes whose findings are still growing, with a guaranteed floor per pass so a discovery dry spell never defunds a pass outright. The passes are complementary: the DFS orderings systematically exhaust subtrees, the beam spreads budget across every variable-state lineage within a hard frontier cap, and the random walks re-roll every choice point so early-choice state combinations get sampled instead of repeated. Findings merge into one report, each labeled with the pass that found it, and the executed schedule appears in `--json` output.
+- The moment any systematic pass visits every reachable state without hitting a limit, the whole portfolio stops: every further state would be redundant. A small fully-explorable story at the default 100,000-state budget now finishes in the handful of states it actually has.
 - The beam pass answers "what should a beam optimize for" concretely: survivors are selected round-robin across variable-signature groups (diversity first), ranked within each group by novelty — newly visited knots, then new variable signatures, then new offered-choice sets. It is deterministic without a seed, and it reports the run as truncated whenever it had to prune a reachable state, so a beam never silently claims complete coverage.
 - Unless skipped with `--no-min-repro`, the CLI reserves about 10% of the requested `--max-states` budget for a breadth-first repro-shortening slice. BFS reaches shared findings by shorter choice trails where possible and may contribute extra shallow findings.
 - Bounds (`--max-depth`, `--max-states`) keep worst-case combinatorics in check; the report says explicitly when it was truncated.
