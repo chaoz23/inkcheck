@@ -14,6 +14,7 @@ const {
   explore,
   explorePortfolio,
   exploreRandom,
+  exploreBeam,
   playtest,
   mergeMinRepro,
   stateKey,
@@ -142,6 +143,53 @@ test("portfolio covers early-choice state combinations via the random slice", as
   const strategies = new Set(report.endingsFound.map((e) => e.foundBy));
   assert.ok(strategies.has("random:seed=1"), "random slice contributed findings");
   assert.ok([...strategies].some((s) => s.startsWith("dfs:")), "dfs passes contributed findings");
+});
+
+// Issue #21: the beam keeps at most beamWidth states per depth level,
+// selected round-robin across variable-signature groups so no lineage is
+// starved out. Deterministic without a seed: ties keep discovery order.
+test("beam search covers early-choice state combinations without a seed", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  const report = exploreBeam(compiled.storyJson, knots, [], { maxStates: 2500 });
+  const labels = new Set(report.endingsFound.map((e) => e.finalText.trim()));
+  for (let n = 1; n <= 7; n++) {
+    assert.ok(labels.has(`Ending ${n}`), `Ending ${n} not found`);
+  }
+  // The beam pruned reachable states, so it must not claim completeness.
+  assert.strictEqual(report.truncated, true);
+  assert.ok(report.endingsFound.every((e) => e.foundBy === "beam:w=64"));
+});
+
+test("beam search is deterministic and diversity survives a narrow width", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  const a = exploreBeam(compiled.storyJson, knots, [], { maxStates: 2500 });
+  const b = exploreBeam(compiled.storyJson, knots, [], { maxStates: 2500 });
+  assert.deepStrictEqual(a.endingsFound, b.endingsFound);
+  assert.deepStrictEqual(a.visitedKnots.sort(), b.visitedKnots.sort());
+  // Round-robin selection keeps one state per variable-signature group, so
+  // even a width-8 beam reaches every gated ending on this fixture.
+  const narrow = exploreBeam(compiled.storyJson, knots, [], { maxStates: 2500, beamWidth: 8 });
+  const labels = new Set(narrow.endingsFound.map((e) => e.finalText.trim()));
+  for (let n = 1; n <= 7; n++) {
+    assert.ok(labels.has(`Ending ${n}`), `Ending ${n} not found at width 8`);
+  }
+});
+
+test("beam search that never prunes matches DFS findings and reports completeness", async () => {
+  const compiled = await compile(MANOR);
+  const knots = scanKnots(MANOR);
+  const beam = exploreBeam(compiled.storyJson, knots, [], { maxStates: 500 });
+  const dfs = explore(compiled.storyJson, knots);
+  assert.strictEqual(beam.endingsFound.length, dfs.endingsFound.length);
+  assert.strictEqual(beam.runtimeErrors.length, 1);
+  assert.ok(beam.runtimeErrors[0].path.length > 0);
+  assert.strictEqual(beam.truncated, false);
+  assert.throws(
+    () => exploreBeam(compiled.storyJson, knots, [], { beamWidth: 0 }),
+    /beamWidth must be an integer/
+  );
 });
 
 test("random exploration reports runtime errors with a repro path and seed", async () => {

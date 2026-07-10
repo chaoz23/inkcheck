@@ -267,9 +267,12 @@ export interface ExploreOptions {
   randomnessDetected?: boolean;
   /** PRNG seed for the random-sampling pass; fixed default keeps CI reproducible. */
   seed?: number;
+  /** Frontier cap per depth level for the novelty beam pass. Default 64. */
+  beamWidth?: number;
 }
 
 export const DEFAULT_RANDOM_SEED = 1;
+export const DEFAULT_BEAM_WIDTH = 64;
 
 /**
  * Bounded systematic walk of the story's choice tree. Reports every
@@ -611,6 +614,225 @@ export function exploreRandom(
   return result();
 }
 
+/**
+ * Frontier-capped breadth-first search with diversity-first selection.
+ * Expands the whole frontier one choice level at a time like BFS, but keeps
+ * at most `beamWidth` states per level. Survivors are picked round-robin
+ * across variable-signature groups so that no story-state lineage can be
+ * starved out by another lineage's siblings; within a group, children are
+ * ranked by novelty (newly visited knots weigh 8 each, a new variable
+ * signature 4, a new offered-choice set 2). This spreads budget across
+ * early-choice prefixes the way BFS does while bounding the frontier memory
+ * that makes naive BFS impractical on large stories. Fully deterministic
+ * without a seed: ties keep discovery order. Whenever the beam prunes a
+ * reachable child the result is marked truncated, because a pruning beam
+ * never proves exhaustive coverage.
+ */
+export function exploreBeam(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {}
+): ExploreResult {
+  const maxDepth = opts.maxDepth ?? 30;
+  const maxStates = opts.maxStates ?? 100_000;
+  const beamWidth = opts.beamWidth ?? DEFAULT_BEAM_WIDTH;
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
+    throw new RangeError("maxDepth must be an integer from 1 to 1000");
+  }
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 1_000_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 1000000");
+  }
+  if (!Number.isSafeInteger(beamWidth) || beamWidth < 1 || beamWidth > 10_000) {
+    throw new RangeError("beamWidth must be an integer from 1 to 10000");
+  }
+  const foundBy = `beam:w=${beamWidth}`;
+  const stateSensitivity = {
+    turns: opts.preserveTurnState ?? true,
+    randomness: opts.preserveRandomState ?? true,
+  };
+
+  const endings = new Map<string, EndingReport>();
+  const runtimeErrors = new Map<string, RuntimeErrorReport>();
+  const runtimeWarnings = new Set<string>();
+  const visitedKnots = new Set<string>();
+  const seenStates = new Set<string>();
+  const seenVarSignatures = new Set<string>();
+  const seenChoiceSets = new Set<string>();
+  let statesExplored = 0;
+  let truncated = false;
+
+  const nonFunctionKnots = knots.filter((k) => !k.isFunction);
+  const recordKnotCoverage = (session: StorySession) => {
+    for (const k of nonFunctionKnots) {
+      if (visitedKnots.has(k.name)) continue;
+      try {
+        if (session.story.state.VisitCountAtPathString(k.name) > 0) visitedKnots.add(k.name);
+      } catch {
+        /* path not addressable */
+      }
+    }
+  };
+
+  const s = makeStory(storyJson, externals);
+  const resetSession = () => {
+    s.errors.length = 0;
+    s.warnings.length = 0;
+  };
+
+  const rootStep = continueMaximally(s);
+  s.errors.forEach((e) =>
+    runtimeErrors.set(e, { message: e, path: [], sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
+  );
+  s.warnings.forEach((w) => runtimeWarnings.add(w));
+  recordKnotCoverage(s);
+
+  const result = (): ExploreResult => ({
+    statesExplored,
+    endingsFound: [...endings.values()],
+    runtimeErrors: [...runtimeErrors.values()],
+    runtimeWarnings: [...runtimeWarnings],
+    unvisitedKnots: nonFunctionKnots
+      .filter((k) => !visitedKnots.has(k.name))
+      .map(({ name, file, line }) => ({ name, file, line })),
+    visitedKnots: [...visitedKnots],
+    externalFunctionsStubbed: [...externals],
+    randomnessDetected: opts.randomnessDetected ?? false,
+    truncated,
+    limits: { maxDepth, maxStates },
+  });
+
+  if (rootStep.choicesOffered.length === 0) {
+    // Linear story (or immediate end).
+    if (s.errors.length === 0) {
+      endings.set(rootStep.text, {
+        path: [],
+        finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
+        variables: extractVariables(s.story),
+        foundBy,
+      });
+    }
+    return result();
+  }
+
+  const rootState = s.story.state.ToJson();
+  seenStates.add(stateKey(rootState, stateSensitivity));
+  seenVarSignatures.add(JSON.stringify(extractVariables(s.story)));
+  seenChoiceSets.add(rootStep.choicesOffered.slice().sort().join(""));
+
+  interface BeamFrame {
+    stateJson: string;
+    path: string[];
+  }
+  let frontier: BeamFrame[] = [{ stateJson: rootState, path: [] }];
+
+  outer: while (frontier.length > 0) {
+    const children: { frame: BeamFrame; score: number; varSig: string }[] = [];
+    for (const frame of frontier) {
+      resetSession();
+      s.story.state.LoadJson(frame.stateJson);
+      const numChoices = s.story.currentChoices.length;
+      for (let i = 0; i < numChoices; i++) {
+        if (statesExplored >= maxStates) {
+          truncated = true;
+          break outer;
+        }
+        resetSession();
+        s.story.state.LoadJson(frame.stateJson);
+        const choice = s.story.currentChoices[i] as { text?: string; sourcePath?: string } | undefined;
+        const choiceText = choice?.text ?? `#${i}`;
+        const path = [...frame.path, choiceText];
+        const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
+        try {
+          s.story.ChooseChoiceIndex(i);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (!runtimeErrors.has(msg)) {
+            runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+          }
+          continue;
+        }
+        const step = continueMaximally(s);
+        statesExplored++;
+        const knotsBefore = visitedKnots.size;
+        s.errors.forEach((msg) => {
+          if (!runtimeErrors.has(msg)) {
+            runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+          }
+        });
+        s.warnings.forEach((w) => runtimeWarnings.add(w));
+        recordKnotCoverage(s);
+        const newKnots = visitedKnots.size - knotsBefore;
+        if (s.errors.length > 0) continue;
+
+        const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
+        if (ended) {
+          const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
+          const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
+          if (!endings.has(key)) {
+            endings.set(key, { path, finalText, variables: extractVariables(s.story), foundBy });
+          }
+          continue;
+        }
+        if (path.length >= maxDepth) {
+          truncated = true;
+          continue;
+        }
+        const nextState = s.story.state.ToJson();
+        const key = stateKey(nextState, stateSensitivity);
+        if (seenStates.has(key)) continue; // identical state: subtree already covered
+        seenStates.add(key);
+
+        const varSig = JSON.stringify(extractVariables(s.story));
+        const choiceSet = s.story.currentChoices
+          .map((c: { text: string }) => c.text)
+          .sort()
+          .join("");
+        let score = newKnots * 8;
+        if (!seenVarSignatures.has(varSig)) {
+          score += 4;
+          seenVarSignatures.add(varSig);
+        }
+        if (!seenChoiceSets.has(choiceSet)) {
+          score += 2;
+          seenChoiceSets.add(choiceSet);
+        }
+        children.push({ frame: { stateJson: nextState, path }, score, varSig });
+      }
+    }
+    // Pruning discards reachable states, so the run can no longer claim
+    // exhaustive coverage even if the budget is never exhausted.
+    if (children.length > beamWidth) truncated = true;
+    // Diversity-first selection: round-robin across variable-signature
+    // groups (discovery order), novelty-ranked within each group, so one
+    // lineage's siblings cannot crowd every other lineage out of the beam.
+    const groups = new Map<string, typeof children>();
+    for (const child of children) {
+      const group = groups.get(child.varSig);
+      if (group) group.push(child);
+      else groups.set(child.varSig, [child]);
+    }
+    for (const group of groups.values()) {
+      group.sort((a, b) => b.score - a.score); // stable: ties keep discovery order
+    }
+    const selected: BeamFrame[] = [];
+    while (selected.length < beamWidth) {
+      let took = false;
+      for (const group of groups.values()) {
+        if (selected.length >= beamWidth) break;
+        const next = group.shift();
+        if (next) {
+          selected.push(next.frame);
+          took = true;
+        }
+      }
+      if (!took) break;
+    }
+    frontier = selected;
+  }
+  return result();
+}
+
 export function explorePortfolio(
   storyJson: string,
   knots: KnotInfo[],
@@ -624,9 +846,12 @@ export function explorePortfolio(
   if (maxStates === 1) return explore(storyJson, knots, externals, opts);
 
   // A seeded random-sampling slice varies early-choice prefixes that the
-  // deterministic DFS passes tend to repeat (see issues #20/#21).
+  // deterministic DFS passes tend to repeat (see issues #20/#21), and a
+  // frontier-capped novelty beam spreads budget level-by-level like BFS
+  // without its unbounded frontier memory (see issue #21).
+  const beamBudget = maxStates >= 10 ? Math.floor(maxStates * 0.15) : 0;
   const randomBudget = maxStates >= 5 ? Math.max(1, Math.floor(maxStates * 0.2)) : 0;
-  const dfsStates = maxStates - randomBudget;
+  const dfsStates = maxStates - randomBudget - beamBudget;
   const insideBudget = dfsStates >= 3 ? Math.max(1, Math.floor(dfsStates * 0.4)) : 0;
   const edgeBudget = dfsStates - insideBudget;
   const lastBudget = Math.ceil(edgeBudget / 2);
@@ -644,6 +869,11 @@ export function explorePortfolio(
       strategy: "dfs",
     })
   );
+  if (beamBudget > 0) {
+    results.push(
+      exploreBeam(storyJson, knots, externals, { ...shared, maxStates: beamBudget })
+    );
+  }
   if (randomBudget > 0) {
     results.push(
       exploreRandom(storyJson, knots, externals, { ...shared, maxStates: randomBudget })
