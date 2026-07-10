@@ -8,13 +8,16 @@ const {
   compile,
   scanKnots,
   scanExternals,
+  scanInboundDiverts,
   scanStorySemantics,
 } = require("../dist/inklecate");
+const { buildHumanFindings } = require("../dist/human-report");
 const {
   explore,
   explorePortfolio,
   exploreRandom,
   exploreBeam,
+  classifyUnvisitedKnots,
   playtest,
   mergeMinRepro,
   stateKey,
@@ -204,6 +207,100 @@ test("random exploration reports runtime errors with a repro path and seed", asy
   assert.strictEqual(err.foundBy, "random:seed=3");
   // Crashing walks must not be double-counted as endings.
   assert.ok(report.endingsFound.every((e) => e.finalText.length > 0));
+});
+
+// Issue #22: unvisited knots are triaged with an inbound-divert scan so
+// reports separate "possible orphan" from "probably beyond this run's limits".
+test("scanInboundDiverts counts authored divert targets, ignoring comments", () => {
+  const manor = scanInboundDiverts(MANOR);
+  assert.strictEqual(manor.treasure_vault ?? 0, 0);
+  assert.ok((manor.entrance ?? 0) >= 1);
+  const grid = scanInboundDiverts(EARLY_CHOICE_GRID);
+  assert.strictEqual(grid.ending7, 1);
+  assert.strictEqual(grid.c15, 3);
+});
+
+test("unvisited knots are classified as orphan candidates or limit-bound", async () => {
+  const compiled = await compile(MANOR);
+  const report = classifyUnvisitedKnots(
+    explore(compiled.storyJson, scanKnots(MANOR)),
+    scanInboundDiverts(MANOR)
+  );
+  const vault = report.unvisitedKnots.find((k) => k.name === "treasure_vault");
+  assert.strictEqual(vault.staticOrphanCandidate, true);
+  assert.strictEqual(vault.inboundDiverts, 0);
+
+  const gridCompiled = await compile(EARLY_CHOICE_GRID);
+  const shallow = classifyUnvisitedKnots(
+    explore(gridCompiled.storyJson, scanKnots(EARLY_CHOICE_GRID), [], { maxDepth: 5, maxStates: 2000 }),
+    scanInboundDiverts(EARLY_CHOICE_GRID)
+  );
+  const ending = shallow.unvisitedKnots.find((k) => k.name === "ending7");
+  assert.strictEqual(ending.staticOrphanCandidate, false);
+  assert.strictEqual(ending.inboundDiverts, 1);
+
+  const findings = buildHumanFindings({ explore: shallow });
+  const endingFinding = findings.find((f) => f.title.includes("ending7"));
+  assert.match(endingFinding.action, /--max-depth/);
+  const vaultFinding = buildHumanFindings({ explore: report }).find((f) =>
+    f.title.includes("treasure_vault")
+  );
+  assert.match(vaultFinding.message, /No authored divert/);
+});
+
+test("truncatedBy names the limit that actually cut coverage", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  const depthBound = explore(compiled.storyJson, knots, [], { maxDepth: 5, maxStates: 2000 });
+  assert.strictEqual(depthBound.truncatedBy.maxDepth, true);
+  assert.strictEqual(depthBound.truncatedBy.maxStates, false);
+  const stateBound = explore(compiled.storyJson, knots, [], { maxDepth: 30, maxStates: 3 });
+  assert.strictEqual(stateBound.truncatedBy.maxStates, true);
+  assert.strictEqual(stateBound.truncatedBy.maxDepth, false);
+  const pruned = exploreBeam(compiled.storyJson, knots, [], { maxStates: 2500, beamWidth: 8 });
+  assert.strictEqual(pruned.truncatedBy.beamWidth, true);
+});
+
+test("an exhaustive systematic pass clears sampling-slice truncation", async () => {
+  const compiled = await compile(MANOR);
+  const knots = scanKnots(MANOR);
+  // DFS exhausts manor well inside this budget; the random slice will still
+  // spend its whole sub-budget resampling, which must not count as truncation.
+  const report = explorePortfolio(compiled.storyJson, knots, [], { maxStates: 500 });
+  assert.strictEqual(report.exhaustive, true);
+  assert.strictEqual(report.truncated, false);
+  assert.deepStrictEqual(report.truncatedBy, { maxDepth: false, maxStates: false, beamWidth: false });
+
+  const gridCompiled = await compile(EARLY_CHOICE_GRID);
+  const grid = explorePortfolio(gridCompiled.storyJson, scanKnots(EARLY_CHOICE_GRID), [], {
+    maxStates: 500,
+  });
+  assert.strictEqual(grid.exhaustive, false);
+  assert.strictEqual(grid.truncated, true);
+});
+
+test("markdown and text reports state limits and targeted advice", () => {
+  const md = spawnSync(
+    process.execPath,
+    [CLI, MANOR, "--max-states", "200", "--markdown"],
+    { encoding: "utf8" }
+  );
+  assert.match(md.stdout, /\| Depth limit \| 30 \|/);
+  assert.match(md.stdout, /\| State budget \| 200 \|/);
+  // A systematic pass exhausts manor within this budget, so the run is
+  // complete even though the sampling slice spent its whole sub-budget.
+  assert.match(md.stdout, /\| Truncated \| no \|/);
+  assert.match(md.stdout, /\| Exhaustive \| yes \|/);
+  assert.match(md.stdout, /possible orphan/);
+  assert.match(md.stdout, /found by `dfs:/);
+  const text = spawnSync(
+    process.execPath,
+    [CLI, EARLY_CHOICE_GRID, "--max-depth", "5", "--max-states", "400"],
+    { encoding: "utf8" }
+  );
+  assert.match(text.stdout, /raise --max-depth/);
+  assert.match(text.stdout, /inbound divert\(s\) in source/);
+  assert.match(text.stdout, /unreached is not necessarily unreachable/);
 });
 
 test("playtest follows a scripted path and reports variables", async () => {

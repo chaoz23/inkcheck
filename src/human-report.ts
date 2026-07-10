@@ -1,5 +1,39 @@
 import { CompileResult, Issue } from "./inklecate";
-import { ExploreResult, RuntimeErrorReport } from "./explore";
+import { ExploreResult, RuntimeErrorReport, UnvisitedKnotReport } from "./explore";
+
+/** One-line triage hint for an unvisited knot, based on the inbound-divert scan. */
+export function unvisitedKnotHint(knot: Partial<UnvisitedKnotReport>): string {
+  if (knot.staticOrphanCandidate) {
+    return "no authored divert points here — possible orphan";
+  }
+  if (typeof knot.inboundDiverts === "number" && knot.inboundDiverts > 0) {
+    return `${knot.inboundDiverts} inbound divert(s) in source — likely beyond this run's limits`;
+  }
+  return "not reached within this run's limits";
+}
+
+/** Targeted advice naming the limit(s) that actually cut coverage. */
+export function truncationAdvice(
+  result: Pick<Partial<ExploreResult>, "truncatedBy" | "limits">
+): string {
+  const causes = result.truncatedBy;
+  const hints: string[] = [];
+  if (causes?.maxDepth) {
+    hints.push(
+      `paths were cut at ${result.limits?.maxDepth ?? "the configured"} choices deep; raise --max-depth to follow longer trails`
+    );
+  }
+  if (causes?.maxStates) {
+    hints.push(
+      `the ${result.limits?.maxStates ?? "configured"}-state budget ran out; raise --max-states for broader coverage`
+    );
+  }
+  if (causes?.beamWidth) {
+    hints.push("the beam slice pruned reachable states at its frontier cap");
+  }
+  if (!hints.length) hints.push("raise --max-depth or --max-states for broader coverage");
+  return hints.join("; ");
+}
 
 export type HumanFindingSeverity = "error" | "warning" | "note";
 
@@ -107,14 +141,22 @@ export function buildHumanFindings(input: HumanReportInput): HumanFinding[] {
     ? input.explore.unvisitedKnots
     : [];
   for (const knot of unvisitedKnots) {
+    const orphan = knot.staticOrphanCandidate === true;
+    const hasInbound = typeof knot.inboundDiverts === "number" && knot.inboundDiverts > 0;
     findings.push({
       severity: "warning",
       category: "Unvisited content",
       title: `No explored path reached ${knot.name}`,
-      message: `The knot ${knot.name} was not visited by any explored path.`,
+      message: orphan
+        ? `No authored divert to ${knot.name} was found in the source, so it may be orphaned. Unreached within this run is not proof it is unreachable.`
+        : hasInbound
+          ? `${knot.name} has ${knot.inboundDiverts} inbound divert(s) in the source but was not reached within this run's limits, so it may simply sit behind longer choice trails.`
+          : `The knot ${knot.name} was not visited by any explored path within this run's limits.`,
       file: knot.file,
       line: knot.line,
-      action: "If this scene should be reachable, add or repair a divert/choice that leads here. If it is intentionally unused, mark it for yourself or remove it.",
+      action: orphan
+        ? "If this scene should be reachable, add a divert/choice that leads here. If it is intentionally unused, mark it for yourself or remove it."
+        : "Try a deeper or larger run (raise --max-depth and/or --max-states) before treating this as unreachable; if it still is not reached, check the conditions guarding the diverts that point here.",
     });
   }
 

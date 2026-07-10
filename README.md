@@ -12,6 +12,8 @@ It is designed so humans, CI systems, and optional AI coding agents can all driv
 
 ## Product promise
 
+Inkcheck is bounded mechanical QA for ink stories. It does not prove that every path works in a large story. It deterministically explores reachable story states within explicit limits, reports exact repro paths for the issues it finds, and shows where — and why — coverage was partial, so authors can use it as cheap, repeatable regression insurance.
+
 Inkcheck will not prove that a large interactive story has no bugs. Combinatorial explosion is real: loops, variables, randomness, and host-game code can create more possible states than any tool can exhaustively visit.
 
 The promise is narrower and more useful: make mechanical story QA cheap, repeatable, and actionable. Inkcheck walks real reachable choice states within explicit limits, tells you when the run was partial, and turns failures into repro paths you can run again after a fix. If it finds a broken path today, that same configured check should be able to look for that path again tomorrow.
@@ -40,7 +42,7 @@ The local CLI remains the privacy-first option because no story upload occurs. S
 
 - **Compile errors and warnings** — broken diverts, unresolved variables, loose ends, with file and line numbers (via [inklecate](https://github.com/inkle/ink/releases), the official compiler)
 - **Runtime errors with a reproduction path** — the exact sequence of choices that triggers a divide-by-zero, a bad external call, or out-of-content, e.g. `repro: [Enter in darkness → Descend to the cellar]`
-- **Unvisited content** — knots no explored path visits within the configured limits, so possible orphaned scenes are visible for review
+- **Unvisited content, triaged** — knots no explored path visits within the configured limits, each classified with an inbound-divert scan: "no authored divert points here — possible orphan" versus "has inbound diverts — likely beyond this run's limits"
 - **Distinct terminal states** — with a choice trail that reaches each one; differing final variables are retained as distinct outcomes
 
 ## vs. the alternatives
@@ -59,15 +61,17 @@ The compiler tells you the story is *valid*. Clicking through tells you the path
 ```
 $ inkcheck examples/manor.ink
 ✓ compiled — 92 words, 7 knots, 6 choices
-✓ explored 10 states — 5 distinct terminal state(s)
-    ending via [Enter in darkness → Search the study → Leave with your loot]: "You slip out the servant door, heavier by half a purse."
+✓ explored 18050 states within limits (depth 30, 100000 states, seed 1) — exhaustive (every reachable state visited) — 5 distinct terminal state(s)
+    terminal via [Enter in darkness → Search the study → Leave with your loot]: "You slip out the servant door, heavier by half a purse."
     ...
 ✗ 1 runtime error(s):
     obj is null or undefined (at cellar.3)
-      repro: [Enter in darkness → Descend to the cellar]
-⚠ 1 knot(s) never visited on any explored path:
-    treasure_vault (manor.ink:35)
+      repro: [Enter in darkness → Descend to the cellar] (found by dfs:last)
+⚠ 1 knot(s) never visited on any explored path — unreached is not necessarily unreachable:
+    treasure_vault (manor.ink line 35) — no authored divert points here — possible orphan
 ```
+
+When a run is cut short, the report names the limit that actually bound it — for example `⚠ coverage is partial, not a proof — paths were cut at 30 choices deep; raise --max-depth to follow longer trails`. Depth and state budget are separate axes: in local runs on *The Intercept*, raising `--max-depth` from 30 to 100 reached more late-story content with a 1,000,000-state budget than a 10× larger budget did at depth 30.
 
 Exit code is non-zero on compile or runtime errors. Add `--strict` to also fail on warnings, unvisited knots, truncation, or external stubs, so partial coverage cannot silently pass CI.
 
@@ -178,9 +182,11 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 ## Coverage limits
 
 - Exploration is bounded. A truncated report is evidence about visited states, not proof about the whole story.
+- Reports state the limits they ran under (depth, state budget, seed) and, when truncated, which limit actually cut coverage (`truncatedBy` in `--json`) with targeted advice on which flag to raise.
+- Small stories often get the opposite guarantee: when a systematic pass visits every reachable state without hitting a limit, the report says so (`exhaustive`), and sampling-slice budget exhaustion no longer counts as truncation.
 - `EXTERNAL` functions are stubbed to zero because the host game is unavailable. The report names every stub; strict mode fails rather than claiming complete coverage.
 - Random behavior follows reachable RNG states but does not enumerate every possible seed. Pair inkcheck with repeated playtesting when outcome frequency matters.
-- An unvisited knot may be intentionally dormant, engine-entered, or unreachable. Treat it as a review prompt, not an automatic deletion instruction.
+- An unvisited knot may be intentionally dormant, engine-entered, or unreachable. The inbound-divert triage separates likely orphans from probably-limit-bound content, but it is a review prompt, not an automatic deletion instruction.
 
 ## Roadmap
 

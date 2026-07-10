@@ -5,10 +5,23 @@ import {
   stats,
   scanKnots,
   scanExternals,
+  scanInboundDiverts,
   scanStorySemantics,
 } from "./inklecate";
-import { ExploreResult, explore, explorePortfolio, mergeMinRepro } from "./explore";
-import { buildHumanFindings, renderHumanFindings } from "./human-report";
+import {
+  ExploreResult,
+  UnvisitedKnotReport,
+  classifyUnvisitedKnots,
+  explore,
+  explorePortfolio,
+  mergeMinRepro,
+} from "./explore";
+import {
+  buildHumanFindings,
+  renderHumanFindings,
+  truncationAdvice,
+  unvisitedKnotHint,
+} from "./human-report";
 
 function usage(message?: string): never {
   if (message) console.error(`inkcheck: ${message}\n`);
@@ -115,6 +128,7 @@ async function main() {
     });
     report = mergeMinRepro(report, bfs);
   }
+  classifyUnvisitedKnots(report, scanInboundDiverts(file));
 
   const outputReport = { compile: { ...compiled, storyJson: undefined }, stats: st, explore: report };
   if (asJson) {
@@ -134,8 +148,18 @@ async function main() {
       `✓ compiled — ${st.words ?? "?"} words, ${st.knots ?? knots.length} knots, ${st.choices ?? "?"} choices`
     );
     for (const i of compiled.issues) console.log(`  ${i.raw}`);
+    const limitParts = [
+      `depth ${report.limits.maxDepth}`,
+      `${report.limits.maxStates} states`,
+    ];
+    if (report.limits.seed !== undefined) limitParts.push(`seed ${report.limits.seed}`);
+    const coverageFlag = report.exhaustive
+      ? " — exhaustive (every reachable state visited)"
+      : report.truncated
+        ? " — truncated"
+        : "";
     console.log(
-      `✓ explored ${report.statesExplored} states${report.truncated ? " (truncated at limits)" : ""} — ${report.endingsFound.length} distinct terminal state(s)`
+      `✓ explored ${report.statesExplored} states within limits (${limitParts.join(", ")})${coverageFlag} — ${report.endingsFound.length} distinct terminal state(s)`
     );
     for (const e of report.endingsFound.slice(0, 10)) {
       console.log(`    terminal via [${e.path.join(" → ") || "linear"}]: "${e.finalText.split("\n").pop()}"`);
@@ -143,12 +167,16 @@ async function main() {
     if (report.runtimeErrors.length) {
       console.log(`✗ ${report.runtimeErrors.length} runtime error(s):`);
       for (const e of report.runtimeErrors)
-        console.log(`    ${e.message}\n      repro: [${e.path.join(" → ")}]`);
+        console.log(
+          `    ${e.message}\n      repro: [${e.path.join(" → ")}]${e.foundBy ? ` (found by ${e.foundBy})` : ""}`
+        );
     }
     if (report.unvisitedKnots.length) {
-      console.log(`⚠ ${report.unvisitedKnots.length} knot(s) never visited on any explored path:`);
+      console.log(
+        `⚠ ${report.unvisitedKnots.length} knot(s) never visited on any explored path — unreached is not necessarily unreachable:`
+      );
       for (const k of report.unvisitedKnots)
-        console.log(`    ${k.name} (${humanLocation(k.file, k.line)})`);
+        console.log(`    ${k.name} (${humanLocation(k.file, k.line)}) — ${unvisitedKnotHint(k)}`);
     }
     if (report.runtimeWarnings.length) {
       console.log(`⚠ ${report.runtimeWarnings.length} runtime warning(s):`);
@@ -165,9 +193,7 @@ async function main() {
       );
     }
     if (report.truncated) {
-      console.log(
-        `⚠ exploration stopped at a configured limit; increase --max-depth or --max-states for broader coverage`
-      );
+      console.log(`⚠ coverage is partial, not a proof — ${truncationAdvice(report)}`);
     }
   }
 
@@ -222,6 +248,11 @@ function renderMarkdown(
     `| Compile warnings | ${compiled.warnings} |`,
     `| Words | ${storyStats.words ?? "unknown"} |`,
     `| States explored | ${report.statesExplored} |`,
+    `| Depth limit | ${report.limits.maxDepth} |`,
+    `| State budget | ${report.limits.maxStates} |`,
+    ...(report.limits.seed !== undefined ? [`| Random seed | ${report.limits.seed} |`] : []),
+    `| Truncated | ${report.truncated ? "yes" : "no"} |`,
+    `| Exhaustive | ${report.exhaustive ? "yes" : "no"} |`,
     `| Distinct terminal states | ${report.endingsFound.length} |`,
     `| Runtime errors | ${report.runtimeErrors.length} |`,
     `| Unvisited knots | ${report.unvisitedKnots.length} |`,
@@ -229,17 +260,21 @@ function renderMarkdown(
   if (report.runtimeErrors.length) {
     lines.push("", "## Runtime errors", "");
     for (const error of report.runtimeErrors) {
-      lines.push(`- ${escapeCell(error.message)} — path: ${error.path.join(" → ") || "linear"}`);
+      lines.push(
+        `- ${escapeCell(error.message)} — path: ${error.path.join(" → ") || "linear"}${error.foundBy ? ` — found by \`${error.foundBy}\`` : ""}`
+      );
     }
   }
   if (report.unvisitedKnots.length) {
     lines.push("", "## Unvisited knots", "");
-    for (const knot of report.unvisitedKnots) lines.push(`- \`${knot.name}\` (${humanLocation(knot.file, knot.line)})`);
+    lines.push("Unreached within this run is not necessarily unreachable.", "");
+    for (const knot of report.unvisitedKnots)
+      lines.push(`- \`${knot.name}\` (${humanLocation(knot.file, knot.line)}) — ${unvisitedKnotHint(knot)}`);
   }
   const limitations: string[] = [];
   if (report.truncated) {
     limitations.push(
-      `Traversal stopped at max depth ${report.limits.maxDepth} or max states ${report.limits.maxStates}.`
+      `Coverage is partial, not a proof: ${truncationAdvice(report)}.`
     );
   }
   if (report.externalFunctionsStubbed.length) {

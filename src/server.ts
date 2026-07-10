@@ -2,8 +2,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { compile, stats, scanKnots, scanExternals, scanStorySemantics } from "./inklecate";
-import { playtest, explore, explorePortfolio, mergeMinRepro } from "./explore";
+import { compile, stats, scanKnots, scanExternals, scanInboundDiverts, scanStorySemantics } from "./inklecate";
+import { classifyUnvisitedKnots, playtest, explore, explorePortfolio, mergeMinRepro } from "./explore";
 import { VERSION } from "./version";
 
 const server = new McpServer({ name: "inkcheck", version: VERSION });
@@ -122,6 +122,7 @@ server.registerTool(
       });
       result = mergeMinRepro(result, bfs);
     }
+    classifyUnvisitedKnots(result, scanInboundDiverts(file));
     return json({ compileIssues: compiled.issues, ...result });
   }
 );
