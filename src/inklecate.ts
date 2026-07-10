@@ -246,6 +246,41 @@ export function scanKnots(inkFile: string, seen: Set<string> = new Set()): KnotI
   return knots;
 }
 
+/**
+ * Scan ink source (following INCLUDEs) for divert and thread targets,
+ * counting direct textual references to each root target name. Comments are
+ * stripped first. Used to triage unvisited knots: a knot no authored divert
+ * points to is a static orphan candidate, while a knot with inbound diverts
+ * was more likely cut off by the run's depth/state limits. Conservative by
+ * design — it counts references in the source, not proven reachability.
+ */
+export function scanInboundDiverts(
+  inkFile: string,
+  seen: Set<string> = new Set()
+): Record<string, number> {
+  const abs = path.resolve(inkFile);
+  if (seen.has(abs) || !fs.existsSync(abs)) return {};
+  seen.add(abs);
+  const counts: Record<string, number> = {};
+  const source = fs.readFileSync(abs, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const line of source.split(/\r?\n/)) {
+    const code = line.replace(/\/\/.*$/, "");
+    const inc = code.match(/^\s*INCLUDE\s+(.+?)\s*$/);
+    if (inc) {
+      const child = scanInboundDiverts(path.join(path.dirname(abs), inc[1]), seen);
+      for (const [name, count] of Object.entries(child)) {
+        counts[name] = (counts[name] ?? 0) + count;
+      }
+      continue;
+    }
+    for (const match of code.matchAll(/(?:->|<-)\s*([A-Za-z_][A-Za-z0-9_.]*)/g)) {
+      const root = match[1].split(".")[0];
+      counts[root] = (counts[root] ?? 0) + 1;
+    }
+  }
+  return counts;
+}
+
 /** Scan ink source (following INCLUDEs) for EXTERNAL function declarations. */
 export function scanExternals(inkFile: string, seen: Set<string> = new Set()): string[] {
   const abs = path.resolve(inkFile);

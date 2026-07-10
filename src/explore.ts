@@ -38,19 +38,47 @@ export interface RuntimeErrorReport {
   foundBy?: string;
 }
 
+/** Which configured limit cut coverage short, when `truncated` is true. */
+export interface TruncationCauses {
+  /** At least one live path was cut at the depth limit. */
+  maxDepth: boolean;
+  /** The state budget ran out with work remaining. */
+  maxStates: boolean;
+  /** The beam pass pruned reachable states at its frontier cap. */
+  beamWidth: boolean;
+}
+
+export interface UnvisitedKnotReport {
+  name: string;
+  file: string;
+  line: number;
+  /** Authored diverts/threads targeting this knot found in the source. */
+  inboundDiverts?: number;
+  /** No authored divert found — the knot may be orphaned (triage hint, not proof). */
+  staticOrphanCandidate?: boolean;
+}
+
 export interface ExploreResult {
   statesExplored: number;
   endingsFound: EndingReport[];
   runtimeErrors: RuntimeErrorReport[];
   runtimeWarnings: string[];
   /** Authored knots never visited on any explored path (functions excluded). */
-  unvisitedKnots: { name: string; file: string; line: number }[];
+  unvisitedKnots: UnvisitedKnotReport[];
   visitedKnots: string[];
   /** EXTERNAL functions that were replaced with a constant zero during exploration. */
   externalFunctionsStubbed: string[];
   /** Whether Ink random functions or shuffle sequences occur in the source. */
   randomnessDetected: boolean;
   truncated: boolean;
+  /** Which limit(s) actually cut coverage, so reports can advise which to raise. */
+  truncatedBy: TruncationCauses;
+  /**
+   * A systematic pass (DFS/BFS/beam) visited every reachable state without
+   * hitting any limit. When true after a merge, the whole run is complete and
+   * sampling-slice budget exhaustion no longer counts as truncation.
+   */
+  exhaustive: boolean;
   limits: { maxDepth: number; maxStates: number; seed?: number };
 }
 
@@ -311,6 +339,7 @@ export function explore(
   const seenStates = new Set<string>();
   let statesExplored = 0;
   let truncated = false;
+  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false };
 
   const nonFunctionKnots = knots.filter((k) => !k.isFunction);
 
@@ -359,6 +388,7 @@ export function explore(
   while (strategy === "bfs" ? head < frames.length : frames.length > 0) {
     if (statesExplored >= maxStates) {
       truncated = true;
+      truncatedBy.maxStates = true;
       break;
     }
     const frame = strategy === "bfs" ? frames[head++] : frames.pop()!;
@@ -382,6 +412,7 @@ export function explore(
     for (const i of choiceIndices) {
       if (statesExplored >= maxStates) {
         truncated = true;
+        truncatedBy.maxStates = true;
         break;
       }
       resetSession();
@@ -428,6 +459,7 @@ export function explore(
       }
       if (path.length >= maxDepth) {
         truncated = true;
+        truncatedBy.maxDepth = true;
         continue;
       }
       const nextState = s.story.state.ToJson();
@@ -450,6 +482,8 @@ export function explore(
     externalFunctionsStubbed: [...externals],
     randomnessDetected: opts.randomnessDetected ?? false,
     truncated,
+    truncatedBy,
+    exhaustive: !truncated,
     limits: { maxDepth, maxStates },
   };
 }
@@ -500,6 +534,7 @@ export function exploreRandom(
   const visitedKnots = new Set<string>();
   let statesExplored = 0;
   let truncated = false;
+  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false };
 
   const nonFunctionKnots = knots.filter((k) => !k.isFunction);
   const recordKnotCoverage = (session: StorySession) => {
@@ -538,6 +573,9 @@ export function exploreRandom(
     externalFunctionsStubbed: [...externals],
     randomnessDetected: opts.randomnessDetected ?? false,
     truncated,
+    truncatedBy,
+    // Sampling can only ever disprove completeness, never prove it.
+    exhaustive: false,
     limits: { maxDepth, maxStates, seed },
   });
 
@@ -605,11 +643,15 @@ export function exploreRandom(
       }
       if (statesExplored >= maxStates) {
         truncated = true;
+        truncatedBy.maxStates = true;
         break;
       }
       resetSession();
     }
-    if (!walkDone && path.length >= maxDepth) truncated = true;
+    if (!walkDone && path.length >= maxDepth) {
+      truncated = true;
+      truncatedBy.maxDepth = true;
+    }
   }
   return result();
 }
@@ -661,6 +703,7 @@ export function exploreBeam(
   const seenChoiceSets = new Set<string>();
   let statesExplored = 0;
   let truncated = false;
+  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false };
 
   const nonFunctionKnots = knots.filter((k) => !k.isFunction);
   const recordKnotCoverage = (session: StorySession) => {
@@ -699,6 +742,8 @@ export function exploreBeam(
     externalFunctionsStubbed: [...externals],
     randomnessDetected: opts.randomnessDetected ?? false,
     truncated,
+    truncatedBy,
+    exhaustive: !truncated,
     limits: { maxDepth, maxStates },
   });
 
@@ -735,6 +780,7 @@ export function exploreBeam(
       for (let i = 0; i < numChoices; i++) {
         if (statesExplored >= maxStates) {
           truncated = true;
+          truncatedBy.maxStates = true;
           break outer;
         }
         resetSession();
@@ -776,6 +822,7 @@ export function exploreBeam(
         }
         if (path.length >= maxDepth) {
           truncated = true;
+          truncatedBy.maxDepth = true;
           continue;
         }
         const nextState = s.story.state.ToJson();
@@ -802,7 +849,10 @@ export function exploreBeam(
     }
     // Pruning discards reachable states, so the run can no longer claim
     // exhaustive coverage even if the budget is never exhausted.
-    if (children.length > beamWidth) truncated = true;
+    if (children.length > beamWidth) {
+      truncated = true;
+      truncatedBy.beamWidth = true;
+    }
     // Diversity-first selection: round-robin across variable-signature
     // groups (discovery order), novelty-ranked within each group, so one
     // lineage's siblings cannot crowd every other lineage out of the beam.
@@ -883,6 +933,24 @@ export function explorePortfolio(
   return rest.reduce((merged, result) => mergeExploreResults(merged, result), firstRun);
 }
 
+/**
+ * Attach inbound-divert triage hints to unvisited knots so reports can
+ * separate "nothing in the source diverts here — possible orphan" from
+ * "the source diverts here, so this run's limits probably cut it off".
+ * A hint, not proof: textual diverts do not establish reachability.
+ */
+export function classifyUnvisitedKnots(
+  result: ExploreResult,
+  inboundDiverts: Record<string, number>
+): ExploreResult {
+  for (const knot of result.unvisitedKnots) {
+    const count = inboundDiverts[knot.name] ?? 0;
+    knot.inboundDiverts = count;
+    knot.staticOrphanCandidate = count === 0;
+  }
+  return result;
+}
+
 function endingKey(e: EndingReport): string {
   return e.finalText + "|" + JSON.stringify(e.variables);
 }
@@ -918,6 +986,19 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
   main.unvisitedKnots = main.unvisitedKnots.filter((k) => !visited.has(k.name));
   main.statesExplored += other.statesExplored;
   main.truncated ||= other.truncated;
+  main.truncatedBy = {
+    maxDepth: main.truncatedBy.maxDepth || other.truncatedBy.maxDepth,
+    maxStates: main.truncatedBy.maxStates || other.truncatedBy.maxStates,
+    beamWidth: main.truncatedBy.beamWidth || other.truncatedBy.beamWidth,
+  };
+  // One systematic pass finishing without truncation proves every reachable
+  // state was visited, so partial-coverage flags from budget-bound sampling
+  // passes (which resample a space already proven exhausted) are cleared.
+  main.exhaustive ||= other.exhaustive;
+  if (main.exhaustive) {
+    main.truncated = false;
+    main.truncatedBy = { maxDepth: false, maxStates: false, beamWidth: false };
+  }
   main.externalFunctionsStubbed = [...new Set([...main.externalFunctionsStubbed, ...other.externalFunctionsStubbed])];
   main.randomnessDetected ||= other.randomnessDetected;
   const seed = main.limits.seed ?? other.limits.seed;

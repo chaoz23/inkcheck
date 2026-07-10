@@ -58,7 +58,7 @@
     "jsonSchema": {
       "compile": "{ success: bool, issues: [{severity, file, line, message}], errors: int, warnings: int, todos: int }",
       "stats": "{ words, knots, stitches, functions, choices, gathers, diverts }",
-      "explore": "{ statesExplored: int, endingsFound: [{path: string[], finalText, variables, foundBy?}], runtimeErrors: [{message, path, sourceLocation?, foundBy?}], unvisitedKnots: [{name, file, line}], externalFunctionsStubbed: string[], randomnessDetected: bool, truncated: bool, limits: {maxDepth, maxStates, seed?} }"
+      "explore": "{ statesExplored: int, endingsFound: [{path: string[], finalText, variables, foundBy?}], runtimeErrors: [{message, path, sourceLocation?, foundBy?}], unvisitedKnots: [{name, file, line, inboundDiverts?, staticOrphanCandidate?}], externalFunctionsStubbed: string[], randomnessDetected: bool, truncated: bool, truncatedBy: {maxDepth: bool, maxStates: bool, beamWidth: bool}, exhaustive: bool, limits: {maxDepth, maxStates, seed?} }"
     }
   },
   "mcp": {

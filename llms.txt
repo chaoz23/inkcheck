@@ -50,7 +50,9 @@ Not a writing tool, not an authoring aid, and not an AI system. It generates zer
 - `--max-states` is the total exploration budget across portfolio passes, not a single DFS count.
 - Inkcheck is systematic and reproducible inside its budget; the built-in seeded random-sampling slice is itself reproducible, and rerunning with other `--seed` values samples different early-choice combinations. External random sampling can still be complementary for very large or random-heavy stories.
 - The beam pass caps its frontier at a fixed width and marks the run truncated whenever it prunes a reachable state, so bounded memory never turns into a silent completeness claim.
-- Truncation means the report is partial; strict mode fails.
+- Truncation means the report is partial; strict mode fails. `truncatedBy` in JSON names the limit that cut coverage (maxDepth, maxStates, or the beam frontier cap) so tooling can raise the right flag.
+- `exhaustive: true` means a systematic pass visited every reachable state without hitting a limit; sampling-slice budget exhaustion does not count as truncation in that case.
+- Unvisited knots carry `inboundDiverts` and `staticOrphanCandidate` triage hints: no authored divert found = possible orphan; inbound diverts present = likely cut off by this run's limits.
 - EXTERNAL functions are stubbed to zero and named in the report; strict mode fails.
 - Random behavior is detected, but every possible seed is not enumerated.
 - Unvisited knots are review prompts, not automatic proof that content should be deleted.
