@@ -144,8 +144,21 @@ test("web API validates input and returns a no-retention report", async (t) => {
   const server = createInkcheckWebServer({
     config,
     usage: { record: (event, details) => usageEvents.push({ event, details }) },
-    runner: async (submission) => {
+    runner: async (submission, _config, options) => {
       calls++;
+      options?.onProgress?.({
+        schemaVersion: 1,
+        sequence: 1,
+        type: "progress",
+        phase: "explore",
+        elapsedMs: 4,
+        statesExplored: 123,
+        stateBudget: submission.maxStates,
+        budgetFraction: 123 / submission.maxStates,
+        endingsFound: 2,
+        runtimeErrorsFound: 0,
+        unvisitedKnots: 1,
+      });
       return {
         report: { compile: { success: true }, root: submission.root },
         meta: {
@@ -232,6 +245,7 @@ test("web API validates input and returns a no-retention report", async (t) => {
     headers: {
       Origin: "https://secondlandings.com",
       "X-Inkcheck-Access-Code": "pilot-code",
+      "X-Inkcheck-Async": "1",
     },
     body: multipartBody(validBody({ authorized: false })),
   });
@@ -257,17 +271,37 @@ test("web API validates input and returns a no-retention report", async (t) => {
     headers: {
       Origin: "https://secondlandings.com",
       "X-Inkcheck-Access-Code": "pilot-code",
+      "X-Inkcheck-Async": "1",
     },
     body: multipartBody(),
   });
-  assert.strictEqual(accepted.status, 200);
+  assert.strictEqual(accepted.status, 202);
   assert.strictEqual(
     accepted.headers.get("access-control-allow-origin"),
     "https://secondlandings.com"
   );
-  const body = await accepted.json();
-  assert.strictEqual(body.report.compile.success, true);
-  assert.strictEqual(body.meta.retained, false);
+  const created = await accepted.json();
+  assert.ok(["queued", "running"].includes(created.job.status));
+  assert.match(created.job.statusUrl, /^\/api\/jobs\//);
+  let body;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const status = await fetch(`${base}${created.job.statusUrl}`, {
+      headers: { Origin: "https://secondlandings.com" },
+    });
+    body = await status.json();
+    if (body.job.status === "complete") break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.strictEqual(body.job.status, "complete");
+  assert.strictEqual(body.job.result.report.compile.success, true);
+  assert.strictEqual(body.job.result.meta.retained, false);
+  const stream = await fetch(`${base}${created.job.eventUrl}`, {
+    headers: { Origin: "https://secondlandings.com" },
+  });
+  assert.strictEqual(stream.status, 200);
+  const streamText = await stream.text();
+  assert.match(streamText, /event: progress/);
+  assert.match(streamText, /"statesExplored":123/);
   assert.strictEqual(calls, 1);
   assert.deepStrictEqual(usageEvents, [
     { event: "page_view", details: undefined },

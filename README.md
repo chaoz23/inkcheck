@@ -34,7 +34,7 @@ Want to see the failure-path report before trying your own story? Run the [two-m
 
 ## Hosted checker
 
-The repository now includes a self-hosted web interface for writers who do not want to use a terminal. Hosted mode temporarily uploads authorized `.ink` source, runs a bounded check, returns the report, and deletes the temporary job directory. It does not make reports public or retain story text in application logs. Optional first-party usage metrics keep only daily aggregate counts and can produce unattended weekly reports without an analytics vendor.
+The repository now includes a self-hosted web interface for writers who do not want to use a terminal. Hosted mode temporarily uploads authorized `.ink` source, creates a short-lived private job, streams real phase and work-budget progress, and deletes the temporary job directory after completion, cancellation, or failure. It does not make reports public or retain story text in application logs. Optional first-party usage metrics keep only daily aggregate counts and can produce unattended weekly reports without an analytics vendor.
 
 The local CLI remains the privacy-first option because no story upload occurs. See [Hosted checker deployment](docs/hosted-checker.md) for the threat model, Docker deployment, operating limits, and a current sub-$50/month budget.
 
@@ -128,7 +128,7 @@ The intended loop for an agent editing a story: edit `.ink` → `compile_story` 
 ## CLI
 
 ```
-inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--auto] [--profile] [--next] [--no-min-repro] [--strict] [--progress=ndjson] [--human|--json|--markdown]
+inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--auto] [--profile] [--next] [--no-min-repro] [--strict] [--progress=auto|human|ndjson|off] [--human|--json|--markdown]
 inkcheck mcp    # start the MCP server on stdio
 ```
 
@@ -140,7 +140,7 @@ inkcheck mcp    # start the MCP server on stdio
 
 `--profile` prints a cheap static shape profile of the story — variables and where they are assigned, choice density, the longest divert path — plus the depth limit and pass weights inkcheck would choose for that shape, without running any exploration. `--auto` applies those suggestions: it raises `--max-depth` when static divert paths outrun the default (never lowers it, and your explicit flags always win) and hands the profile's pass weights to the portfolio. On a story whose main path is 40 choices deep, default settings find nothing while `--auto` reaches the ending and proves the story exhaustive in ~111 states.
 
-`--progress=ndjson` writes versioned progress events to stderr for agents and CI while keeping the final stdout report authoritative. Events use the configured state budget as a work meter (`budgetFraction`), not as a percent of total story coverage. The stream contains counters and phase/pass names only; it never includes story prose, choices, variables, or source snippets. Omit the option, or use `--progress=off`, for the unchanged default output.
+Interactive terminals show a concise live progress line by default: real phase, states explored against the configured **work budget**, discoveries, and elapsed time. `--progress=human` forces readable snapshots for CI logs; `--progress=ndjson` writes versioned events for agents and parsers; `--progress=off` silences progress. None of these percentages claim story coverage. The final stdout report remains authoritative, and progress never includes story prose, choices, variables, or source snippets.
 
 Every report also carries a `nextRun` verdict — a small closed vocabulary (`stop`, `deepen`, `broaden`, `reseed`, `investigate`) computed deterministically from the report itself, with concrete flags, a rationale that cites the fields it used, and the evidence-backed expected gain. `--next` acts on it: after the check, inkcheck applies the recommended escalation and reruns, up to three times, stopping on a `stop`/`investigate` verdict, at the flag ceilings, or when an escalated run finds nothing new (fixpoint). The per-run trail lands in `--json` output as `runs`; hop narration goes to stderr so machine output stays clean. Recommendations never exceed the documented hard ceilings — when no flag increase has evidence behind it, the verdict degrades to `investigate` and points at the knots worth reviewing.
 
