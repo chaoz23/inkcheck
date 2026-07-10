@@ -23,6 +23,7 @@ const {
   mergeMinRepro,
   stateKey,
 } = require("../dist/explore");
+const { recommendNextRun } = require("../dist/advice");
 const { runSubmission, webConfigFromEnv } = require("../dist/web");
 const { SubmissionError, validateSubmission } = require("../dist/web-validation");
 
@@ -433,6 +434,113 @@ test("CLI JSON includes telemetry for every pass including the repro slice", () 
   for (const t of passes) {
     assert.ok("dedupeHits" in t && "lastDiscoveryAtState" in t && "truncatedBy" in t);
   }
+});
+
+// Issue #30: a machine-actionable next-run verdict, computed as a pure
+// deterministic function of one report; the rationale cites the fields used.
+test("recommendNextRun issues the right verdict per story shape", async () => {
+  const knotsChain = scanKnots(DEEP_CHAIN);
+  const chainCompiled = await compile(DEEP_CHAIN);
+  const chainProfile = scanShapeProfile(DEEP_CHAIN);
+
+  // Exhaustive run → stop.
+  const manorCompiled = await compile(MANOR);
+  const manorReport = classifyUnvisitedKnots(
+    explorePortfolio(manorCompiled.storyJson, scanKnots(MANOR), [], { maxStates: 1000 }),
+    scanInboundDiverts(MANOR)
+  );
+  const stop = recommendNextRun(manorReport);
+  assert.strictEqual(stop.recommendation, "stop");
+  assert.strictEqual(stop.stop, true);
+  assert.match(stop.rationale, /exhaustive/);
+
+  // Depth-bound with inbound-divert unvisited knots → deepen, profile target wins.
+  const chainReport = classifyUnvisitedKnots(
+    explorePortfolio(chainCompiled.storyJson, knotsChain, [], { maxStates: 500 }),
+    scanInboundDiverts(DEEP_CHAIN)
+  );
+  const deepen = recommendNextRun(chainReport, chainProfile);
+  assert.strictEqual(deepen.recommendation, "deepen");
+  assert.strictEqual(deepen.flags.maxDepth, 80);
+  assert.strictEqual(deepen.flags.maxStates, 500);
+  assert.match(deepen.rationale, /truncatedBy\.maxDepth/);
+  assert.match(deepen.expectedGain, /inbound diverts/);
+
+  // States-bound while passes still discovering → broaden with 4x budget.
+  const gridCompiled = await compile(EARLY_CHOICE_GRID);
+  const gridReport = classifyUnvisitedKnots(
+    explorePortfolio(gridCompiled.storyJson, scanKnots(EARLY_CHOICE_GRID), [], { maxStates: 1000 }),
+    scanInboundDiverts(EARLY_CHOICE_GRID)
+  );
+  const broaden = recommendNextRun(gridReport);
+  assert.strictEqual(broaden.recommendation, "broaden");
+  assert.strictEqual(broaden.flags.maxStates, 4000);
+  assert.match(broaden.rationale, /lastDiscoveryAtState/);
+});
+
+test("recommendNextRun degrades to reseed or investigate at the ceilings", () => {
+  const base = {
+    statesExplored: 1_000_000,
+    endingsFound: [],
+    runtimeErrors: [],
+    runtimeWarnings: [],
+    unvisitedKnots: [{ name: "locked", file: "s.ink", line: 5, inboundDiverts: 2, staticOrphanCandidate: false }],
+    visitedKnots: [],
+    externalFunctionsStubbed: [],
+    randomnessDetected: false,
+    truncated: true,
+    truncatedBy: { maxDepth: false, maxStates: true, beamWidth: false },
+    exhaustive: false,
+    limits: { maxDepth: 1000, maxStates: 1_000_000, seed: 3 },
+  };
+  // Random still hot, systematic passes saturated, budget at ceiling → reseed.
+  const reseed = recommendNextRun({
+    ...base,
+    passes: [
+      { pass: "dfs:last", systematic: true, statesExplored: 1000, granted: 1000, endingsFound: 1, runtimeErrorsFound: 0, knotsVisited: 3, newEndings: 1, newKnots: 3, newRuntimeErrors: 0, dedupeHits: 0, maxDepthReached: 10, lastDiscoveryAtState: 100, truncatedBy: base.truncatedBy, exhaustive: false },
+      { pass: "random:seed=3", systematic: false, statesExplored: 1000, granted: 1000, endingsFound: 5, runtimeErrorsFound: 0, knotsVisited: 3, newEndings: 4, newKnots: 0, newRuntimeErrors: 0, dedupeHits: 0, maxDepthReached: 20, lastDiscoveryAtState: 990, truncatedBy: base.truncatedBy, exhaustive: false },
+    ],
+  });
+  assert.strictEqual(reseed.recommendation, "reseed");
+  assert.strictEqual(reseed.flags.seed, 4);
+  assert.strictEqual(reseed.stop, false);
+
+  // Everything saturated at the ceilings → investigate, pointing at knots.
+  const investigate = recommendNextRun({
+    ...base,
+    passes: [
+      { pass: "dfs:last", systematic: true, statesExplored: 1000, granted: 1000, endingsFound: 1, runtimeErrorsFound: 0, knotsVisited: 3, newEndings: 1, newKnots: 3, newRuntimeErrors: 0, dedupeHits: 0, maxDepthReached: 10, lastDiscoveryAtState: 100, truncatedBy: base.truncatedBy, exhaustive: false },
+      { pass: "random:seed=3", systematic: false, statesExplored: 1000, granted: 1000, endingsFound: 5, runtimeErrorsFound: 0, knotsVisited: 3, newEndings: 4, newKnots: 0, newRuntimeErrors: 0, dedupeHits: 0, maxDepthReached: 20, lastDiscoveryAtState: 50, truncatedBy: base.truncatedBy, exhaustive: false },
+    ],
+  });
+  assert.strictEqual(investigate.recommendation, "investigate");
+  assert.strictEqual(investigate.stop, true);
+  assert.match(investigate.rationale, /inbound diverts/);
+});
+
+test("--next follows recommendations to an exhaustive result", () => {
+  const proc = spawnSync(
+    process.execPath,
+    [CLI, DEEP_CHAIN, "--max-states", "500", "--next", "--json"],
+    { encoding: "utf8" }
+  );
+  const out = JSON.parse(proc.stdout);
+  assert.strictEqual(out.runs.length, 2);
+  assert.strictEqual(out.runs[0].endings, 0);
+  assert.strictEqual(out.runs[0].recommendation, "deepen");
+  assert.strictEqual(out.runs[1].flags.maxDepth, 80);
+  assert.strictEqual(out.runs[1].endings, 1);
+  assert.strictEqual(out.explore.exhaustive, true);
+  assert.strictEqual(out.nextRun.recommendation, "stop");
+  // Hop narration goes to stderr so machine output stays clean.
+  assert.match(proc.stderr, /↻ deepen/);
+
+  const md = spawnSync(
+    process.execPath,
+    [CLI, DEEP_CHAIN, "--max-states", "500", "--markdown"],
+    { encoding: "utf8" }
+  );
+  assert.match(md.stdout, /Suggested next run \(deepen\)/);
 });
 
 test("an exhaustive systematic pass clears sampling-slice truncation", async () => {

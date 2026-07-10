@@ -22,6 +22,7 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 - Different random sample: `npx -y inkcheck story/main.ink --seed 2`
 - Show story shape + suggested settings: `npx -y inkcheck story/main.ink --profile`
 - Apply the shape profile (depth + pass weights): `npx -y inkcheck story/main.ink --auto`
+- Auto-escalate limits until nothing new is found: `npx -y inkcheck story/main.ink --next`
 - MCP (Claude Code): `claude mcp add inkcheck -- npx -y inkcheck mcp`
 - MCP config: `{ "mcpServers": { "inkcheck": { "command": "npx", "args": ["-y", "inkcheck", "mcp"] } } }`
 - Self-hosted web service: `inkcheck-web` or `npm run web` (temporary upload; local CLI remains private by default)
@@ -42,6 +43,8 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 ## Intended agent loop
 
 edit .ink → compile_story → explore_story → fix what it reports → repeat. Treat inkcheck as a deterministic oracle for a story graph you generated or edited.
+
+For coverage escalation, every explore report includes `nextRun`: a deterministic verdict from the closed set stop / deepen / broaden / reseed / investigate, with ready-to-use `flags`, a `rationale` citing the report fields that drove it, and `stop: true` when rerunning has no evidence behind it. Loop on it (rerun with `nextRun.flags` until `stop`), or use CLI `--next` which does the loop itself (max 3 escalations, fixpoint-detected, per-run trail in JSON `runs`).
 
 ## What it is not
 

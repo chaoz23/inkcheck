@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import {
   CompileResult,
+  KnotInfo,
   StoryShapeProfile,
+  StorySemantics,
   compile,
   stats,
   scanKnots,
@@ -12,12 +14,14 @@ import {
 } from "./inklecate";
 import {
   ExploreResult,
+  PortfolioWeights,
   UnvisitedKnotReport,
   classifyUnvisitedKnots,
   explore,
   explorePortfolio,
   mergeMinRepro,
 } from "./explore";
+import { NextRunAdvice, recommendNextRun } from "./advice";
 import {
   buildHumanFindings,
   renderHumanFindings,
@@ -39,6 +43,7 @@ Options:
   --seed <n>         Seed for the random-sampling slice, 1–4294967295 (default 1)
   --profile          Print the story's shape profile and suggested settings, without exploring
   --auto             Apply the shape profile: suggested depth (unless --max-depth given) and pass weights
+  --next             After the check, apply the recommended escalation automatically (up to 3 reruns)
   --no-min-repro     Skip the small breadth-first repro-shortening slice
   --strict           Also fail on warnings, unvisited knots, truncation, or external stubs
   --human            Emit a prioritized human-readable fix list
@@ -66,6 +71,7 @@ async function main() {
   let minRepro = true;
   let profileOnly = false;
   let auto = false;
+  let followNext = false;
   let progressMode: "auto" | "human" | "ndjson" | "off" = process.stderr.isTTY ? "auto" : "off";
   const boundedInt = (flag: string, raw: string | undefined, max: number): number => {
     const value = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
@@ -81,6 +87,7 @@ async function main() {
     else if (arg === "--seed") seed = boundedInt(arg, args[++i], 4_294_967_295);
     else if (arg === "--profile") profileOnly = true;
     else if (arg === "--auto") auto = true;
+    else if (arg === "--next") followNext = true;
     else if (arg === "--strict") strict = true;
     else if (arg === "--human") asHuman = true;
     else if (arg === "--json") asJson = true;
@@ -181,44 +188,30 @@ async function main() {
   const externals = scanExternals(file);
   const semantics = scanStorySemantics(file);
   const st = await stats(file);
+  const inboundDiverts = scanInboundDiverts(file);
+  // The recommender uses the shape profile for a better deepen target even
+  // when --auto was not requested; the scan is cheap and deterministic.
+  const adviceProfile = profile ?? scanShapeProfile(file);
   emitProgress("phase_end", { phase: "source_scan" });
-  const reproStates = minRepro && totalMaxStates > 1 ? Math.max(1, Math.floor(totalMaxStates * 0.1)) : 0;
-  const portfolioStates = totalMaxStates - reproStates;
-  const exploreOptions = {
-    maxDepth,
-    maxStates: Math.max(1, portfolioStates),
-    seed,
-    weights: profile?.suggested.weights,
-    preserveTurnState: semantics.usesTurns,
-    preserveRandomState: semantics.usesRandomness,
-    randomnessDetected: semantics.usesRandomness,
-  };
-  emitProgress("phase_start", { phase: "explore" });
-  let report = explorePortfolio(compiled.storyJson!, knots, externals, {
-    ...exploreOptions,
-    onProgress: (progress) => {
-      statesExplored = progress.statesExplored;
-      emitProgress("progress", {
-        pass: progress.pass,
-        endingsFound: progress.endingsFound,
-        runtimeErrorsFound: progress.runtimeErrorsFound,
-        unvisitedKnots: progress.unvisitedKnots,
-      });
-    },
-  });
-  statesExplored = report.statesExplored;
-  emitProgress("phase_end", { phase: "explore" });
-  if (reproStates > 0) {
-    emitProgress("phase_start", { phase: "min_repro" });
-    const bfs = explore(compiled.storyJson!, knots, externals, {
-      maxDepth,
-      maxStates: reproStates,
-      strategy: "bfs",
+
+  const runCheck = (bounds: { maxDepth?: number; maxStates?: number; seed?: number }): ExploreResult => {
+    const runStates = bounds.maxStates ?? 100_000;
+    const reproStates = minRepro && runStates > 1 ? Math.max(1, Math.floor(runStates * 0.1)) : 0;
+    const portfolioStates = runStates - reproStates;
+    // Progress accumulates across --next escalations, so offset by the
+    // states already spent in earlier runs.
+    const statesBase = statesExplored;
+    emitProgress("phase_start", { phase: "explore" });
+    let checked = explorePortfolio(compiled.storyJson!, knots, externals, {
+      maxDepth: bounds.maxDepth,
+      maxStates: Math.max(1, portfolioStates),
+      seed: bounds.seed,
+      weights: profile?.suggested.weights,
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
       onProgress: (progress) => {
-        statesExplored = report.statesExplored + progress.statesExplored;
+        statesExplored = statesBase + progress.statesExplored;
         emitProgress("progress", {
           pass: progress.pass,
           endingsFound: progress.endingsFound,
@@ -227,17 +220,81 @@ async function main() {
         });
       },
     });
-    report = mergeMinRepro(report, bfs);
-    statesExplored = report.statesExplored;
-    emitProgress("phase_end", { phase: "min_repro" });
+    statesExplored = statesBase + checked.statesExplored;
+    emitProgress("phase_end", { phase: "explore" });
+    if (reproStates > 0) {
+      emitProgress("phase_start", { phase: "min_repro" });
+      const bfs = explore(compiled.storyJson!, knots, externals, {
+        maxDepth: bounds.maxDepth,
+        maxStates: reproStates,
+        strategy: "bfs",
+        preserveTurnState: semantics.usesTurns,
+        preserveRandomState: semantics.usesRandomness,
+        randomnessDetected: semantics.usesRandomness,
+      });
+      checked = mergeMinRepro(checked, bfs);
+      statesExplored = statesBase + checked.statesExplored;
+      emitProgress("phase_end", { phase: "min_repro" });
+    }
+    return classifyUnvisitedKnots(checked, inboundDiverts);
+  };
+
+  let report = runCheck({ maxDepth, maxStates, seed });
+  let advice = recommendNextRun(report, adviceProfile);
+  const runs: {
+    run: number;
+    flags: NextRunAdvice["flags"];
+    statesExplored: number;
+    endings: number;
+    runtimeErrors: number;
+    visitedKnots: number;
+    recommendation: string;
+  }[] = [];
+  const summarize = (run: number, flags: NextRunAdvice["flags"], checked: ExploreResult) => ({
+    run,
+    flags,
+    statesExplored: checked.statesExplored,
+    endings: checked.endingsFound.length,
+    runtimeErrors: checked.runtimeErrors.length,
+    visitedKnots: checked.visitedKnots.length,
+    recommendation: advice.recommendation,
+  });
+  runs.push(summarize(1, { ...report.limits }, report));
+  if (followNext) {
+    // Escalation loop: apply the recommendation, rerun, stop on a stop/
+    // investigate verdict, a fixpoint, or after three escalations.
+    while (!advice.stop && runs.length <= 3) {
+      const previous = report;
+      const flags = advice.flags;
+      console.error(
+        `↻ ${advice.recommendation}: rerunning with --max-depth ${flags.maxDepth} --max-states ${flags.maxStates}${flags.seed !== undefined ? ` --seed ${flags.seed}` : ""}`
+      );
+      report = runCheck(flags);
+      advice = recommendNextRun(report, adviceProfile);
+      const unchanged =
+        report.endingsFound.length === previous.endingsFound.length &&
+        report.runtimeErrors.length === previous.runtimeErrors.length &&
+        report.visitedKnots.length === previous.visitedKnots.length;
+      if (unchanged && !report.exhaustive) {
+        advice = {
+          ...advice,
+          recommendation: "stop",
+          stop: true,
+          rationale: `fixpoint: the escalated run found no new endings, runtime errors, or knots compared with the previous run. Previously: ${advice.rationale}`,
+          expectedGain: "none — consecutive runs at increased limits changed nothing",
+        };
+      }
+      runs.push(summarize(runs.length + 1, flags, report));
+    }
   }
-  classifyUnvisitedKnots(report, scanInboundDiverts(file));
 
   const outputReport = {
     compile: { ...compiled, storyJson: undefined },
     stats: st,
     ...(profile ? { profile } : {}),
     explore: report,
+    nextRun: advice,
+    ...(followNext ? { runs } : {}),
   };
   emitProgress("phase_start", { phase: "report" });
   if (asJson) {
@@ -249,7 +306,7 @@ async function main() {
       )
     );
   } else if (asMarkdown) {
-    console.log(renderMarkdown(compiled, st, report));
+    console.log(renderMarkdown(compiled, st, report, advice));
   } else if (asHuman) {
     console.log(renderHumanFindings(buildHumanFindings(outputReport)));
   } else {
@@ -311,6 +368,13 @@ async function main() {
     if (report.truncated) {
       console.log(`⚠ coverage is partial, not a proof — ${truncationAdvice(report)}`);
     }
+    if (advice.recommendation === "deepen" || advice.recommendation === "broaden" || advice.recommendation === "reseed") {
+      console.log(
+        `→ next run (${advice.recommendation}): --max-depth ${advice.flags.maxDepth} --max-states ${advice.flags.maxStates}${advice.flags.seed !== undefined ? ` --seed ${advice.flags.seed}` : ""} — ${advice.expectedGain}`
+      );
+    } else if (advice.recommendation === "investigate") {
+      console.log(`→ next: investigate — ${advice.rationale}`);
+    }
   }
   emitProgress("phase_end", { phase: "report" });
   emitProgress("run_end", {
@@ -370,7 +434,8 @@ function renderCompileFailureMarkdown(compiled: CompileResult): string {
 function renderMarkdown(
   compiled: CompileResult,
   storyStats: Record<string, number>,
-  report: ExploreResult
+  report: ExploreResult,
+  advice?: NextRunAdvice
 ): string {
   const complete =
     !report.truncated && report.externalFunctionsStubbed.length === 0 && !report.randomnessDetected;
@@ -424,6 +489,13 @@ function renderMarkdown(
   }
   if (report.randomnessDetected) {
     limitations.push("Random behavior was detected; every possible random seed was not enumerated.");
+  }
+  if (advice && advice.recommendation !== "stop") {
+    limitations.push(
+      advice.recommendation === "investigate"
+        ? `Suggested next step: investigate — ${advice.rationale}`
+        : `Suggested next run (${advice.recommendation}): \`--max-depth ${advice.flags.maxDepth} --max-states ${advice.flags.maxStates}${advice.flags.seed !== undefined ? ` --seed ${advice.flags.seed}` : ""}\` — ${advice.expectedGain}.`
+    );
   }
   if (limitations.length) lines.push("", "## Coverage limitations", "", ...limitations.map((x) => `- ${x}`));
   return lines.join("\n");
