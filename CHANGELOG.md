@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add truthful human progress for local terminal runs: interactive terminals show the current phase, configured work-budget use, discoveries, throughput where stable, and elapsed time; `--progress=human` prints log-friendly snapshots, while `--progress=off` remains silent. Progress explicitly describes work budget rather than story coverage.
+- Make hosted checks asynchronous with private short-lived jobs, real CLI-derived progress events, SSE reconnect plus status polling, and server-side cancellation. Uploaded source is still deleted after success, cancellation, timeout, or failure; retained job metadata contains only progress/report data and expires quickly.
 - Emit lifetime per-pass telemetry in JSON reports (#28): a `passes` array with, per pass, states explored vs granted, own finding counts, portfolio-marginal first discoveries (consistent with the schedule's per-round sums), dedupe hits, max depth reached, `lastDiscoveryAtState` (the cheap discovery-curve signal), truncation causes, and exhaustiveness — plus peak frontier size and prune count for the beam. Standalone pass runs and the CLI's BFS repro slice attach their own entry, so `--json` consumers see every pass that contributed to a report without parsing progress logs. Telemetry reports facts and leaves stop/continue judgments to the consumer: a long gap since a pass's last discovery does not prove the pass is done.
 
 ## 0.3.3 — 2026-07-10

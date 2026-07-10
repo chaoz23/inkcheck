@@ -24,6 +24,7 @@ import {
   truncationAdvice,
   unvisitedKnotHint,
 } from "./human-report";
+import { HumanProgressRenderer } from "./terminal-progress";
 
 function usage(message?: string): never {
   if (message) console.error(`inkcheck: ${message}\n`);
@@ -43,7 +44,7 @@ Options:
   --human            Emit a prioritized human-readable fix list
   --json             Emit the full report as JSON
   --markdown         Emit a GitHub-friendly Markdown report
-  --progress=<mode>  Write progress to stderr: ndjson or off (default off)
+  --progress=<mode>  Write progress to stderr: auto, human, ndjson, or off (default auto in a terminal)
 `);
   process.exit(2);
 }
@@ -65,7 +66,7 @@ async function main() {
   let minRepro = true;
   let profileOnly = false;
   let auto = false;
-  let progressMode: "ndjson" | "off" = "off";
+  let progressMode: "auto" | "human" | "ndjson" | "off" = process.stderr.isTTY ? "auto" : "off";
   const boundedInt = (flag: string, raw: string | undefined, max: number): number => {
     const value = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
     if (!Number.isSafeInteger(value) || value < 1 || value > max) {
@@ -87,8 +88,11 @@ async function main() {
     else if (arg === "--no-min-repro") minRepro = false;
     else if (arg.startsWith("--progress=")) {
       const mode = arg.slice("--progress=".length);
-      if (mode !== "ndjson" && mode !== "off") usage("--progress must be ndjson or off");
-      progressMode = mode;
+      if (!["auto", "human", "ndjson", "off"].includes(mode)) {
+        usage("--progress must be auto, human, ndjson, or off");
+      }
+      if (mode === "auto" && !process.stderr.isTTY) progressMode = "off";
+      else progressMode = mode as typeof progressMode;
     }
     else if (arg.startsWith("--")) usage(`unknown option: ${arg}`);
     else if (file) usage(`unexpected extra argument: ${arg}`);
@@ -121,6 +125,10 @@ async function main() {
   const startedAt = Date.now();
   let sequence = 0;
   let statesExplored = 0;
+  const selectedProgressMode = progressMode as "auto" | "human" | "ndjson" | "off";
+  const humanProgress = selectedProgressMode === "auto" || selectedProgressMode === "human"
+    ? new HumanProgressRenderer(process.stderr, selectedProgressMode)
+    : undefined;
   const emitProgress = (
     type: "run_start" | "phase_start" | "progress" | "phase_end" | "run_end",
     details: {
@@ -131,9 +139,7 @@ async function main() {
       unvisitedKnots?: number;
     } = {}
   ) => {
-    if (progressMode !== "ndjson") return;
-    process.stderr.write(
-      JSON.stringify({
+    const event = {
         schemaVersion: 1,
         sequence: ++sequence,
         type,
@@ -142,8 +148,9 @@ async function main() {
         stateBudget: totalMaxStates,
         budgetFraction: Math.min(1, statesExplored / totalMaxStates),
         ...details,
-      }) + "\n"
-    );
+      };
+    if (selectedProgressMode === "ndjson") process.stderr.write(JSON.stringify(event) + "\n");
+    humanProgress?.handle(event);
   };
 
   emitProgress("run_start");

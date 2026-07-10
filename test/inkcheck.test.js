@@ -632,6 +632,27 @@ test("exploration progress emits a time-based heartbeat before its state interva
   assert.ok(events.some((event) => event.statesExplored > 0 && event.statesExplored < 10_000));
 });
 
+test("human progress uses work-budget language and stays readable without terminal controls", () => {
+  const { HumanProgressRenderer } = require("../dist/terminal-progress");
+  let output = "";
+  const renderer = new HumanProgressRenderer({ isTTY: false, columns: 58, write: (text) => { output += text; } }, "human");
+  renderer.handle({
+    type: "progress",
+    phase: "explore",
+    pass: "beam:diversity",
+    elapsedMs: 12_000,
+    statesExplored: 37_250,
+    stateBudget: 100_000,
+    endingsFound: 7,
+    runtimeErrorsFound: 1,
+    unvisitedKnots: 42,
+  });
+  renderer.finish();
+  assert.match(output, /work states/);
+  assert.doesNotMatch(output, /coverage/);
+  assert.doesNotMatch(output, /\x1b\[/);
+});
+
 test("CLI rejects invalid numeric and unknown options as usage errors", () => {
   const invalid = spawnSync(process.execPath, [CLI, CLEAN_BRANCH, "--max-states", "nope"], {
     encoding: "utf8",
@@ -654,7 +675,7 @@ test("CLI rejects invalid numeric and unknown options as usage errors", () => {
     encoding: "utf8",
   });
   assert.strictEqual(invalidProgress.status, 2);
-  assert.match(invalidProgress.stderr, /--progress must be ndjson or off/);
+  assert.match(invalidProgress.stderr, /--progress must be auto, human, ndjson, or off/);
 });
 
 test("explore rejects unsafe limits even when called as a library", async () => {
