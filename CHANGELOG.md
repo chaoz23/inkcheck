@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.3 — 2026-07-10
 
 - Make bounded-coverage limits explicit in every report (#22): all output modes state the limits the run used (depth, state budget, seed); truncated runs name the limit that actually cut coverage (`truncatedBy`) with targeted raise-this-flag advice, informed by local *The Intercept* evidence that depth and state budget are separate axes.
 - Triage unvisited knots with an inbound-divert source scan (#22): each unvisited knot reports `inboundDiverts` and `staticOrphanCandidate`, so reports distinguish "no authored divert points here — possible orphan" from "has inbound diverts — likely beyond this run's limits", with matching next-step advice in `--human` output.
