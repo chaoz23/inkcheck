@@ -543,6 +543,70 @@ test("--next follows recommendations to an exhaustive result", () => {
   assert.match(md.stdout, /Suggested next run \(deepen\)/);
 });
 
+// The memory guard stops cleanly before a V8 OOM (which cannot be caught
+// after the fact) and keeps whatever was found so far.
+test("memory guard stops each engine early and reports truncatedBy.memory", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  // A predicate that trips after ~6000 states stands in for a real heap
+  // watermark; it makes the stop deterministic and instant.
+  const mkGuard = () => {
+    let n = 0;
+    return () => n++ * 512 < 6000;
+  };
+  for (const run of [
+    () => explore(compiled.storyJson, knots, [], { maxStates: 1_000_000, memoryGuard: mkGuard() }),
+    () => exploreRandom(compiled.storyJson, knots, [], { maxStates: 1_000_000, memoryGuard: mkGuard() }),
+  ]) {
+    const r = run();
+    assert.ok(r.statesExplored < 50_000, `expected early stop, got ${r.statesExplored}`);
+    assert.strictEqual(r.truncatedBy.memory, true);
+    assert.strictEqual(r.truncated, true);
+  }
+});
+
+test("portfolio memory stop keeps partial results and blames only memory", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  let n = 0;
+  const guard = () => n++ * 512 < 8000;
+  const report = explorePortfolio(compiled.storyJson, knots, [], {
+    maxStates: 1_000_000,
+    memoryGuard: guard,
+  });
+  assert.strictEqual(report.truncatedBy.memory, true);
+  assert.strictEqual(report.truncatedBy.maxStates, false, "memory, not budget, was the cause");
+  assert.ok(report.statesExplored < 50_000);
+  // Partial results are retained, and the schedule/telemetry still populate.
+  assert.ok(report.endingsFound.length > 0);
+  assert.ok(report.schedule.length >= 1);
+  assert.ok(report.passes.length >= 1);
+  const advice = recommendNextRun(report);
+  assert.strictEqual(advice.recommendation, "investigate");
+  assert.strictEqual(advice.stop, true);
+  assert.match(advice.rationale, /memory/);
+});
+
+test("--max-memory produces a partial report instead of crashing", () => {
+  // heapUsed at startup already exceeds 1 MB, so the guard trips immediately.
+  const proc = spawnSync(
+    process.execPath,
+    [CLI, EARLY_CHOICE_GRID, "--max-states", "500000", "--max-memory", "1", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(proc.status, 0);
+  const report = JSON.parse(proc.stdout);
+  assert.strictEqual(report.explore.truncatedBy.memory, true);
+  assert.strictEqual(report.nextRun.recommendation, "investigate");
+
+  const text = spawnSync(
+    process.execPath,
+    [CLI, EARLY_CHOICE_GRID, "--max-states", "500000", "--max-memory", "1"],
+    { encoding: "utf8" }
+  );
+  assert.match(text.stdout, /stopped early at \d+ states to stay under the memory guard/);
+});
+
 test("an exhaustive systematic pass clears sampling-slice truncation", async () => {
   const compiled = await compile(MANOR);
   const knots = scanKnots(MANOR);
@@ -551,7 +615,12 @@ test("an exhaustive systematic pass clears sampling-slice truncation", async () 
   const report = explorePortfolio(compiled.storyJson, knots, [], { maxStates: 500 });
   assert.strictEqual(report.exhaustive, true);
   assert.strictEqual(report.truncated, false);
-  assert.deepStrictEqual(report.truncatedBy, { maxDepth: false, maxStates: false, beamWidth: false });
+  assert.deepStrictEqual(report.truncatedBy, {
+    maxDepth: false,
+    maxStates: false,
+    beamWidth: false,
+    memory: false,
+  });
 
   const gridCompiled = await compile(EARLY_CHOICE_GRID);
   const grid = explorePortfolio(gridCompiled.storyJson, scanKnots(EARLY_CHOICE_GRID), [], {

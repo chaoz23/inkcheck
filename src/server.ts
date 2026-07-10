@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import * as v8 from "v8";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -103,10 +104,15 @@ server.registerTool(
     const totalMaxStates = maxStates ?? 100_000;
     const reproStates = minRepro !== false && totalMaxStates > 1 ? Math.max(1, Math.floor(totalMaxStates * 0.1)) : 0;
     const portfolioStates = totalMaxStates - reproStates;
+    // Stop cleanly before a V8 heap OOM (uncatchable after the fact); the
+    // cap tracks any --max-old-space-size the host set.
+    const memoryCapBytes = Math.floor(v8.getHeapStatistics().heap_size_limit * 0.85);
+    const memoryGuard = () => process.memoryUsage().heapUsed < memoryCapBytes;
     const options = {
       maxDepth,
       maxStates: Math.max(1, portfolioStates),
       seed,
+      memoryGuard,
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
@@ -117,6 +123,7 @@ server.registerTool(
         maxDepth,
         maxStates: reproStates,
         strategy: "bfs",
+        memoryGuard,
         preserveTurnState: semantics.usesTurns,
         preserveRandomState: semantics.usesRandomness,
         randomnessDetected: semantics.usesRandomness,

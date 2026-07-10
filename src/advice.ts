@@ -77,6 +77,21 @@ export function recommendNextRun(
     };
   }
 
+  // Memory-bound runs must be handled before any "raise a limit" branch:
+  // broadening or deepening only grows the frontier and state-hash set that
+  // triggered the guard, so more budget makes an OOM more likely, not less.
+  if (report.truncatedBy.memory) {
+    return {
+      recommendation: "investigate",
+      stop: true,
+      flags: sameFlags,
+      rationale:
+        "truncatedBy.memory is true: exploration stopped early to stay under the memory guard, so a bigger budget would hit the same wall sooner.",
+      expectedGain:
+        "none from a larger run — raise --max-old-space-size for more headroom, lower --max-states, or split the story and check parts separately",
+    };
+  }
+
   const passes = report.passes ?? [];
   const systematicLate = passes.some((p) => p.systematic && discoveredLate(p));
   const randomPass = passes.find((p) => p.pass.startsWith("random:"));

@@ -18,6 +18,10 @@ export function truncationAdvice(
 ): string {
   const causes = result.truncatedBy;
   const hints: string[] = [];
+  if (causes?.memory) {
+    // Memory is the binding constraint — do not suggest a bigger budget.
+    return "exploration stopped early to stay under the memory guard; raise --max-old-space-size for more headroom or lower --max-states, then rerun";
+  }
   if (causes?.maxDepth) {
     hints.push(
       `paths were cut at ${result.limits?.maxDepth ?? "the configured"} choices deep; raise --max-depth to follow longer trails`
