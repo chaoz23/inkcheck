@@ -30,6 +30,7 @@ export interface WebConfig extends HostedLimits {
   trustProxy: boolean;
   staticDir: string;
   usageFile?: string;
+  jobTtlMs: number;
 }
 
 export interface HostedCheckResponse {
@@ -44,9 +45,31 @@ export interface HostedCheckResponse {
   };
 }
 
+export interface HostedProgressEvent {
+  schemaVersion: 1;
+  sequence: number;
+  type: "queued" | "run_start" | "phase_start" | "progress" | "phase_end" | "run_end";
+  phase?: "compile" | "source_scan" | "explore" | "min_repro" | "report";
+  pass?: string;
+  elapsedMs: number;
+  statesExplored: number;
+  stateBudget: number;
+  budgetFraction: number;
+  endingsFound?: number;
+  runtimeErrorsFound?: number;
+  unvisitedKnots?: number;
+  status?: "queued" | "running" | "complete" | "cancelled" | "failed";
+}
+
+export interface SubmissionRunOptions {
+  onProgress?: (event: HostedProgressEvent) => void;
+  signal?: AbortSignal;
+}
+
 export type SubmissionRunner = (
   submission: HostedSubmission,
-  config: WebConfig
+  config: WebConfig,
+  options?: SubmissionRunOptions
 ) => Promise<HostedCheckResponse>;
 
 function integerEnv(name: string, fallback: number, minimum: number, maximum: number): number {
@@ -103,6 +126,7 @@ export function webConfigFromEnv(): WebConfig {
     trustProxy: process.env.INKCHECK_WEB_TRUST_PROXY === "1",
     staticDir: process.env.INKCHECK_WEB_STATIC_DIR ?? path.join(__dirname, "..", "web"),
     usageFile: process.env.INKCHECK_WEB_USAGE_FILE || undefined,
+    jobTtlMs: integerEnv("INKCHECK_WEB_JOB_TTL_MS", 900_000, 60_000, 3_600_000),
   };
 }
 
@@ -150,7 +174,8 @@ function childEnvironment(jobDir: string): NodeJS.ProcessEnv {
 
 export async function runSubmission(
   submission: HostedSubmission,
-  config: WebConfig
+  config: WebConfig,
+  options: SubmissionRunOptions = {}
 ): Promise<HostedCheckResponse> {
   const started = Date.now();
   const jobDir = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-web-"));
@@ -168,6 +193,7 @@ export async function runSubmission(
       cli,
       root,
       "--json",
+      "--progress=ndjson",
       "--max-depth",
       String(submission.maxDepth),
       "--max-states",
@@ -183,6 +209,7 @@ export async function runSubmission(
       });
       let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
       let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+      let progressBuffer = "";
       let finished = false;
 
       const finish = (error?: Error, text?: string) => {
@@ -207,7 +234,19 @@ export async function runSubmission(
         if (!finished) stdout = append(stdout, chunk);
       });
       child.stderr?.on("data", (chunk: Buffer<ArrayBufferLike>) => {
-        if (!finished) stderr = append(stderr, chunk);
+        if (finished) return;
+        stderr = append(stderr, chunk);
+        progressBuffer += chunk.toString("utf8");
+        const lines = progressBuffer.split("\n");
+        progressBuffer = lines.pop() ?? "";
+        for (const line of lines) {
+          try {
+            const event = JSON.parse(line) as HostedProgressEvent;
+            if (event.schemaVersion === 1 && typeof event.type === "string") options.onProgress?.(event);
+          } catch {
+            // Keep non-progress stderr available for a concise failure message.
+          }
+        }
       });
       child.on("error", (error) => finish(error));
       child.on("close", (code) => {
@@ -233,6 +272,12 @@ export async function runSubmission(
         finish(new SubmissionError(LIMIT_HIT_MESSAGE, 504, "limit_hit"));
       }, config.timeoutMs);
       timer.unref();
+      const cancel = () => {
+        stopProcessTree(child);
+        finish(new SubmissionError("This check was cancelled", 499));
+      };
+      if (options.signal?.aborted) cancel();
+      else options.signal?.addEventListener("abort", cancel, { once: true });
     });
 
     let report: unknown;
@@ -283,6 +328,141 @@ class RateLimiter {
       }
     }
     return true;
+  }
+}
+
+type HostedJobStatus = "queued" | "running" | "complete" | "cancelled" | "failed";
+
+interface HostedJob {
+  id: string;
+  token: string;
+  createdAt: number;
+  status: HostedJobStatus;
+  events: HostedProgressEvent[];
+  nextSequence: number;
+  controller: AbortController;
+  submission: HostedSubmission;
+  result?: HostedCheckResponse;
+  error?: string;
+  expiresAt?: number;
+}
+
+class HostedJobManager {
+  private readonly jobs = new Map<string, HostedJob>();
+  private active = 0;
+
+  constructor(
+    private readonly config: WebConfig,
+    private readonly runner: SubmissionRunner,
+    private readonly onComplete: (job: HostedJob) => void
+  ) {}
+
+  create(submission: HostedSubmission): HostedJob {
+    const job: HostedJob = {
+      id: randomUUID(),
+      token: randomUUID(),
+      createdAt: Date.now(),
+      status: "queued",
+      events: [],
+      nextSequence: 0,
+      controller: new AbortController(),
+      submission,
+    };
+    this.jobs.set(job.id, job);
+    this.emit(job, { type: "queued", status: "queued" });
+    void this.pump();
+    return job;
+  }
+
+  get(id: string, token: string | null): HostedJob | undefined {
+    this.cleanup();
+    const job = this.jobs.get(id);
+    return job && token === job.token ? job : undefined;
+  }
+
+  cancel(job: HostedJob): boolean {
+    if (job.status === "complete" || job.status === "cancelled" || job.status === "failed") return false;
+    job.status = "cancelled";
+    job.controller.abort();
+    this.emit(job, { type: "run_end", status: "cancelled" });
+    job.expiresAt = Date.now() + this.config.jobTtlMs;
+    return true;
+  }
+
+  snapshot(job: HostedJob): Record<string, unknown> {
+    const latest = job.events[job.events.length - 1];
+    return {
+      job: {
+        id: job.id,
+        status: job.status,
+        createdAt: job.createdAt,
+        ...(latest ? { progress: latest } : {}),
+        ...(job.result ? { result: job.result } : {}),
+        ...(job.error ? { error: job.error } : {}),
+      },
+    };
+  }
+
+  eventsAfter(job: HostedJob, sequence: number): HostedProgressEvent[] {
+    return job.events.filter((event) => event.sequence > sequence);
+  }
+
+  private emit(job: HostedJob, patch: Omit<HostedProgressEvent, "schemaVersion" | "sequence" | "elapsedMs" | "statesExplored" | "stateBudget" | "budgetFraction"> & Partial<HostedProgressEvent>): void {
+    const previous = job.events[job.events.length - 1];
+    const event: HostedProgressEvent = {
+      ...patch,
+      schemaVersion: 1,
+      sequence: ++job.nextSequence,
+      elapsedMs: patch.elapsedMs ?? Date.now() - job.createdAt,
+      statesExplored: patch.statesExplored ?? previous?.statesExplored ?? 0,
+      stateBudget: patch.stateBudget ?? previous?.stateBudget ?? job.submission.maxStates,
+      budgetFraction: patch.budgetFraction ?? previous?.budgetFraction ?? 0,
+    } as HostedProgressEvent;
+    job.events.push(event);
+    if (job.events.length > 160) job.events.shift();
+  }
+
+  private async pump(): Promise<void> {
+    while (this.active < this.config.concurrency) {
+      const job = [...this.jobs.values()].find((candidate) => candidate.status === "queued");
+      if (!job) return;
+      this.active++;
+      job.status = "running";
+      this.emit(job, { type: "run_start", status: "running" });
+      void this.run(job).finally(() => {
+        this.active--;
+        void this.pump();
+      });
+    }
+  }
+
+  private async run(job: HostedJob): Promise<void> {
+    try {
+      const result = await this.runner(job.submission, this.config, {
+        signal: job.controller.signal,
+        onProgress: (event) => this.emit(job, { ...event, status: "running" }),
+      });
+      if (job.status === "cancelled") return;
+      job.result = result;
+      job.status = "complete";
+      this.emit(job, { type: "run_end", status: "complete" });
+      this.onComplete(job);
+    } catch (error) {
+      if (job.status !== "cancelled") {
+        job.status = "failed";
+        job.error = error instanceof Error ? error.message : "Unexpected service error";
+        this.emit(job, { type: "run_end", status: "failed" });
+      }
+    } finally {
+      job.expiresAt = Date.now() + this.config.jobTtlMs;
+    }
+  }
+
+  private cleanup(): void {
+    const now = Date.now();
+    for (const [id, job] of this.jobs) {
+      if (job.expiresAt && job.expiresAt <= now) this.jobs.delete(id);
+    }
   }
 }
 
@@ -411,7 +591,7 @@ export function applyBrowserOrigin(
   }
   res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Inkcheck-Access-Code");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Inkcheck-Access-Code, X-Inkcheck-Async");
   res.setHeader("Access-Control-Max-Age", "600");
   res.setHeader("Vary", "Origin");
 }
@@ -429,6 +609,12 @@ function sendNoContent(res: ServerResponse): void {
   res.statusCode = 204;
   res.setHeader("Cache-Control", "no-store");
   res.end();
+}
+
+function sendSse(res: ServerResponse, event: HostedProgressEvent): void {
+  res.write(`id: ${event.sequence}\n`);
+  res.write("event: progress\n");
+  res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
 function sendAsset(res: ServerResponse, file: string, contentType: string): void {
@@ -455,7 +641,6 @@ export function createInkcheckWebServer(options: {
   const limiter = new RateLimiter(config.rateLimit, config.rateWindowMs);
   const globalLimiter = new RateLimiter(config.globalRateLimit, config.rateWindowMs);
   const browserEventLimiter = new RateLimiter(120, config.rateWindowMs);
-  let active = 0;
 
   const recordUsage = (event: Parameters<UsageRecorder["record"]>[0], details?: { durationMs?: number }) => {
     try {
@@ -464,6 +649,22 @@ export function createInkcheckWebServer(options: {
       console.warn(JSON.stringify({ event: "usage_write_failed" }));
     }
   };
+  const jobs = new HostedJobManager(config, runner, (job) => {
+    const result = job.result!;
+    console.log(JSON.stringify({
+      event: "check_complete",
+      jobId: job.id,
+      files: result.meta.uploadedFiles,
+      bytes: result.meta.uploadedBytes,
+      durationMs: result.meta.durationMs,
+      coverageLimitHit: result.meta.coverageLimitHit === true,
+    }));
+    recordUsage("check_complete", { durationMs: result.meta.durationMs });
+    if (result.meta.coverageLimitHit === true) {
+      console.warn(JSON.stringify({ event: "check_limit_hit", jobId: job.id, status: 200 }));
+      recordUsage("check_limit_hit");
+    }
+  });
 
   return createServer(async (req, res) => {
     const requestId = randomUUID();
@@ -472,7 +673,7 @@ export function createInkcheckWebServer(options: {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
       pathname = url.pathname;
-      if (url.pathname === "/api/check" || url.pathname === "/api/event") {
+      if (url.pathname === "/api/check" || url.pathname === "/api/event" || url.pathname.startsWith("/api/jobs/")) {
         applyBrowserOrigin(req, res, config.allowedOrigins);
         if (req.method === "OPTIONS") {
           sendNoContent(res);
@@ -504,6 +705,53 @@ export function createInkcheckWebServer(options: {
         sendNoContent(res);
         return;
       }
+      const jobMatch = url.pathname.match(/^\/api\/jobs\/([0-9a-f-]{36})(?:\/(events|cancel))?$/i);
+      if (jobMatch) {
+        const [, id, action] = jobMatch;
+        const job = jobs.get(id, url.searchParams.get("token"));
+        if (!job) throw new SubmissionError("This check is unavailable or has expired", 404);
+        if (req.method === "GET" && !action) {
+          sendJson(res, 200, jobs.snapshot(job));
+          return;
+        }
+        if (req.method === "POST" && action === "cancel") {
+          const cancelled = jobs.cancel(job);
+          sendJson(res, cancelled ? 202 : 409, jobs.snapshot(job));
+          return;
+        }
+        if (req.method === "GET" && action === "events") {
+          securityHeaders(res);
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+          res.setHeader("Cache-Control", "no-store");
+          res.setHeader("Connection", "keep-alive");
+          res.flushHeaders();
+          const last = Number(req.headers["last-event-id"] ?? url.searchParams.get("after") ?? 0);
+          let lastSequence = Number.isSafeInteger(last) ? last : 0;
+          for (const event of jobs.eventsAfter(job, lastSequence)) {
+            lastSequence = event.sequence;
+            sendSse(res, event);
+          }
+          const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 15_000);
+          const watch = setInterval(() => {
+            const events = jobs.eventsAfter(job, lastSequence);
+            for (const event of events) {
+              lastSequence = event.sequence;
+              sendSse(res, event);
+            }
+            if (["complete", "cancelled", "failed"].includes(job.status)) {
+              clearInterval(watch);
+              clearInterval(heartbeat);
+              res.end();
+            }
+          }, 500);
+          req.on("close", () => {
+            clearInterval(watch);
+            clearInterval(heartbeat);
+          });
+          return;
+        }
+      }
       if (req.method === "POST" && url.pathname === "/api/check") {
         if (!validAccessCode(req, config.accessCode)) {
           throw new SubmissionError("A valid pilot access code is required", 401);
@@ -514,33 +762,34 @@ export function createInkcheckWebServer(options: {
         if (!limiter.take(requestIp(req, config.trustProxy))) {
           throw new SubmissionError("Rate limit reached; try again later", 429);
         }
-        if (active >= config.concurrency) {
-          throw new SubmissionError("The checker is busy; try again shortly", 503);
-        }
-        active++;
-        try {
-          const body = await readMultipart(req, config.maxBodyBytes);
-          const submission = validateSubmission(body, config);
+        const body = await readMultipart(req, config.maxBodyBytes);
+        const submission = validateSubmission(body, config);
+        if (req.headers["x-inkcheck-async"] !== "1") {
           const result = await runner(submission, config);
-          console.log(
-            JSON.stringify({
-              event: "check_complete",
-              requestId,
-              files: result.meta.uploadedFiles,
-              bytes: result.meta.uploadedBytes,
-              durationMs: result.meta.durationMs,
-              coverageLimitHit: result.meta.coverageLimitHit === true,
-            })
-          );
+          console.log(JSON.stringify({
+            event: "check_complete",
+            requestId,
+            files: result.meta.uploadedFiles,
+            bytes: result.meta.uploadedBytes,
+            durationMs: result.meta.durationMs,
+            coverageLimitHit: result.meta.coverageLimitHit === true,
+          }));
           recordUsage("check_complete", { durationMs: result.meta.durationMs });
-          if (result.meta.coverageLimitHit === true) {
-            console.warn(JSON.stringify({ event: "check_limit_hit", requestId, status: 200 }));
-            recordUsage("check_limit_hit");
-          }
           sendJson(res, 200, { requestId, ...result });
-        } finally {
-          active--;
+          return;
         }
+        const job = jobs.create(submission);
+        const base = `/api/jobs/${job.id}?token=${job.token}`;
+        sendJson(res, 202, {
+          requestId,
+          job: {
+            id: job.id,
+            status: job.status,
+            statusUrl: base,
+            eventUrl: `/api/jobs/${job.id}/events?token=${job.token}`,
+            cancelUrl: `/api/jobs/${job.id}/cancel?token=${job.token}`,
+          },
+        });
         return;
       }
       sendJson(res, 404, { error: "Not found" });
