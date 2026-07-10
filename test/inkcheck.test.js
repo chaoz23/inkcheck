@@ -10,7 +10,14 @@ const {
   scanExternals,
   scanStorySemantics,
 } = require("../dist/inklecate");
-const { explore, explorePortfolio, playtest, mergeMinRepro, stateKey } = require("../dist/explore");
+const {
+  explore,
+  explorePortfolio,
+  exploreRandom,
+  playtest,
+  mergeMinRepro,
+  stateKey,
+} = require("../dist/explore");
 const { runSubmission, webConfigFromEnv } = require("../dist/web");
 const { SubmissionError, validateSubmission } = require("../dist/web-validation");
 
@@ -24,6 +31,7 @@ const LINEAR_RUNTIME_ERROR = path.join(
 );
 const CLEAN_BRANCH = path.join(__dirname, "..", "examples", "clean-branch.ink");
 const CONTENT_EXHAUSTION = path.join(__dirname, "..", "examples", "content-exhaustion.ink");
+const EARLY_CHOICE_GRID = path.join(__dirname, "..", "examples", "early-choice-grid.ink");
 const EXTERNAL_STORY = path.join(__dirname, "..", "examples", "external-story.ink");
 const CLI = path.join(__dirname, "..", "dist", "cli.js");
 const ROOT = path.join(__dirname, "..");
@@ -105,6 +113,49 @@ test("portfolio exploration spends one total state budget across complementary D
   assert.strictEqual(report.statesExplored, 2);
   assert.strictEqual(report.limits.maxStates, 2);
   assert.strictEqual(report.endingsFound.length, 2);
+});
+
+test("random exploration is seeded, reproducible, and labels its findings", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  const opts = { maxStates: 600, seed: 7 };
+  const a = exploreRandom(compiled.storyJson, knots, [], opts);
+  const b = exploreRandom(compiled.storyJson, knots, [], opts);
+  assert.deepStrictEqual(a.endingsFound, b.endingsFound);
+  assert.deepStrictEqual(a.visitedKnots.sort(), b.visitedKnots.sort());
+  assert.strictEqual(a.limits.seed, 7);
+  assert.ok(a.endingsFound.length > 0);
+  assert.ok(a.endingsFound.every((e) => e.foundBy === "random:seed=7"));
+});
+
+// Regression for issues #20/#21: the deterministic DFS portfolio alone missed
+// endings 3, 4, 6, and 7 on this fixture even with a 1M state budget, because
+// it repeated the same early-choice prefixes while exhausting late suffixes.
+test("portfolio covers early-choice state combinations via the random slice", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  const report = explorePortfolio(compiled.storyJson, knots, [], { maxStates: 6000 });
+  const labels = new Set(report.endingsFound.map((e) => e.finalText.trim()));
+  for (let n = 1; n <= 7; n++) {
+    assert.ok(labels.has(`Ending ${n}`), `Ending ${n} not found`);
+  }
+  const strategies = new Set(report.endingsFound.map((e) => e.foundBy));
+  assert.ok(strategies.has("random:seed=1"), "random slice contributed findings");
+  assert.ok([...strategies].some((s) => s.startsWith("dfs:")), "dfs passes contributed findings");
+});
+
+test("random exploration reports runtime errors with a repro path and seed", async () => {
+  const compiled = await compile(MANOR);
+  const report = exploreRandom(compiled.storyJson, scanKnots(MANOR), [], {
+    maxStates: 200,
+    seed: 3,
+  });
+  assert.ok(report.runtimeErrors.length >= 1);
+  const err = report.runtimeErrors[0];
+  assert.ok(err.path.length > 0);
+  assert.strictEqual(err.foundBy, "random:seed=3");
+  // Crashing walks must not be double-counted as endings.
+  assert.ok(report.endingsFound.every((e) => e.finalText.length > 0));
 });
 
 test("playtest follows a scripted path and reports variables", async () => {
@@ -197,6 +248,22 @@ test("CLI accepts limit flags before the story path", () => {
     line: 25,
     approximate: true,
   });
+});
+
+test("CLI accepts --seed and reports it in the JSON limits", () => {
+  const proc = spawnSync(
+    process.execPath,
+    [CLI, CLEAN_BRANCH, "--max-states", "100", "--seed", "9", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(proc.status, 0);
+  const report = JSON.parse(proc.stdout);
+  assert.strictEqual(report.explore.limits.seed, 9);
+  const invalid = spawnSync(process.execPath, [CLI, CLEAN_BRANCH, "--seed", "nope"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(invalid.status, 2);
+  assert.match(invalid.stderr, /requires an integer from 1 to 4294967295/);
 });
 
 test("CLI rejects invalid numeric and unknown options as usage errors", () => {

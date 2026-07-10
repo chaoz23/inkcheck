@@ -26,12 +26,16 @@ export interface EndingReport {
   path: string[];
   finalText: string;
   variables: Record<string, unknown>;
+  /** Search pass that found this ending, e.g. "dfs:last" or "random:seed=1". */
+  foundBy?: string;
 }
 
 export interface RuntimeErrorReport {
   message: string;
   path: string[];
   sourceLocation?: { file: string; line: number; approximate: boolean };
+  /** Search pass that found this error, e.g. "dfs:last" or "random:seed=1". */
+  foundBy?: string;
 }
 
 export interface ExploreResult {
@@ -47,7 +51,7 @@ export interface ExploreResult {
   /** Whether Ink random functions or shuffle sequences occur in the source. */
   randomnessDetected: boolean;
   truncated: boolean;
-  limits: { maxDepth: number; maxStates: number };
+  limits: { maxDepth: number; maxStates: number; seed?: number };
 }
 
 /**
@@ -261,7 +265,11 @@ export interface ExploreOptions {
   preserveRandomState?: boolean;
   /** Report that the source scanner found random behavior. */
   randomnessDetected?: boolean;
+  /** PRNG seed for the random-sampling pass; fixed default keeps CI reproducible. */
+  seed?: number;
 }
+
+export const DEFAULT_RANDOM_SEED = 1;
 
 /**
  * Bounded systematic walk of the story's choice tree. Reports every
@@ -287,6 +295,7 @@ export function explore(
   }
   const strategy = opts.strategy ?? "dfs";
   const dfsChoicePriority = opts.dfsChoicePriority ?? "last";
+  const foundBy = strategy === "bfs" ? "bfs" : `dfs:${dfsChoicePriority}`;
   const stateSensitivity = {
     turns: opts.preserveTurnState ?? true,
     randomness: opts.preserveRandomState ?? true,
@@ -324,7 +333,7 @@ export function explore(
   // Root: continue the fresh story to the first choice point.
   const rootStep = continueMaximally(s);
   s.errors.forEach((e) =>
-    runtimeErrors.set(e, { message: e, path: [], sourceLocation: sourceLocationForRuntimeError(e, knots) })
+    runtimeErrors.set(e, { message: e, path: [], sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
@@ -335,6 +344,7 @@ export function explore(
       path: [],
       finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
       variables: extractVariables(s.story),
+      foundBy,
     });
   }
 
@@ -356,6 +366,7 @@ export function explore(
       runtimeErrors.set(String(e), {
         message: `State restore failed: ${e instanceof Error ? e.message : e}`,
         path: frame.path,
+        foundBy,
       });
       continue;
     }
@@ -384,6 +395,7 @@ export function explore(
           message: msg,
           path,
           sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
+          foundBy,
         });
         continue;
       }
@@ -395,6 +407,7 @@ export function explore(
             message: msg,
             path,
             sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
+            foundBy,
           });
         }
       });
@@ -406,7 +419,7 @@ export function explore(
         const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
         const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
         if (!endings.has(key)) {
-          endings.set(key, { path, finalText, variables: extractVariables(s.story) });
+          endings.set(key, { path, finalText, variables: extractVariables(s.story), foundBy });
         }
         continue;
       }
@@ -438,6 +451,166 @@ export function explore(
   };
 }
 
+/** Deterministic PRNG (mulberry32) so random exploration stays reproducible in CI. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Seeded random playthroughs from the story root. Unlike the systematic DFS
+ * passes, each walk re-rolls every choice point, which varies early-choice
+ * prefixes instead of exhausting late-choice suffixes. The seed makes runs
+ * reproducible; `statesExplored` counts choice transitions across all walks.
+ * A `truncated: false` result means every sampled walk reached a natural end
+ * within limits — it never implies exhaustive coverage on its own.
+ */
+export function exploreRandom(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {}
+): ExploreResult {
+  const maxDepth = opts.maxDepth ?? 30;
+  const maxStates = opts.maxStates ?? 100_000;
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
+    throw new RangeError("maxDepth must be an integer from 1 to 1000");
+  }
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 1_000_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 1000000");
+  }
+  const seed = opts.seed ?? DEFAULT_RANDOM_SEED;
+  if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff) {
+    throw new RangeError("seed must be an integer from 0 to 4294967295");
+  }
+  const foundBy = `random:seed=${seed}`;
+  const rng = mulberry32(seed);
+
+  const endings = new Map<string, EndingReport>();
+  const runtimeErrors = new Map<string, RuntimeErrorReport>();
+  const runtimeWarnings = new Set<string>();
+  const visitedKnots = new Set<string>();
+  let statesExplored = 0;
+  let truncated = false;
+
+  const nonFunctionKnots = knots.filter((k) => !k.isFunction);
+  const recordKnotCoverage = (session: StorySession) => {
+    for (const k of nonFunctionKnots) {
+      if (visitedKnots.has(k.name)) continue;
+      try {
+        if (session.story.state.VisitCountAtPathString(k.name) > 0) visitedKnots.add(k.name);
+      } catch {
+        /* path not addressable */
+      }
+    }
+  };
+
+  const s = makeStory(storyJson, externals);
+  const resetSession = () => {
+    s.errors.length = 0;
+    s.warnings.length = 0;
+  };
+
+  const rootStep = continueMaximally(s);
+  s.errors.forEach((e) =>
+    runtimeErrors.set(e, { message: e, path: [], sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
+  );
+  s.warnings.forEach((w) => runtimeWarnings.add(w));
+  recordKnotCoverage(s);
+
+  const result = (): ExploreResult => ({
+    statesExplored,
+    endingsFound: [...endings.values()],
+    runtimeErrors: [...runtimeErrors.values()],
+    runtimeWarnings: [...runtimeWarnings],
+    unvisitedKnots: nonFunctionKnots
+      .filter((k) => !visitedKnots.has(k.name))
+      .map(({ name, file, line }) => ({ name, file, line })),
+    visitedKnots: [...visitedKnots],
+    externalFunctionsStubbed: [...externals],
+    randomnessDetected: opts.randomnessDetected ?? false,
+    truncated,
+    limits: { maxDepth, maxStates, seed },
+  });
+
+  if (rootStep.choicesOffered.length === 0) {
+    // Linear story (or immediate end): a single walk covers it.
+    if (s.errors.length === 0) {
+      endings.set(rootStep.text, {
+        path: [],
+        finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
+        variables: extractVariables(s.story),
+        foundBy,
+      });
+    }
+    return result();
+  }
+
+  const rootState = s.story.state.ToJson();
+  while (statesExplored < maxStates) {
+    resetSession();
+    s.story.state.LoadJson(rootState);
+    const path: string[] = [];
+    let walkDone = false;
+    while (path.length < maxDepth) {
+      const numChoices = s.story.currentChoices.length;
+      if (numChoices === 0) break;
+      const i = Math.floor(rng() * numChoices);
+      const choice = s.story.currentChoices[i] as { text?: string; sourcePath?: string } | undefined;
+      const choiceText = choice?.text ?? `#${i}`;
+      const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
+      path.push(choiceText);
+      // Count the transition attempt up front so failing walks still consume
+      // budget and the sampling loop always terminates.
+      statesExplored++;
+      try {
+        s.story.ChooseChoiceIndex(i);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!runtimeErrors.has(msg)) {
+          runtimeErrors.set(msg, { message: msg, path: [...path], sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+        }
+        walkDone = true;
+        break;
+      }
+      const step = continueMaximally(s);
+      s.errors.forEach((msg) => {
+        if (!runtimeErrors.has(msg)) {
+          runtimeErrors.set(msg, { message: msg, path: [...path], sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+        }
+      });
+      s.warnings.forEach((w) => runtimeWarnings.add(w));
+      recordKnotCoverage(s);
+      if (s.errors.length > 0) {
+        walkDone = true;
+        break;
+      }
+      const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
+      if (ended) {
+        const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
+        const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
+        if (!endings.has(key)) {
+          endings.set(key, { path: [...path], finalText, variables: extractVariables(s.story), foundBy });
+        }
+        walkDone = true;
+        break;
+      }
+      if (statesExplored >= maxStates) {
+        truncated = true;
+        break;
+      }
+      resetSession();
+    }
+    if (!walkDone && path.length >= maxDepth) truncated = true;
+  }
+  return result();
+}
+
 export function explorePortfolio(
   storyJson: string,
   knots: KnotInfo[],
@@ -450,8 +623,12 @@ export function explorePortfolio(
   }
   if (maxStates === 1) return explore(storyJson, knots, externals, opts);
 
-  const insideBudget = maxStates >= 3 ? Math.max(1, Math.floor(maxStates * 0.4)) : 0;
-  const edgeBudget = maxStates - insideBudget;
+  // A seeded random-sampling slice varies early-choice prefixes that the
+  // deterministic DFS passes tend to repeat (see issues #20/#21).
+  const randomBudget = maxStates >= 5 ? Math.max(1, Math.floor(maxStates * 0.2)) : 0;
+  const dfsStates = maxStates - randomBudget;
+  const insideBudget = dfsStates >= 3 ? Math.max(1, Math.floor(dfsStates * 0.4)) : 0;
+  const edgeBudget = dfsStates - insideBudget;
   const lastBudget = Math.ceil(edgeBudget / 2);
   const firstBudget = edgeBudget - lastBudget;
   const shared = { ...opts };
@@ -460,13 +637,19 @@ export function explorePortfolio(
     { maxStates: firstBudget, dfsChoicePriority: "first" as const },
     { maxStates: insideBudget, dfsChoicePriority: "inside-out" as const },
   ].filter((run) => run.maxStates > 0);
-  const [firstRun, ...rest] = runs.map((run) =>
+  const results = runs.map((run) =>
     explore(storyJson, knots, externals, {
       ...shared,
       ...run,
       strategy: "dfs",
     })
   );
+  if (randomBudget > 0) {
+    results.push(
+      exploreRandom(storyJson, knots, externals, { ...shared, maxStates: randomBudget })
+    );
+  }
+  const [firstRun, ...rest] = results;
   return rest.reduce((merged, result) => mergeExploreResults(merged, result), firstRun);
 }
 
@@ -477,12 +660,18 @@ function endingKey(e: EndingReport): string {
 export function mergeExploreResults(main: ExploreResult, other: ExploreResult): ExploreResult {
   for (const err of main.runtimeErrors) {
     const match = other.runtimeErrors.find((e) => e.message === err.message);
-    if (match && match.path.length < err.path.length) err.path = match.path;
+    if (match && match.path.length < err.path.length) {
+      err.path = match.path;
+      err.foundBy = match.foundBy;
+    }
   }
   const otherEndings = new Map(other.endingsFound.map((e) => [endingKey(e), e]));
   for (const end of main.endingsFound) {
     const match = otherEndings.get(endingKey(end));
-    if (match && match.path.length < end.path.length) end.path = match.path;
+    if (match && match.path.length < end.path.length) {
+      end.path = match.path;
+      end.foundBy = match.foundBy;
+    }
   }
   // A complementary pass may also have reached endings/errors/knots the first pass missed within limits.
   const mainEndingKeys = new Set(main.endingsFound.map(endingKey));
@@ -501,10 +690,12 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
   main.truncated ||= other.truncated;
   main.externalFunctionsStubbed = [...new Set([...main.externalFunctionsStubbed, ...other.externalFunctionsStubbed])];
   main.randomnessDetected ||= other.randomnessDetected;
+  const seed = main.limits.seed ?? other.limits.seed;
   main.limits = {
     maxDepth: Math.max(main.limits.maxDepth, other.limits.maxDepth),
     maxStates: main.limits.maxStates + other.limits.maxStates,
   };
+  if (seed !== undefined) main.limits.seed = seed;
   return main;
 }
 

@@ -50,7 +50,7 @@ The local CLI remains the privacy-first option because no story upload occurs. S
 | **`inklecate` (compiler)** | ✓ | — | — | — | ✓ |
 | **Manual playtesting** | — | only what you click | by luck | if you remember your clicks | — |
 | **Ink-Tester** | ✓ | random repeated runs | line coverage | limited | manual/CLI |
-| **inkcheck** | ✓ | systematic, bounded | knot coverage | ✓ | ✓ |
+| **inkcheck** | ✓ | systematic + seeded random, bounded | knot coverage | ✓ | ✓ |
 
 The compiler tells you the story is *valid*. Clicking through tells you the paths you *happened to click* work. [Ink-Tester](https://github.com/wildwinter/Ink-Tester) repeatedly samples random playthroughs and reports line-level frequency; inkcheck instead walks choice states systematically and returns short failure paths. The key difference is repeatability: after you fix a reported path, the same configured run can check that path again. The approaches are complementary, especially for stories with randomness or engine integrations.
 
@@ -73,7 +73,7 @@ Exit code is non-zero on compile or runtime errors. Add `--strict` to also fail 
 
 Large stories can exceed the defaults. On inkle's published [*The Intercept*](https://github.com/inkle/the-intercept), inkcheck marks the report as truncated even when the state budget is raised well beyond the default. That is a useful partial check, not proof of complete coverage; increase the limits deliberately and keep the limitation visible in CI. The hosted checker uses a 100,000-state default and asks authors to file an issue if that still is not enough.
 
-Within a single run, inkcheck spends its state budget across complementary search passes rather than betting everything on one traversal order. The current CLI portfolio explores last-choice-first, first-choice-first, and inside-out DFS slices, then reserves a small breadth-first slice to shorten repro paths. This often finds more endings and reachable knots at the same `--max-states` limit, but it is still bounded QA: a truncated report is useful evidence, not an exhaustive proof.
+Within a single run, inkcheck spends its state budget across complementary search passes rather than betting everything on one traversal order. The current CLI portfolio explores last-choice-first, first-choice-first, and inside-out DFS slices, adds a seeded random-sampling slice that varies early-choice prefixes the deterministic passes tend to repeat, then reserves a small breadth-first slice to shorten repro paths. The random slice uses a fixed default seed, so runs stay reproducible in CI; every reported ending and runtime error names the pass (and seed) that found it. This often finds more endings and reachable knots at the same `--max-states` limit, but it is still bounded QA: a truncated report is useful evidence, not an exhaustive proof.
 
 ### Bounded search vs random sampling
 
@@ -124,13 +124,15 @@ The intended loop for an agent editing a story: edit `.ink` → `compile_story` 
 ## CLI
 
 ```
-inkcheck <story.ink> [--max-depth N] [--max-states N] [--no-min-repro] [--strict] [--human|--json|--markdown]
+inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--no-min-repro] [--strict] [--human|--json|--markdown]
 inkcheck mcp    # start the MCP server on stdio
 ```
 
 `--max-depth` accepts 1–1,000 and `--max-states` accepts 1–1,000,000. These hard ceilings prevent malformed automation inputs from accidentally disabling the exploration bounds. The default state budget is 100,000.
 
-`--max-states` is a total budget for the run, not a promise that one single DFS walk will spend all states. By default the CLI divides most of that budget across three complementary DFS views of the choice tree and keeps a small breadth-first slice for shorter failure and ending repro paths. Use `--no-min-repro` to spend that repro slice on the DFS portfolio instead when breadth-first shortening is less important than broader search.
+`--max-states` is a total budget for the run, not a promise that one single DFS walk will spend all states. By default the CLI divides most of that budget across three complementary DFS views of the choice tree plus a seeded random-sampling slice, and keeps a small breadth-first slice for shorter failure and ending repro paths. Use `--no-min-repro` to spend that repro slice on the DFS portfolio instead when breadth-first shortening is less important than broader search.
+
+`--seed` (default 1) controls the random-sampling slice. The same seed always samples the same walks, so CI results stay reproducible; change the seed across scheduled runs to sample different early-choice combinations over time. Each finding's `foundBy` field in `--json` output names the pass that discovered it, e.g. `dfs:last` or `random:seed=1`.
 
 GitHub Actions:
 
@@ -168,7 +170,7 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 
 - **Compilation** uses `inklecate`, the canonical compiler — found via `$INKLECATE_PATH`, then `PATH`, then auto-downloaded from the pinned official ink 1.2.1 release into `~/.cache/inkcheck` on first run. Downloaded archives are verified against pinned SHA-256 hashes before extraction. Stories are compiled with `-c` so all knot visits are counted.
 - **Exploration** runs the compiled story in [inkjs](https://github.com/y-lohse/inkjs) (the official JS runtime port), reusing pooled story instances so the compiled JSON is parsed once per pass and states rewind via `LoadJson`. States are deduplicated by content hash. Turn and RNG state are preserved whenever the source uses those features; otherwise that bookkeeping is safely canonicalized so ordinary loops can converge. `INCLUDE`s are followed.
-- The CLI uses a bounded portfolio search: roughly 30% last-choice-first DFS, 30% first-choice-first DFS, and 40% inside-out DFS. Those passes are complementary; for example, one ordering may find a runtime error while another reaches an ending or late knot. Their findings are merged into one report.
+- The CLI uses a bounded portfolio search: roughly 24% last-choice-first DFS, 24% first-choice-first DFS, 32% inside-out DFS, and 20% seeded random walks. The passes are complementary: the DFS orderings systematically exhaust subtrees (one ordering may find a runtime error another misses), while the random walks re-roll every choice point so early-choice state combinations get sampled instead of repeated. Their findings are merged into one report, each labeled with the pass that found it.
 - Unless skipped with `--no-min-repro`, the CLI reserves about 10% of the requested `--max-states` budget for a breadth-first repro-shortening slice. BFS reaches shared findings by shorter choice trails where possible and may contribute extra shallow findings.
 - Bounds (`--max-depth`, `--max-states`) keep worst-case combinatorics in check; the report says explicitly when it was truncated.
 
