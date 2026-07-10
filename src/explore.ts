@@ -80,6 +80,8 @@ export interface ExploreResult {
    */
   exhaustive: boolean;
   limits: { maxDepth: number; maxStates: number; seed?: number };
+  /** Portfolio runs only: the adaptive schedule that was actually executed. */
+  schedule?: ScheduleRound[];
 }
 
 /**
@@ -297,32 +299,78 @@ export interface ExploreOptions {
   seed?: number;
   /** Frontier cap per depth level for the novelty beam pass. Default 64. */
   beamWidth?: number;
+  /** Relative budget weights for the portfolio passes (e.g. from a shape profile). */
+  weights?: PortfolioWeights;
 }
 
 export const DEFAULT_RANDOM_SEED = 1;
 export const DEFAULT_BEAM_WIDTH = 64;
 
+/** Relative budget weights for the portfolio passes; normalized before use. */
+export interface PortfolioWeights {
+  last: number;
+  first: number;
+  insideOut: number;
+  beam: number;
+  random: number;
+}
+
+/** Default split, tuned for unknown story shapes. */
+export const DEFAULT_PORTFOLIO_WEIGHTS: PortfolioWeights = {
+  last: 0.195,
+  first: 0.195,
+  insideOut: 0.26,
+  beam: 0.15,
+  random: 0.2,
+};
+
+/** One pass's share of one scheduler round, with its marginal discoveries. */
+export interface ScheduleRoundEntry {
+  pass: string;
+  granted: number;
+  consumed: number;
+  newEndings: number;
+  newKnots: number;
+  newRuntimeErrors: number;
+}
+
+export interface ScheduleRound {
+  round: number;
+  entries: ScheduleRoundEntry[];
+}
+
 /**
- * Bounded systematic walk of the story's choice tree. Reports every
- * distinct terminal state, every runtime error with the choice trail that triggers
- * it, and knot coverage. States are pruned only after configured-insensitive
- * turn/RNG bookkeeping is canonicalized.
- * A single pooled Story instance is reused across states via LoadJson, so
- * the compiled JSON is parsed once regardless of exploration size.
+ * A pausable exploration pass. `run(grant)` consumes up to `grant` more
+ * story-state transitions and pauses exactly where it stopped, so the
+ * portfolio scheduler can interleave passes in rounds without changing any
+ * pass's traversal order. Budget-exhaustion truncation is decided only at
+ * `finalize()` — pausing at a grant boundary is not truncation.
  */
-export function explore(
+interface PassEngine {
+  readonly label: string;
+  /** Systematic passes can prove exhaustive coverage; sampling passes cannot. */
+  readonly systematic: boolean;
+  /** Consume up to `grant` transitions; returns how many were consumed. */
+  run(grant: number): number;
+  /** True when the pass has no work left. */
+  done(): boolean;
+  /** True when the pass proved complete coverage of the reachable space. */
+  exhaustive(): boolean;
+  /** Findings so far, without budget-truncation flags. */
+  snapshot(): ExploreResult;
+  /** Final result: marks maxStates truncation when work remained. */
+  finalize(): ExploreResult;
+}
+
+function createSearchEngine(
   storyJson: string,
   knots: KnotInfo[],
-  externals: string[] = [],
-  opts: ExploreOptions = {}
-): ExploreResult {
+  externals: string[],
+  opts: ExploreOptions
+): PassEngine {
   const maxDepth = opts.maxDepth ?? 30;
-  const maxStates = opts.maxStates ?? 100_000;
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
     throw new RangeError("maxDepth must be an integer from 1 to 1000");
-  }
-  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 1_000_000) {
-    throw new RangeError("maxStates must be an integer from 1 to 1000000");
   }
   const strategy = opts.strategy ?? "dfs";
   const dfsChoicePriority = opts.dfsChoicePriority ?? "last";
@@ -338,16 +386,17 @@ export function explore(
   const visitedKnots = new Set<string>();
   const seenStates = new Set<string>();
   let statesExplored = 0;
+  let totalGranted = 0;
   let truncated = false;
   const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false };
 
   const nonFunctionKnots = knots.filter((k) => !k.isFunction);
 
-  const recordKnotCoverage = (s: StorySession) => {
+  const recordKnotCoverage = (session: StorySession) => {
     for (const k of nonFunctionKnots) {
       if (visitedKnots.has(k.name)) continue;
       try {
-        if (s.story.state.VisitCountAtPathString(k.name) > 0) visitedKnots.add(k.name);
+        if (session.story.state.VisitCountAtPathString(k.name) > 0) visitedKnots.add(k.name);
       } catch {
         /* path not addressable */
       }
@@ -384,93 +433,105 @@ export function explore(
   seenStates.add(stateKey(rootState, stateSensitivity));
   const frames: Frame[] = [{ stateJson: rootState, path: [], depth: 0 }];
   let head = 0; // BFS read pointer (avoids O(n) shifts)
+  // Pause state: the frame currently being expanded and its choice cursor.
+  let current: { frame: Frame; order: number[]; cursor: number } | null = null;
 
-  while (strategy === "bfs" ? head < frames.length : frames.length > 0) {
-    if (statesExplored >= maxStates) {
-      truncated = true;
-      truncatedBy.maxStates = true;
-      break;
+  /**
+   * Process the next unit of work: at most one choice transition. Frame
+   * pops and restore failures cost no budget but still make progress, so a
+   * grant of 1 can never spin. Returns false when nothing remains.
+   */
+  const advance = (): boolean => {
+    while (!current) {
+      const hasNext = strategy === "bfs" ? head < frames.length : frames.length > 0;
+      if (!hasNext) return false;
+      const frame = strategy === "bfs" ? frames[head++] : frames.pop()!;
+      resetSession();
+      try {
+        s.story.state.LoadJson(frame.stateJson);
+      } catch (e) {
+        runtimeErrors.set(String(e), {
+          message: `State restore failed: ${e instanceof Error ? e.message : e}`,
+          path: frame.path,
+          foundBy,
+        });
+        continue;
+      }
+      const numChoices = s.story.currentChoices.length;
+      if (numChoices === 0) continue;
+      current = {
+        frame,
+        order:
+          strategy === "dfs"
+            ? dfsPushOrder(numChoices, dfsChoicePriority)
+            : Array.from({ length: numChoices }, (_, i) => i),
+        cursor: 0,
+      };
     }
-    const frame = strategy === "bfs" ? frames[head++] : frames.pop()!;
+    const frame = current.frame;
+    const i = current.order[current.cursor++];
+    if (current.cursor >= current.order.length) current = null;
     resetSession();
+    s.story.state.LoadJson(frame.stateJson);
+    const choice = s.story.currentChoices[i] as { text?: string; sourcePath?: string } | undefined;
+    const choiceText = choice?.text ?? `#${i}`;
+    const path = [...frame.path, choiceText];
+    const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
     try {
-      s.story.state.LoadJson(frame.stateJson);
+      s.story.ChooseChoiceIndex(i);
     } catch (e) {
-      runtimeErrors.set(String(e), {
-        message: `State restore failed: ${e instanceof Error ? e.message : e}`,
-        path: frame.path,
+      const msg = e instanceof Error ? e.message : String(e);
+      runtimeErrors.set(msg, {
+        message: msg,
+        path,
+        sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
         foundBy,
       });
-      continue;
+      return true;
     }
-    const numChoices = s.story.currentChoices.length;
-    const choiceIndices =
-      strategy === "dfs"
-        ? dfsPushOrder(numChoices, dfsChoicePriority)
-        : Array.from({ length: numChoices }, (_, i) => i);
-
-    for (const i of choiceIndices) {
-      if (statesExplored >= maxStates) {
-        truncated = true;
-        truncatedBy.maxStates = true;
-        break;
-      }
-      resetSession();
-      s.story.state.LoadJson(frame.stateJson);
-      const choice = s.story.currentChoices[i] as { text?: string; sourcePath?: string } | undefined;
-      const choiceText = choice?.text ?? `#${i}`;
-      const path = [...frame.path, choiceText];
-      const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
-      try {
-        s.story.ChooseChoiceIndex(i);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+    const step = continueMaximally(s);
+    statesExplored++;
+    s.errors.forEach((msg) => {
+      if (!runtimeErrors.has(msg)) {
         runtimeErrors.set(msg, {
           message: msg,
           path,
           sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
           foundBy,
         });
-        continue;
       }
-      const step = continueMaximally(s);
-      statesExplored++;
-      s.errors.forEach((msg) => {
-        if (!runtimeErrors.has(msg)) {
-          runtimeErrors.set(msg, {
-            message: msg,
-            path,
-            sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
-            foundBy,
-          });
-        }
-      });
-      s.warnings.forEach((w) => runtimeWarnings.add(w));
-      recordKnotCoverage(s);
+    });
+    s.warnings.forEach((w) => runtimeWarnings.add(w));
+    recordKnotCoverage(s);
 
-      const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
-      if (ended && s.errors.length === 0) {
-        const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
-        const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
-        if (!endings.has(key)) {
-          endings.set(key, { path, finalText, variables: extractVariables(s.story), foundBy });
-        }
-        continue;
+    const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
+    if (ended && s.errors.length === 0) {
+      const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
+      const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
+      if (!endings.has(key)) {
+        endings.set(key, { path, finalText, variables: extractVariables(s.story), foundBy });
       }
-      if (path.length >= maxDepth) {
-        truncated = true;
-        truncatedBy.maxDepth = true;
-        continue;
-      }
-      const nextState = s.story.state.ToJson();
-      const key = stateKey(nextState, stateSensitivity);
-      if (seenStates.has(key)) continue; // identical state: subtree already covered
-      seenStates.add(key);
-      frames.push({ stateJson: nextState, path, depth: frame.depth + 1 });
+      return true;
     }
-  }
+    if (path.length >= maxDepth) {
+      truncated = true;
+      truncatedBy.maxDepth = true;
+      return true;
+    }
+    const nextState = s.story.state.ToJson();
+    const key = stateKey(nextState, stateSensitivity);
+    if (seenStates.has(key)) return true; // identical state: subtree already covered
+    seenStates.add(key);
+    frames.push({ stateJson: nextState, path, depth: frame.depth + 1 });
+    return true;
+  };
 
-  return {
+  let finished = false;
+  const done = () =>
+    finished ||
+    (!current && (strategy === "bfs" ? head >= frames.length : frames.length === 0));
+
+  const buildResult = (): ExploreResult => ({
     statesExplored,
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
@@ -483,9 +544,58 @@ export function explore(
     randomnessDetected: opts.randomnessDetected ?? false,
     truncated,
     truncatedBy,
-    exhaustive: !truncated,
-    limits: { maxDepth, maxStates },
+    exhaustive: !truncated && (finished || done()),
+    limits: { maxDepth, maxStates: totalGranted },
+  });
+
+  return {
+    label: foundBy,
+    systematic: true,
+    run(grant: number): number {
+      totalGranted += grant;
+      const start = statesExplored;
+      while (statesExplored - start < grant) {
+        if (!advance()) {
+          finished = true;
+          break;
+        }
+      }
+      return statesExplored - start;
+    },
+    done,
+    exhaustive: () => done() && !truncated,
+    snapshot: buildResult,
+    finalize(): ExploreResult {
+      if (!done()) {
+        truncated = true;
+        truncatedBy.maxStates = true;
+      }
+      return buildResult();
+    },
   };
+}
+
+/**
+ * Bounded systematic walk of the story's choice tree. Reports every
+ * distinct terminal state, every runtime error with the choice trail that triggers
+ * it, and knot coverage. States are pruned only after configured-insensitive
+ * turn/RNG bookkeeping is canonicalized.
+ * A single pooled Story instance is reused across states via LoadJson, so
+ * the compiled JSON is parsed once regardless of exploration size.
+ */
+export function explore(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {}
+): ExploreResult {
+  const maxStates = opts.maxStates ?? 100_000;
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 1_000_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 1000000");
+  }
+  const engine = createSearchEngine(storyJson, knots, externals, opts);
+  engine.run(maxStates);
+  return engine.finalize();
 }
 
 /** Deterministic PRNG (mulberry32) so random exploration stays reproducible in CI. */
@@ -499,27 +609,15 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-/**
- * Seeded random playthroughs from the story root. Unlike the systematic DFS
- * passes, each walk re-rolls every choice point, which varies early-choice
- * prefixes instead of exhausting late-choice suffixes. The seed makes runs
- * reproducible; `statesExplored` counts choice transitions across all walks.
- * A `truncated: false` result means every sampled walk reached a natural end
- * within limits — it never implies exhaustive coverage on its own.
- */
-export function exploreRandom(
+function createRandomEngine(
   storyJson: string,
   knots: KnotInfo[],
-  externals: string[] = [],
-  opts: ExploreOptions = {}
-): ExploreResult {
+  externals: string[],
+  opts: ExploreOptions
+): PassEngine {
   const maxDepth = opts.maxDepth ?? 30;
-  const maxStates = opts.maxStates ?? 100_000;
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
     throw new RangeError("maxDepth must be an integer from 1 to 1000");
-  }
-  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 1_000_000) {
-    throw new RangeError("maxStates must be an integer from 1 to 1000000");
   }
   const seed = opts.seed ?? DEFAULT_RANDOM_SEED;
   if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff) {
@@ -533,6 +631,7 @@ export function exploreRandom(
   const runtimeWarnings = new Set<string>();
   const visitedKnots = new Set<string>();
   let statesExplored = 0;
+  let totalGranted = 0;
   let truncated = false;
   const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false };
 
@@ -561,7 +660,85 @@ export function exploreRandom(
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
 
-  const result = (): ExploreResult => ({
+  // Linear story (or immediate end): a single walk covers it; further
+  // sampling would revisit the same line of text forever.
+  const linear = rootStep.choicesOffered.length === 0;
+  if (linear && s.errors.length === 0) {
+    endings.set(rootStep.text, {
+      path: [],
+      finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
+      variables: extractVariables(s.story),
+      foundBy,
+    });
+  }
+
+  const rootState = linear ? "" : s.story.state.ToJson();
+  // Pause state: the walk in progress. The pooled story instance holds the
+  // live mid-walk position between grants; only this engine touches it.
+  let walkPath: string[] | null = null;
+
+  /** Take one transition of the current (or a fresh) walk. */
+  const advance = (): void => {
+    if (walkPath === null) {
+      resetSession();
+      s.story.state.LoadJson(rootState);
+      walkPath = [];
+    }
+    const numChoices = s.story.currentChoices.length;
+    if (numChoices === 0) {
+      walkPath = null;
+      return;
+    }
+    const i = Math.floor(rng() * numChoices);
+    const choice = s.story.currentChoices[i] as { text?: string; sourcePath?: string } | undefined;
+    const choiceText = choice?.text ?? `#${i}`;
+    const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
+    walkPath.push(choiceText);
+    // Count the transition attempt up front so failing walks still consume
+    // budget and the sampling loop always terminates.
+    statesExplored++;
+    try {
+      s.story.ChooseChoiceIndex(i);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!runtimeErrors.has(msg)) {
+        runtimeErrors.set(msg, { message: msg, path: [...walkPath], sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+      }
+      walkPath = null;
+      return;
+    }
+    const step = continueMaximally(s);
+    s.errors.forEach((msg) => {
+      if (!runtimeErrors.has(msg)) {
+        runtimeErrors.set(msg, { message: msg, path: [...walkPath!], sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+      }
+    });
+    s.warnings.forEach((w) => runtimeWarnings.add(w));
+    recordKnotCoverage(s);
+    if (s.errors.length > 0) {
+      walkPath = null;
+      return;
+    }
+    const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
+    if (ended) {
+      const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
+      const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
+      if (!endings.has(key)) {
+        endings.set(key, { path: [...walkPath], finalText, variables: extractVariables(s.story), foundBy });
+      }
+      walkPath = null;
+      return;
+    }
+    if (walkPath.length >= maxDepth) {
+      truncated = true;
+      truncatedBy.maxDepth = true;
+      walkPath = null;
+      return;
+    }
+    resetSession();
+  };
+
+  const buildResult = (): ExploreResult => ({
     statesExplored,
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
@@ -576,84 +753,56 @@ export function exploreRandom(
     truncatedBy,
     // Sampling can only ever disprove completeness, never prove it.
     exhaustive: false,
-    limits: { maxDepth, maxStates, seed },
+    limits: { maxDepth, maxStates: totalGranted, seed },
   });
 
-  if (rootStep.choicesOffered.length === 0) {
-    // Linear story (or immediate end): a single walk covers it.
-    if (s.errors.length === 0) {
-      endings.set(rootStep.text, {
-        path: [],
-        finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
-        variables: extractVariables(s.story),
-        foundBy,
-      });
-    }
-    return result();
-  }
-
-  const rootState = s.story.state.ToJson();
-  while (statesExplored < maxStates) {
-    resetSession();
-    s.story.state.LoadJson(rootState);
-    const path: string[] = [];
-    let walkDone = false;
-    while (path.length < maxDepth) {
-      const numChoices = s.story.currentChoices.length;
-      if (numChoices === 0) break;
-      const i = Math.floor(rng() * numChoices);
-      const choice = s.story.currentChoices[i] as { text?: string; sourcePath?: string } | undefined;
-      const choiceText = choice?.text ?? `#${i}`;
-      const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
-      path.push(choiceText);
-      // Count the transition attempt up front so failing walks still consume
-      // budget and the sampling loop always terminates.
-      statesExplored++;
-      try {
-        s.story.ChooseChoiceIndex(i);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (!runtimeErrors.has(msg)) {
-          runtimeErrors.set(msg, { message: msg, path: [...path], sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
-        }
-        walkDone = true;
-        break;
-      }
-      const step = continueMaximally(s);
-      s.errors.forEach((msg) => {
-        if (!runtimeErrors.has(msg)) {
-          runtimeErrors.set(msg, { message: msg, path: [...path], sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
-        }
-      });
-      s.warnings.forEach((w) => runtimeWarnings.add(w));
-      recordKnotCoverage(s);
-      if (s.errors.length > 0) {
-        walkDone = true;
-        break;
-      }
-      const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
-      if (ended) {
-        const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
-        const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
-        if (!endings.has(key)) {
-          endings.set(key, { path: [...path], finalText, variables: extractVariables(s.story), foundBy });
-        }
-        walkDone = true;
-        break;
-      }
-      if (statesExplored >= maxStates) {
+  return {
+    label: foundBy,
+    systematic: false,
+    run(grant: number): number {
+      totalGranted += grant;
+      if (linear) return 0;
+      const start = statesExplored;
+      while (statesExplored - start < grant) advance();
+      return statesExplored - start;
+    },
+    // A linear story is fully sampled by its root walk; otherwise sampling
+    // always has more walks to take.
+    done: () => linear,
+    exhaustive: () => false,
+    snapshot: buildResult,
+    finalize(): ExploreResult {
+      if (!linear) {
         truncated = true;
         truncatedBy.maxStates = true;
-        break;
       }
-      resetSession();
-    }
-    if (!walkDone && path.length >= maxDepth) {
-      truncated = true;
-      truncatedBy.maxDepth = true;
-    }
+      return buildResult();
+    },
+  };
+}
+
+/**
+ * Seeded random playthroughs from the story root. Unlike the systematic DFS
+ * passes, each walk re-rolls every choice point, which varies early-choice
+ * prefixes instead of exhausting late-choice suffixes. The seed makes runs
+ * reproducible; `statesExplored` counts choice transitions across all walks.
+ * Sampling never proves completeness, so a budget-bound random result is
+ * always reported as truncated; only merging with an exhaustive systematic
+ * pass can clear that.
+ */
+export function exploreRandom(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {}
+): ExploreResult {
+  const maxStates = opts.maxStates ?? 100_000;
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 1_000_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 1000000");
   }
-  return result();
+  const engine = createRandomEngine(storyJson, knots, externals, opts);
+  engine.run(maxStates);
+  return engine.finalize();
 }
 
 /**
@@ -670,20 +819,16 @@ export function exploreRandom(
  * reachable child the result is marked truncated, because a pruning beam
  * never proves exhaustive coverage.
  */
-export function exploreBeam(
+function createBeamEngine(
   storyJson: string,
   knots: KnotInfo[],
-  externals: string[] = [],
-  opts: ExploreOptions = {}
-): ExploreResult {
+  externals: string[],
+  opts: ExploreOptions
+): PassEngine {
   const maxDepth = opts.maxDepth ?? 30;
-  const maxStates = opts.maxStates ?? 100_000;
   const beamWidth = opts.beamWidth ?? DEFAULT_BEAM_WIDTH;
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
     throw new RangeError("maxDepth must be an integer from 1 to 1000");
-  }
-  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 1_000_000) {
-    throw new RangeError("maxStates must be an integer from 1 to 1000000");
   }
   if (!Number.isSafeInteger(beamWidth) || beamWidth < 1 || beamWidth > 10_000) {
     throw new RangeError("beamWidth must be an integer from 1 to 10000");
@@ -702,6 +847,7 @@ export function exploreBeam(
   const seenVarSignatures = new Set<string>();
   const seenChoiceSets = new Set<string>();
   let statesExplored = 0;
+  let totalGranted = 0;
   let truncated = false;
   const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false };
 
@@ -730,22 +876,23 @@ export function exploreBeam(
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
 
-  const result = (): ExploreResult => ({
-    statesExplored,
-    endingsFound: [...endings.values()],
-    runtimeErrors: [...runtimeErrors.values()],
-    runtimeWarnings: [...runtimeWarnings],
-    unvisitedKnots: nonFunctionKnots
-      .filter((k) => !visitedKnots.has(k.name))
-      .map(({ name, file, line }) => ({ name, file, line })),
-    visitedKnots: [...visitedKnots],
-    externalFunctionsStubbed: [...externals],
-    randomnessDetected: opts.randomnessDetected ?? false,
-    truncated,
-    truncatedBy,
-    exhaustive: !truncated,
-    limits: { maxDepth, maxStates },
-  });
+  interface BeamFrame {
+    stateJson: string;
+    path: string[];
+  }
+  interface BeamChild {
+    frame: BeamFrame;
+    score: number;
+    varSig: string;
+  }
+
+  let finished = false;
+  let frontier: BeamFrame[] = [];
+  // Pause state within the current level: children collected so far and the
+  // expansion cursor (frame index + choice index within that frame).
+  let children: BeamChild[] = [];
+  let frameIdx = 0;
+  let expansion: { numChoices: number; next: number } | null = null;
 
   if (rootStep.choicesOffered.length === 0) {
     // Linear story (or immediate end).
@@ -757,96 +904,17 @@ export function exploreBeam(
         foundBy,
       });
     }
-    return result();
+    finished = true;
+  } else {
+    const rootState = s.story.state.ToJson();
+    seenStates.add(stateKey(rootState, stateSensitivity));
+    seenVarSignatures.add(JSON.stringify(extractVariables(s.story)));
+    seenChoiceSets.add(rootStep.choicesOffered.slice().sort().join(""));
+    frontier = [{ stateJson: rootState, path: [] }];
   }
 
-  const rootState = s.story.state.ToJson();
-  seenStates.add(stateKey(rootState, stateSensitivity));
-  seenVarSignatures.add(JSON.stringify(extractVariables(s.story)));
-  seenChoiceSets.add(rootStep.choicesOffered.slice().sort().join(""));
-
-  interface BeamFrame {
-    stateJson: string;
-    path: string[];
-  }
-  let frontier: BeamFrame[] = [{ stateJson: rootState, path: [] }];
-
-  outer: while (frontier.length > 0) {
-    const children: { frame: BeamFrame; score: number; varSig: string }[] = [];
-    for (const frame of frontier) {
-      resetSession();
-      s.story.state.LoadJson(frame.stateJson);
-      const numChoices = s.story.currentChoices.length;
-      for (let i = 0; i < numChoices; i++) {
-        if (statesExplored >= maxStates) {
-          truncated = true;
-          truncatedBy.maxStates = true;
-          break outer;
-        }
-        resetSession();
-        s.story.state.LoadJson(frame.stateJson);
-        const choice = s.story.currentChoices[i] as { text?: string; sourcePath?: string } | undefined;
-        const choiceText = choice?.text ?? `#${i}`;
-        const path = [...frame.path, choiceText];
-        const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
-        try {
-          s.story.ChooseChoiceIndex(i);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          if (!runtimeErrors.has(msg)) {
-            runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
-          }
-          continue;
-        }
-        const step = continueMaximally(s);
-        statesExplored++;
-        const knotsBefore = visitedKnots.size;
-        s.errors.forEach((msg) => {
-          if (!runtimeErrors.has(msg)) {
-            runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
-          }
-        });
-        s.warnings.forEach((w) => runtimeWarnings.add(w));
-        recordKnotCoverage(s);
-        const newKnots = visitedKnots.size - knotsBefore;
-        if (s.errors.length > 0) continue;
-
-        const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
-        if (ended) {
-          const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
-          const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
-          if (!endings.has(key)) {
-            endings.set(key, { path, finalText, variables: extractVariables(s.story), foundBy });
-          }
-          continue;
-        }
-        if (path.length >= maxDepth) {
-          truncated = true;
-          truncatedBy.maxDepth = true;
-          continue;
-        }
-        const nextState = s.story.state.ToJson();
-        const key = stateKey(nextState, stateSensitivity);
-        if (seenStates.has(key)) continue; // identical state: subtree already covered
-        seenStates.add(key);
-
-        const varSig = JSON.stringify(extractVariables(s.story));
-        const choiceSet = s.story.currentChoices
-          .map((c: { text: string }) => c.text)
-          .sort()
-          .join("");
-        let score = newKnots * 8;
-        if (!seenVarSignatures.has(varSig)) {
-          score += 4;
-          seenVarSignatures.add(varSig);
-        }
-        if (!seenChoiceSets.has(choiceSet)) {
-          score += 2;
-          seenChoiceSets.add(choiceSet);
-        }
-        children.push({ frame: { stateJson: nextState, path }, score, varSig });
-      }
-    }
+  /** Close out a fully expanded level: prune, select, start the next level. */
+  const completeLevel = (): void => {
     // Pruning discards reachable states, so the run can no longer claim
     // exhaustive coverage even if the budget is never exhausted.
     if (children.length > beamWidth) {
@@ -856,7 +924,7 @@ export function exploreBeam(
     // Diversity-first selection: round-robin across variable-signature
     // groups (discovery order), novelty-ranked within each group, so one
     // lineage's siblings cannot crowd every other lineage out of the beam.
-    const groups = new Map<string, typeof children>();
+    const groups = new Map<string, BeamChild[]>();
     for (const child of children) {
       const group = groups.get(child.varSig);
       if (group) group.push(child);
@@ -879,10 +947,215 @@ export function exploreBeam(
       if (!took) break;
     }
     frontier = selected;
-  }
-  return result();
+    children = [];
+    frameIdx = 0;
+    expansion = null;
+    if (frontier.length === 0) finished = true;
+  };
+
+  /**
+   * Process the next unit of work: at most one choice transition. Level
+   * bookkeeping steps cost no budget but always make progress.
+   */
+  const advance = (): boolean => {
+    if (finished) return false;
+    if (frameIdx >= frontier.length) {
+      completeLevel();
+      return !finished;
+    }
+    const frame = frontier[frameIdx];
+    if (!expansion) {
+      resetSession();
+      s.story.state.LoadJson(frame.stateJson);
+      expansion = { numChoices: s.story.currentChoices.length, next: 0 };
+    }
+    if (expansion.next >= expansion.numChoices) {
+      frameIdx++;
+      expansion = null;
+      return true;
+    }
+    const i = expansion.next++;
+    resetSession();
+    s.story.state.LoadJson(frame.stateJson);
+    const choice = s.story.currentChoices[i] as { text?: string; sourcePath?: string } | undefined;
+    const choiceText = choice?.text ?? `#${i}`;
+    const path = [...frame.path, choiceText];
+    const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
+    try {
+      s.story.ChooseChoiceIndex(i);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!runtimeErrors.has(msg)) {
+        runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+      }
+      return true;
+    }
+    const step = continueMaximally(s);
+    statesExplored++;
+    const knotsBefore = visitedKnots.size;
+    s.errors.forEach((msg) => {
+      if (!runtimeErrors.has(msg)) {
+        runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+      }
+    });
+    s.warnings.forEach((w) => runtimeWarnings.add(w));
+    recordKnotCoverage(s);
+    const newKnots = visitedKnots.size - knotsBefore;
+    if (s.errors.length > 0) return true;
+
+    const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
+    if (ended) {
+      const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
+      const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
+      if (!endings.has(key)) {
+        endings.set(key, { path, finalText, variables: extractVariables(s.story), foundBy });
+      }
+      return true;
+    }
+    if (path.length >= maxDepth) {
+      truncated = true;
+      truncatedBy.maxDepth = true;
+      return true;
+    }
+    const nextState = s.story.state.ToJson();
+    const key = stateKey(nextState, stateSensitivity);
+    if (seenStates.has(key)) return true; // identical state: subtree already covered
+    seenStates.add(key);
+
+    const varSig = JSON.stringify(extractVariables(s.story));
+    const choiceSet = s.story.currentChoices
+      .map((c: { text: string }) => c.text)
+      .sort()
+      .join("");
+    let score = newKnots * 8;
+    if (!seenVarSignatures.has(varSig)) {
+      score += 4;
+      seenVarSignatures.add(varSig);
+    }
+    if (!seenChoiceSets.has(choiceSet)) {
+      score += 2;
+      seenChoiceSets.add(choiceSet);
+    }
+    children.push({ frame: { stateJson: nextState, path }, score, varSig });
+    return true;
+  };
+
+  const buildResult = (): ExploreResult => ({
+    statesExplored,
+    endingsFound: [...endings.values()],
+    runtimeErrors: [...runtimeErrors.values()],
+    runtimeWarnings: [...runtimeWarnings],
+    unvisitedKnots: nonFunctionKnots
+      .filter((k) => !visitedKnots.has(k.name))
+      .map(({ name, file, line }) => ({ name, file, line })),
+    visitedKnots: [...visitedKnots],
+    externalFunctionsStubbed: [...externals],
+    randomnessDetected: opts.randomnessDetected ?? false,
+    truncated,
+    truncatedBy,
+    exhaustive: finished && !truncated,
+    limits: { maxDepth, maxStates: totalGranted },
+  });
+
+  return {
+    label: foundBy,
+    systematic: true,
+    run(grant: number): number {
+      totalGranted += grant;
+      const start = statesExplored;
+      while (statesExplored - start < grant) {
+        if (!advance()) break;
+      }
+      return statesExplored - start;
+    },
+    done: () => finished,
+    exhaustive: () => finished && !truncated,
+    snapshot: buildResult,
+    finalize(): ExploreResult {
+      if (!finished) {
+        truncated = true;
+        truncatedBy.maxStates = true;
+      }
+      return buildResult();
+    },
+  };
 }
 
+export function exploreBeam(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {}
+): ExploreResult {
+  const maxStates = opts.maxStates ?? 100_000;
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 1_000_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 1000000");
+  }
+  const engine = createBeamEngine(storyJson, knots, externals, opts);
+  engine.run(maxStates);
+  return engine.finalize();
+}
+
+/** Deterministic largest-remainder split of `total` units by weight. */
+function splitBudget(total: number, weights: number[]): number[] {
+  const sum = weights.reduce((a, b) => a + b, 0);
+  if (sum <= 0) return weights.map((_, i) => (i === 0 ? total : 0));
+  const shares = weights.map((w) => (total * w) / sum);
+  const grants = shares.map(Math.floor);
+  let left = total - grants.reduce((a, b) => a + b, 0);
+  const byRemainder = shares
+    .map((share, i) => ({ i, frac: share - Math.floor(share) }))
+    .sort((a, b) => b.frac - a.frac || a.i - b.i);
+  for (let k = 0; left > 0; k = (k + 1) % byRemainder.length) {
+    grants[byRemainder[k].i]++;
+    left--;
+  }
+  return grants;
+}
+
+/** Marginal (portfolio-wide first-discovery) counts for one pass snapshot. */
+function countMarginalFindings(
+  snap: ExploreResult,
+  seenEndings: Set<string>,
+  seenKnots: Set<string>,
+  seenErrors: Set<string>
+): { newEndings: number; newKnots: number; newRuntimeErrors: number } {
+  let newEndings = 0;
+  for (const e of snap.endingsFound) {
+    const key = endingKey(e);
+    if (!seenEndings.has(key)) {
+      seenEndings.add(key);
+      newEndings++;
+    }
+  }
+  let newKnots = 0;
+  for (const name of snap.visitedKnots) {
+    if (!seenKnots.has(name)) {
+      seenKnots.add(name);
+      newKnots++;
+    }
+  }
+  let newRuntimeErrors = 0;
+  for (const err of snap.runtimeErrors) {
+    if (!seenErrors.has(err.message)) {
+      seenErrors.add(err.message);
+      newRuntimeErrors++;
+    }
+  }
+  return { newEndings, newKnots, newRuntimeErrors };
+}
+
+/**
+ * Adaptive portfolio search (issues #27/#29). The state budget is spent in
+ * deterministic rounds across complementary passes; each round's grants are
+ * reallocated toward passes whose findings are still growing, with a floor
+ * per pass so a discovery dry spell never zeroes a pass out (late
+ * discoveries after long dry spells are real). Initial weights come from
+ * `opts.weights` — e.g. a story-shape profile — or defaults. The whole
+ * portfolio stops the moment any systematic pass proves the reachable space
+ * exhausted: every further state would be redundant. The executed schedule
+ * is recorded on the merged result.
+ */
 export function explorePortfolio(
   storyJson: string,
   knots: KnotInfo[],
@@ -895,42 +1168,103 @@ export function explorePortfolio(
   }
   if (maxStates === 1) return explore(storyJson, knots, externals, opts);
 
-  // A seeded random-sampling slice varies early-choice prefixes that the
-  // deterministic DFS passes tend to repeat (see issues #20/#21), and a
-  // frontier-capped novelty beam spreads budget level-by-level like BFS
-  // without its unbounded frontier memory (see issue #21).
-  const beamBudget = maxStates >= 10 ? Math.floor(maxStates * 0.15) : 0;
-  const randomBudget = maxStates >= 5 ? Math.max(1, Math.floor(maxStates * 0.2)) : 0;
-  const dfsStates = maxStates - randomBudget - beamBudget;
-  const insideBudget = dfsStates >= 3 ? Math.max(1, Math.floor(dfsStates * 0.4)) : 0;
-  const edgeBudget = dfsStates - insideBudget;
-  const lastBudget = Math.ceil(edgeBudget / 2);
-  const firstBudget = edgeBudget - lastBudget;
+  const weights = opts.weights ?? DEFAULT_PORTFOLIO_WEIGHTS;
   const shared = { ...opts };
-  const runs = [
-    { maxStates: lastBudget, dfsChoicePriority: "last" as const },
-    { maxStates: firstBudget, dfsChoicePriority: "first" as const },
-    { maxStates: insideBudget, dfsChoicePriority: "inside-out" as const },
-  ].filter((run) => run.maxStates > 0);
-  const results = runs.map((run) =>
-    explore(storyJson, knots, externals, {
-      ...shared,
-      ...run,
-      strategy: "dfs",
-    })
-  );
-  if (beamBudget > 0) {
-    results.push(
-      exploreBeam(storyJson, knots, externals, { ...shared, maxStates: beamBudget })
+  const engines: PassEngine[] = [];
+  const engineWeights: number[] = [];
+  const addEngine = (engine: PassEngine, weight: number) => {
+    engines.push(engine);
+    engineWeights.push(weight);
+  };
+  if (weights.last > 0) {
+    addEngine(
+      createSearchEngine(storyJson, knots, externals, { ...shared, strategy: "dfs", dfsChoicePriority: "last" }),
+      weights.last
     );
   }
-  if (randomBudget > 0) {
-    results.push(
-      exploreRandom(storyJson, knots, externals, { ...shared, maxStates: randomBudget })
+  if (weights.first > 0) {
+    addEngine(
+      createSearchEngine(storyJson, knots, externals, { ...shared, strategy: "dfs", dfsChoicePriority: "first" }),
+      weights.first
     );
   }
+  if (weights.insideOut > 0) {
+    addEngine(
+      createSearchEngine(storyJson, knots, externals, { ...shared, strategy: "dfs", dfsChoicePriority: "inside-out" }),
+      weights.insideOut
+    );
+  }
+  // Sampling/diversity passes earn a slice only when the budget can feed them.
+  if (weights.beam > 0 && maxStates >= 10) {
+    addEngine(createBeamEngine(storyJson, knots, externals, shared), weights.beam);
+  }
+  if (weights.random > 0 && maxStates >= 5) {
+    addEngine(createRandomEngine(storyJson, knots, externals, shared), weights.random);
+  }
+  if (engines.length === 0) {
+    addEngine(
+      createSearchEngine(storyJson, knots, externals, { ...shared, strategy: "dfs", dfsChoicePriority: "last" }),
+      1
+    );
+  }
+
+  const roundSize = Math.max(1, Math.floor(maxStates / 10));
+  const minShare = 0.08; // dry-spell guard: no active pass is ever defunded
+  const schedule: ScheduleRound[] = [];
+  const seenEndings = new Set<string>();
+  const seenKnots = new Set<string>();
+  const seenErrors = new Set<string>();
+  let currentWeights = [...engineWeights];
+  let remaining = maxStates;
+  let exhaustedEarly = false;
+
+  while (remaining > 0 && !exhaustedEarly && engines.some((e) => !e.done())) {
+    const active = engines
+      .map((engine, i) => ({ engine, i }))
+      .filter(({ engine }) => !engine.done());
+    const grants = splitBudget(
+      Math.min(roundSize, remaining),
+      active.map(({ i }) => currentWeights[i])
+    );
+    const entries: ScheduleRoundEntry[] = [];
+    const scores = new Array<number>(engines.length).fill(0);
+    for (let a = 0; a < active.length; a++) {
+      const { engine, i } = active[a];
+      const consumed = grants[a] > 0 ? engine.run(grants[a]) : 0;
+      remaining -= consumed;
+      const marginal = countMarginalFindings(engine.snapshot(), seenEndings, seenKnots, seenErrors);
+      entries.push({
+        pass: engine.label,
+        granted: grants[a],
+        consumed,
+        ...marginal,
+      });
+      scores[i] =
+        marginal.newRuntimeErrors * 5 + marginal.newEndings * 3 + marginal.newKnots * 2;
+      if (engine.done() && engine.exhaustive()) {
+        // The reachable space is proven covered; all further work is redundant.
+        exhaustedEarly = true;
+        break;
+      }
+    }
+    schedule.push({ round: schedule.length + 1, entries });
+    const totalScore = scores.reduce((a, b) => a + b, 0);
+    if (totalScore > 0) {
+      const pool = 1 - minShare * engines.length;
+      currentWeights = currentWeights.map(
+        (_, i) => minShare + Math.max(0, pool) * (scores[i] / totalScore)
+      );
+    }
+  }
+
+  const results = engines.map((engine) => engine.finalize());
   const [firstRun, ...rest] = results;
-  return rest.reduce((merged, result) => mergeExploreResults(merged, result), firstRun);
+  const merged = rest.reduce((acc, result) => mergeExploreResults(acc, result), firstRun);
+  // Limits report the configured budget; what was actually consumed is in
+  // statesExplored and the schedule (early exit can leave budget unspent).
+  merged.limits.maxStates = maxStates;
+  merged.schedule = schedule;
+  return merged;
 }
 
 /**

@@ -9,6 +9,7 @@ const {
   scanKnots,
   scanExternals,
   scanInboundDiverts,
+  scanShapeProfile,
   scanStorySemantics,
 } = require("../dist/inklecate");
 const { buildHumanFindings } = require("../dist/human-report");
@@ -36,6 +37,7 @@ const LINEAR_RUNTIME_ERROR = path.join(
 const CLEAN_BRANCH = path.join(__dirname, "..", "examples", "clean-branch.ink");
 const CONTENT_EXHAUSTION = path.join(__dirname, "..", "examples", "content-exhaustion.ink");
 const EARLY_CHOICE_GRID = path.join(__dirname, "..", "examples", "early-choice-grid.ink");
+const DEEP_CHAIN = path.join(__dirname, "..", "examples", "deep-chain.ink");
 const EXTERNAL_STORY = path.join(__dirname, "..", "examples", "external-story.ink");
 const CLI = path.join(__dirname, "..", "dist", "cli.js");
 const ROOT = path.join(__dirname, "..");
@@ -259,6 +261,115 @@ test("truncatedBy names the limit that actually cut coverage", async () => {
   assert.strictEqual(stateBound.truncatedBy.maxDepth, false);
   const pruned = exploreBeam(compiled.storyJson, knots, [], { maxStates: 2500, beamWidth: 8 });
   assert.strictEqual(pruned.truncatedBy.beamWidth, true);
+});
+
+// Issue #27: a cheap static profile picks limits and pass weights to match
+// the story's shape before the first exploration state is spent.
+test("scanShapeProfile reads story shape and suggests matching settings", () => {
+  const grid = scanShapeProfile(EARLY_CHOICE_GRID);
+  assert.strictEqual(grid.variables, 9);
+  assert.strictEqual(grid.earlyAssignmentShare, 1);
+  assert.strictEqual(grid.choiceDepthEstimate, 15);
+  assert.ok(grid.suggested.weights.random > grid.suggested.weights.last, "sampling weighted up");
+
+  const deep = scanShapeProfile(DEEP_CHAIN);
+  assert.strictEqual(deep.choiceDepthEstimate, 40);
+  assert.strictEqual(deep.suggested.maxDepth, 80);
+  assert.strictEqual(deep.variables, 0);
+  assert.strictEqual(deep.suggested.weights.random, 0, "no variables: sampling dropped");
+
+  const clean = scanShapeProfile(CLEAN_BRANCH);
+  assert.strictEqual(clean.suggested.weights.beam, 0);
+  assert.strictEqual(clean.suggested.maxDepth, 30);
+});
+
+// Issue #27: the runtime scheduler cannot fix a too-low depth limit — only
+// the pre-flight profile can. Plain defaults find nothing on a 40-deep
+// chain; --auto raises depth and proves the story exhaustive.
+test("--auto applies the shape profile where defaults find nothing", () => {
+  const plain = spawnSync(
+    process.execPath,
+    [CLI, DEEP_CHAIN, "--max-states", "500", "--json"],
+    { encoding: "utf8" }
+  );
+  const plainReport = JSON.parse(plain.stdout).explore;
+  assert.strictEqual(plainReport.endingsFound.length, 0);
+  assert.strictEqual(plainReport.truncatedBy.maxDepth, true);
+
+  const auto = spawnSync(
+    process.execPath,
+    [CLI, DEEP_CHAIN, "--auto", "--max-states", "500", "--json"],
+    { encoding: "utf8" }
+  );
+  const autoOut = JSON.parse(auto.stdout);
+  assert.strictEqual(autoOut.profile.suggested.maxDepth, 80);
+  assert.strictEqual(autoOut.explore.limits.maxDepth, 80);
+  assert.strictEqual(autoOut.explore.endingsFound.length, 1);
+  assert.strictEqual(autoOut.explore.exhaustive, true);
+
+  // Explicit flags always win over the profile.
+  const pinned = spawnSync(
+    process.execPath,
+    [CLI, DEEP_CHAIN, "--auto", "--max-depth", "30", "--max-states", "500", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(JSON.parse(pinned.stdout).explore.limits.maxDepth, 30);
+});
+
+test("--profile prints the shape without exploring", () => {
+  const proc = spawnSync(process.execPath, [CLI, EARLY_CHOICE_GRID, "--profile"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(proc.status, 0);
+  assert.match(proc.stdout, /Story shape profile/);
+  assert.match(proc.stdout, /choice point\(s\)/);
+  assert.doesNotMatch(proc.stdout, /explored/);
+  const asJson = spawnSync(process.execPath, [CLI, EARLY_CHOICE_GRID, "--profile", "--json"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(JSON.parse(asJson.stdout).profile.choiceDepthEstimate, 15);
+});
+
+// Issue #29: the portfolio spends its budget in deterministic rounds,
+// reallocates toward passes that are still discovering, and stops the
+// moment a systematic pass proves the reachable space exhausted.
+test("adaptive scheduler stops early on exhaustive coverage and records its schedule", async () => {
+  const compiled = await compile(MANOR);
+  const report = explorePortfolio(compiled.storyJson, scanKnots(MANOR), [], {
+    maxStates: 100000,
+  });
+  assert.strictEqual(report.exhaustive, true);
+  // Early exit: manor's reachable space is ~10 states; the other ~99,990
+  // budgeted states must not be spent resampling it.
+  assert.ok(report.statesExplored < 100, `spent ${report.statesExplored} states`);
+  assert.ok(Array.isArray(report.schedule) && report.schedule.length >= 1);
+  const entry = report.schedule[0].entries[0];
+  assert.ok(entry.pass.length > 0);
+  assert.ok(entry.granted >= entry.consumed);
+});
+
+test("adaptive scheduler is deterministic and respects the total budget", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  const a = explorePortfolio(compiled.storyJson, knots, [], { maxStates: 4000 });
+  const b = explorePortfolio(compiled.storyJson, knots, [], { maxStates: 4000 });
+  assert.deepStrictEqual(a, b);
+  assert.ok(a.statesExplored <= 4000);
+  const consumed = a.schedule
+    .flatMap((round) => round.entries)
+    .reduce((sum, entry) => sum + entry.consumed, 0);
+  assert.strictEqual(consumed, a.statesExplored);
+});
+
+test("portfolio weights control which passes run", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  const dfsOnly = explorePortfolio(compiled.storyJson, knots, [], {
+    maxStates: 1000,
+    weights: { last: 0.3, first: 0.3, insideOut: 0.4, beam: 0, random: 0 },
+  });
+  const passes = new Set(dfsOnly.schedule.flatMap((round) => round.entries.map((e) => e.pass)));
+  assert.ok([...passes].every((p) => p.startsWith("dfs:")), `unexpected passes: ${[...passes]}`);
 });
 
 test("an exhaustive systematic pass clears sampling-slice truncation", async () => {
