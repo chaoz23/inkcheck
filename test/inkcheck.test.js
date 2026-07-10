@@ -585,6 +585,53 @@ test("CLI accepts --seed and reports it in the JSON limits", () => {
   assert.match(invalid.stderr, /requires an integer from 1 to 4294967295/);
 });
 
+test("CLI streams versioned progress to stderr without changing the final JSON report", () => {
+  const plain = spawnSync(process.execPath, [CLI, CLEAN_BRANCH, "--max-states", "100", "--json"], {
+    encoding: "utf8",
+  });
+  const streamed = spawnSync(
+    process.execPath,
+    [CLI, CLEAN_BRANCH, "--max-states", "100", "--json", "--progress=ndjson"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(streamed.status, plain.status);
+  assert.strictEqual(streamed.stdout, plain.stdout);
+  const disabled = spawnSync(
+    process.execPath,
+    [CLI, CLEAN_BRANCH, "--max-states", "100", "--json", "--progress=off"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(disabled.stdout, plain.stdout);
+  assert.strictEqual(disabled.stderr, plain.stderr);
+  const report = JSON.parse(streamed.stdout);
+  const events = streamed.stderr.trim().split("\n").map((line) => JSON.parse(line));
+  assert.ok(events.length >= 7);
+  assert.ok(events.every((event) => event.schemaVersion === 1));
+  assert.deepStrictEqual(events.map((event) => event.sequence), events.map((_, i) => i + 1));
+  assert.ok(events.every((event) => event.budgetFraction >= 0 && event.budgetFraction <= 1));
+  assert.ok(events.every((event, i) => i === 0 || event.statesExplored >= events[i - 1].statesExplored));
+  assert.ok(events.some((event) => event.type === "progress" && event.phase === undefined && event.pass));
+  const final = events.at(-1);
+  assert.strictEqual(final.type, "run_end");
+  assert.strictEqual(final.statesExplored, report.explore.statesExplored);
+  assert.strictEqual(final.endingsFound, report.explore.endingsFound.length);
+  assert.strictEqual(final.runtimeErrorsFound, report.explore.runtimeErrors.length);
+  assert.strictEqual(final.unvisitedKnots, report.explore.unvisitedKnots.length);
+});
+
+test("exploration progress emits a time-based heartbeat before its state interval", async () => {
+  const compiled = await compile(CLEAN_BRANCH);
+  const events = [];
+  explore(compiled.storyJson, scanKnots(CLEAN_BRANCH), [], {
+    maxStates: 20,
+    progressIntervalStates: 10_000,
+    progressIntervalMs: 0,
+    onProgress: (event) => events.push(event),
+  });
+  assert.ok(events.length > 1);
+  assert.ok(events.some((event) => event.statesExplored > 0 && event.statesExplored < 10_000));
+});
+
 test("CLI rejects invalid numeric and unknown options as usage errors", () => {
   const invalid = spawnSync(process.execPath, [CLI, CLEAN_BRANCH, "--max-states", "nope"], {
     encoding: "utf8",
@@ -603,6 +650,11 @@ test("CLI rejects invalid numeric and unknown options as usage errors", () => {
   });
   assert.strictEqual(unknown.status, 2);
   assert.match(unknown.stderr, /unknown option/);
+  const invalidProgress = spawnSync(process.execPath, [CLI, CLEAN_BRANCH, "--progress=verbose"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(invalidProgress.status, 2);
+  assert.match(invalidProgress.stderr, /--progress must be ndjson or off/);
 });
 
 test("explore rejects unsafe limits even when called as a library", async () => {

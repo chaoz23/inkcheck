@@ -128,7 +128,7 @@ The intended loop for an agent editing a story: edit `.ink` → `compile_story` 
 ## CLI
 
 ```
-inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--auto] [--profile] [--no-min-repro] [--strict] [--human|--json|--markdown]
+inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--auto] [--profile] [--no-min-repro] [--strict] [--progress=ndjson] [--human|--json|--markdown]
 inkcheck mcp    # start the MCP server on stdio
 ```
 
@@ -139,6 +139,8 @@ inkcheck mcp    # start the MCP server on stdio
 `--seed` (default 1) controls the random-sampling slice. The same seed always samples the same walks, so CI results stay reproducible; change the seed across scheduled runs to sample different early-choice combinations over time. Each finding's `foundBy` field in `--json` output names the pass that discovered it, e.g. `dfs:last` or `random:seed=1`.
 
 `--profile` prints a cheap static shape profile of the story — variables and where they are assigned, choice density, the longest divert path — plus the depth limit and pass weights inkcheck would choose for that shape, without running any exploration. `--auto` applies those suggestions: it raises `--max-depth` when static divert paths outrun the default (never lowers it, and your explicit flags always win) and hands the profile's pass weights to the portfolio. On a story whose main path is 40 choices deep, default settings find nothing while `--auto` reaches the ending and proves the story exhaustive in ~111 states.
+
+`--progress=ndjson` writes versioned progress events to stderr for agents and CI while keeping the final stdout report authoritative. Events use the configured state budget as a work meter (`budgetFraction`), not as a percent of total story coverage. The stream contains counters and phase/pass names only; it never includes story prose, choices, variables, or source snippets. Omit the option, or use `--progress=off`, for the unchanged default output.
 
 GitHub Actions:
 
@@ -163,7 +165,8 @@ Found a misleading result? Use the public issue forms to [report an incorrect or
 inkcheck can be driven by a human at a terminal, a CI job, or an optional AI coding agent. The tool itself still does not use AI; agents are just another caller of the CLI or MCP server.
 
 - **Machine-readable interface:** `tool.json` at the repo root describes the CLI flags, MCP tools, exit codes, and `--json` output shape in one file.
-- **`--json`** emits the entire report as a single JSON object (`{ compile, stats, explore }`) on stdout — parse that instead of scraping the pretty output. `explore.passes` carries lifetime telemetry per exploration pass (states explored vs granted, marginal first discoveries, dedupe hits, deepest trail, `lastDiscoveryAtState`, beam frontier stats), and `explore.schedule` shows how the adaptive rounds actually spent the budget.
+- **`--json`** emits the entire report as a single JSON object (`{ compile, stats, explore }`) on stdout — parse that instead of scraping the pretty output. `explore.passes` includes lifetime telemetry per exploration pass, and `explore.schedule` shows how the adaptive rounds spent the budget.
+- **`--progress=ndjson`** emits versioned lifecycle and work-progress events on stderr for an agent or CI log parser. `statesExplored / stateBudget` is budget use, not story coverage; the final stdout report remains authoritative.
 - **`--human`** emits a prioritized fix list grouped by errors, warnings, and notes, with file/line locations where available, choice paths for runtime failures, and a next step for each finding.
 - **`--markdown`** emits a GitHub Step Summary-friendly report for humans reviewing CI.
 - **Deterministic exit codes:** `0` clean · `1` compile/runtime errors (or, under `--strict`, warnings, unvisited knots, truncation, or external stubs) · `2` usage error. Branch on the exit code; don't grep the text.

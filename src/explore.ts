@@ -303,10 +303,26 @@ export interface ExploreOptions {
   beamWidth?: number;
   /** Relative budget weights for the portfolio passes (e.g. from a shape profile). */
   weights?: PortfolioWeights;
+  /** Receive privacy-safe bounded-search work snapshots. */
+  onProgress?: (progress: ExploreProgress) => void;
+  /** Internal/test override for the normal 10,000-state progress cadence. */
+  progressIntervalStates?: number;
+  /** Internal/test override for the normal one-second progress heartbeat. */
+  progressIntervalMs?: number;
 }
 
 export const DEFAULT_RANDOM_SEED = 1;
 export const DEFAULT_BEAM_WIDTH = 64;
+export const DEFAULT_PROGRESS_INTERVAL_STATES = 10_000;
+export const DEFAULT_PROGRESS_INTERVAL_MS = 1_000;
+
+export interface ExploreProgress {
+  pass: string;
+  statesExplored: number;
+  endingsFound: number;
+  runtimeErrorsFound: number;
+  unvisitedKnots: number;
+}
 
 /** Relative budget weights for the portfolio passes; normalized before use. */
 export interface PortfolioWeights {
@@ -400,6 +416,44 @@ interface PassEngine {
   finalize(): ExploreResult;
   /** Lifetime counters for this pass; call after finalize for final flags. */
   telemetry(): PassTelemetry;
+}
+
+function progressFromSnapshot(pass: string, statesExplored: number, result: ExploreResult): ExploreProgress {
+  return {
+    pass,
+    statesExplored,
+    endingsFound: result.endingsFound.length,
+    runtimeErrorsFound: result.runtimeErrors.length,
+    unvisitedKnots: result.unvisitedKnots.length,
+  };
+}
+
+function runEngineToBudget(engine: PassEngine, maxStates: number, opts: ExploreOptions): ExploreResult {
+  const stateInterval = opts.progressIntervalStates ?? DEFAULT_PROGRESS_INTERVAL_STATES;
+  const timeInterval = opts.progressIntervalMs ?? DEFAULT_PROGRESS_INTERVAL_MS;
+  const chunkSize = opts.progressIntervalMs === 0 ? 1 : 1_000;
+  let remaining = maxStates;
+  let lastStates = 0;
+  let lastAt = Date.now();
+  while (remaining > 0 && !engine.done()) {
+    const consumed = engine.run(Math.min(chunkSize, remaining));
+    remaining -= consumed;
+    const snapshot = engine.snapshot();
+    const now = Date.now();
+    if (
+      opts.onProgress &&
+      (snapshot.statesExplored - lastStates >= stateInterval || now - lastAt >= timeInterval)
+    ) {
+      lastStates = snapshot.statesExplored;
+      lastAt = now;
+      opts.onProgress(progressFromSnapshot(engine.label, snapshot.statesExplored, snapshot));
+    }
+    if (consumed === 0) break;
+  }
+  const result = engine.finalize();
+  result.passes = [engine.telemetry()];
+  opts.onProgress?.(progressFromSnapshot(engine.label, result.statesExplored, result));
+  return result;
 }
 
 function createSearchEngine(
@@ -672,10 +726,7 @@ export function explore(
     throw new RangeError("maxStates must be an integer from 1 to 1000000");
   }
   const engine = createSearchEngine(storyJson, knots, externals, opts);
-  engine.run(maxStates);
-  const result = engine.finalize();
-  result.passes = [engine.telemetry()];
-  return result;
+  return runEngineToBudget(engine, maxStates, opts);
 }
 
 /** Deterministic PRNG (mulberry32) so random exploration stays reproducible in CI. */
@@ -915,10 +966,7 @@ export function exploreRandom(
     throw new RangeError("maxStates must be an integer from 1 to 1000000");
   }
   const engine = createRandomEngine(storyJson, knots, externals, opts);
-  engine.run(maxStates);
-  const result = engine.finalize();
-  result.passes = [engine.telemetry()];
-  return result;
+  return runEngineToBudget(engine, maxStates, opts);
 }
 
 /**
@@ -1253,10 +1301,7 @@ export function exploreBeam(
     throw new RangeError("maxStates must be an integer from 1 to 1000000");
   }
   const engine = createBeamEngine(storyJson, knots, externals, opts);
-  engine.run(maxStates);
-  const result = engine.finalize();
-  result.passes = [engine.telemetry()];
-  return result;
+  return runEngineToBudget(engine, maxStates, opts);
 }
 
 /** Deterministic largest-remainder split of `total` units by weight. */
@@ -1396,7 +1441,9 @@ export function explorePortfolio(
       const { engine, i } = active[a];
       const consumed = grants[a] > 0 ? engine.run(grants[a]) : 0;
       remaining -= consumed;
-      const marginal = countMarginalFindings(engine.snapshot(), seenEndings, seenKnots, seenErrors);
+      const snapshot = engine.snapshot();
+      opts.onProgress?.(progressFromSnapshot(engine.label, maxStates - remaining, snapshot));
+      const marginal = countMarginalFindings(snapshot, seenEndings, seenKnots, seenErrors);
       marginalTotals[i].endings += marginal.newEndings;
       marginalTotals[i].knots += marginal.newKnots;
       marginalTotals[i].errors += marginal.newRuntimeErrors;
