@@ -194,7 +194,7 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 
 - **Machine-readable interface:** `tool.json` at the repo root describes the CLI flags, MCP tools, exit codes, and `--json` output shape in one file.
 - **`--json`** emits the entire report as a single JSON object (`{ compile, stats, explore }`) on stdout — parse that instead of scraping the pretty output. `explore.passes` includes lifetime telemetry per exploration pass, and `explore.schedule` shows how the adaptive rounds spent the budget.
-- **`--progress=ndjson`** emits versioned lifecycle and work-progress events on stderr for an agent or CI log parser. `statesExplored / stateBudget` is budget use, not story coverage; the final stdout report remains authoritative.
+- **`--progress=ndjson`** emits versioned lifecycle and work-progress events on stderr for an agent or CI log parser. `statesExplored / stateBudget` is budget use, not story coverage; the final stdout report remains authoritative. See the [NDJSON progress contract](docs/progress-ndjson.md).
 - **`--human`** emits a prioritized fix list grouped by errors, warnings, and notes, with file/line locations where available, choice paths for runtime failures, and a next step for each finding.
 - **`--markdown`** emits a GitHub Step Summary-friendly report for humans reviewing CI.
 - **Deterministic exit codes:** `0` clean · `1` compile/runtime errors (or, under `--strict`, warnings, unvisited knots, truncation, or external stubs) · `2` usage error. Branch on the exit code; don't grep the text.

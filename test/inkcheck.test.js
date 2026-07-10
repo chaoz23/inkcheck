@@ -797,6 +797,19 @@ test("CLI streams versioned progress to stderr without changing the final JSON r
   assert.strictEqual(final.unvisitedKnots, report.explore.unvisitedKnots.length);
 });
 
+test("NDJSON progress contract docs stay linked and privacy-focused", () => {
+  const fs = require("node:fs");
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  const docs = fs.readFileSync(path.join(ROOT, "docs", "progress-ndjson.md"), "utf8");
+  assert.match(readme, /docs\/progress-ndjson\.md/);
+  assert.match(docs, /schemaVersion: 1/);
+  assert.match(docs, /stdout report as authoritative/);
+  assert.match(docs, /work-budget progress, not story coverage/);
+  assert.match(docs, /"type":"progress"/);
+  assert.match(docs, /"type":"run_end"/);
+  assert.match(docs, /must not contain:[\s\S]*story source text[\s\S]*choice prose[\s\S]*variable names or values/);
+});
+
 test("exploration progress emits a time-based heartbeat before its state interval", async () => {
   const compiled = await compile(CLEAN_BRANCH);
   const events = [];
