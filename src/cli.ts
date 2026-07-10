@@ -43,6 +43,7 @@ Options:
   --human            Emit a prioritized human-readable fix list
   --json             Emit the full report as JSON
   --markdown         Emit a GitHub-friendly Markdown report
+  --progress=<mode>  Write progress to stderr: ndjson or off (default off)
 `);
   process.exit(2);
 }
@@ -64,6 +65,7 @@ async function main() {
   let minRepro = true;
   let profileOnly = false;
   let auto = false;
+  let progressMode: "ndjson" | "off" = "off";
   const boundedInt = (flag: string, raw: string | undefined, max: number): number => {
     const value = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
     if (!Number.isSafeInteger(value) || value < 1 || value > max) {
@@ -83,6 +85,11 @@ async function main() {
     else if (arg === "--json") asJson = true;
     else if (arg === "--markdown") asMarkdown = true;
     else if (arg === "--no-min-repro") minRepro = false;
+    else if (arg.startsWith("--progress=")) {
+      const mode = arg.slice("--progress=".length);
+      if (mode !== "ndjson" && mode !== "off") usage("--progress must be ndjson or off");
+      progressMode = mode;
+    }
     else if (arg.startsWith("--")) usage(`unknown option: ${arg}`);
     else if (file) usage(`unexpected extra argument: ${arg}`);
     else file = arg;
@@ -110,9 +117,42 @@ async function main() {
       : undefined;
   if (autoDepth !== undefined) maxDepth = autoDepth;
 
+  const totalMaxStates = maxStates ?? 100_000;
+  const startedAt = Date.now();
+  let sequence = 0;
+  let statesExplored = 0;
+  const emitProgress = (
+    type: "run_start" | "phase_start" | "progress" | "phase_end" | "run_end",
+    details: {
+      phase?: "compile" | "source_scan" | "explore" | "min_repro" | "report";
+      pass?: string;
+      endingsFound?: number;
+      runtimeErrorsFound?: number;
+      unvisitedKnots?: number;
+    } = {}
+  ) => {
+    if (progressMode !== "ndjson") return;
+    process.stderr.write(
+      JSON.stringify({
+        schemaVersion: 1,
+        sequence: ++sequence,
+        type,
+        elapsedMs: Date.now() - startedAt,
+        statesExplored,
+        stateBudget: totalMaxStates,
+        budgetFraction: Math.min(1, statesExplored / totalMaxStates),
+        ...details,
+      }) + "\n"
+    );
+  };
+
+  emitProgress("run_start");
+  emitProgress("phase_start", { phase: "compile" });
   const compiled = await compile(file);
+  emitProgress("phase_end", { phase: "compile" });
 
   if (!compiled.success) {
+    emitProgress("phase_start", { phase: "report" });
     if (asJson) {
       console.log(JSON.stringify({ compile: { ...compiled, storyJson: undefined } }, null, 2));
     } else if (asMarkdown) {
@@ -123,15 +163,18 @@ async function main() {
       console.log(`✗ compile failed — ${compiled.errors} error(s), ${compiled.warnings} warning(s)\n`);
       for (const i of compiled.issues) console.log(`  ${i.raw}`);
     }
+    emitProgress("phase_end", { phase: "report" });
+    emitProgress("run_end");
     process.exitCode = 1;
     return;
   }
 
+  emitProgress("phase_start", { phase: "source_scan" });
   const knots = scanKnots(file);
   const externals = scanExternals(file);
   const semantics = scanStorySemantics(file);
   const st = await stats(file);
-  const totalMaxStates = maxStates ?? 100_000;
+  emitProgress("phase_end", { phase: "source_scan" });
   const reproStates = minRepro && totalMaxStates > 1 ? Math.max(1, Math.floor(totalMaxStates * 0.1)) : 0;
   const portfolioStates = totalMaxStates - reproStates;
   const exploreOptions = {
@@ -143,8 +186,23 @@ async function main() {
     preserveRandomState: semantics.usesRandomness,
     randomnessDetected: semantics.usesRandomness,
   };
-  let report = explorePortfolio(compiled.storyJson!, knots, externals, exploreOptions);
+  emitProgress("phase_start", { phase: "explore" });
+  let report = explorePortfolio(compiled.storyJson!, knots, externals, {
+    ...exploreOptions,
+    onProgress: (progress) => {
+      statesExplored = progress.statesExplored;
+      emitProgress("progress", {
+        pass: progress.pass,
+        endingsFound: progress.endingsFound,
+        runtimeErrorsFound: progress.runtimeErrorsFound,
+        unvisitedKnots: progress.unvisitedKnots,
+      });
+    },
+  });
+  statesExplored = report.statesExplored;
+  emitProgress("phase_end", { phase: "explore" });
   if (reproStates > 0) {
+    emitProgress("phase_start", { phase: "min_repro" });
     const bfs = explore(compiled.storyJson!, knots, externals, {
       maxDepth,
       maxStates: reproStates,
@@ -152,8 +210,19 @@ async function main() {
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
+      onProgress: (progress) => {
+        statesExplored = report.statesExplored + progress.statesExplored;
+        emitProgress("progress", {
+          pass: progress.pass,
+          endingsFound: progress.endingsFound,
+          runtimeErrorsFound: progress.runtimeErrorsFound,
+          unvisitedKnots: progress.unvisitedKnots,
+        });
+      },
     });
     report = mergeMinRepro(report, bfs);
+    statesExplored = report.statesExplored;
+    emitProgress("phase_end", { phase: "min_repro" });
   }
   classifyUnvisitedKnots(report, scanInboundDiverts(file));
 
@@ -163,6 +232,7 @@ async function main() {
     ...(profile ? { profile } : {}),
     explore: report,
   };
+  emitProgress("phase_start", { phase: "report" });
   if (asJson) {
     console.log(
       JSON.stringify(
@@ -235,6 +305,12 @@ async function main() {
       console.log(`⚠ coverage is partial, not a proof — ${truncationAdvice(report)}`);
     }
   }
+  emitProgress("phase_end", { phase: "report" });
+  emitProgress("run_end", {
+    endingsFound: report.endingsFound.length,
+    runtimeErrorsFound: report.runtimeErrors.length,
+    unvisitedKnots: report.unvisitedKnots.length,
+  });
 
   const hardFail = report.runtimeErrors.length > 0;
   const softFail =
