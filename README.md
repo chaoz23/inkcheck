@@ -75,7 +75,7 @@ When a run is cut short, the report names the limit that actually bound it — f
 
 Exit code is non-zero on compile or runtime errors. Add `--strict` to also fail on warnings, unvisited knots, truncation, or external stubs, so partial coverage cannot silently pass CI.
 
-Large stories can exceed the defaults. On inkle's published [*The Intercept*](https://github.com/inkle/the-intercept), inkcheck marks the report as truncated even when the state budget is raised well beyond the default. That is a useful partial check, not proof of complete coverage; increase the limits deliberately and keep the limitation visible in CI. The hosted checker uses a 100,000-state default and asks authors to file an issue if that still is not enough.
+A story does not have to be long to exceed the default budget. On inkle's published [*The Intercept*](https://github.com/inkle/the-intercept) — a short story — inkcheck still marks the report as truncated even at a large state budget, because branching and variables create far more reachable states than there are choices. That is a useful partial check, not proof of complete coverage; the run stops on whichever comes first — the state budget, the depth limit, or the memory guard — and says which. The hosted web checker defaults to and caps at 1,000,000 states so one story cannot monopolize the shared server; jobs larger than that (up to the CLI's 100M ceiling) belong on the local CLI, where you control the heap. See [Performance and memory](#performance-and-memory) for how to size a run for your hardware.
 
 Within a single run, inkcheck spends its state budget across complementary search passes rather than betting everything on one traversal order. The current CLI portfolio explores last-choice-first, first-choice-first, and inside-out DFS slices, adds a seeded random-sampling slice that varies early-choice prefixes the deterministic passes tend to repeat, adds a frontier-capped diversity beam that advances level-by-level like BFS while keeping one state per variable-signature lineage, then reserves a small breadth-first slice to shorten repro paths. The random slice uses a fixed default seed and the beam needs no seed at all, so runs stay reproducible in CI; every reported ending and runtime error names the pass (and seed) that found it. This often finds more endings and reachable knots at the same `--max-states` limit, but it is still bounded QA: a truncated report is useful evidence, not an exhaustive proof.
 
@@ -95,6 +95,28 @@ In a local test of *The Intercept* at the default depth of 30, higher budgets fo
 | 1,000,000 | 205.5s | 25 | 0 | 8 | truncated |
 
 That is the intended interpretation: each run tests real reachable states and can surface real broken paths, but a truncated report is evidence about what was visited, not proof that everything was reachable or correct.
+
+## Performance and memory
+
+The default budget is 10,000,000 states and the ceiling is 100,000,000, so it is worth knowing what a big run costs. Two resources bound a run: **time** and **memory**. Small or exhaustible stories touch neither — the portfolio early-exits the moment a systematic pass proves the reachable space complete, so `inkcheck small.ink` finishes in the handful of states it has regardless of the default. The numbers below matter only for large, non-exhaustive stories.
+
+**Time** scales roughly linearly with states explored. On one development machine, *The Intercept* ran about 200 seconds per million states (see the table above), so a 10M-state run is tens of minutes and a 100M run is hours. There is no wall-clock limit on the local CLI, so for CI or interactive use, pin `--max-states` to the coverage you actually need rather than relying on the default — or run the default with `--progress` (on by default in an interactive terminal) so you can watch and interrupt.
+
+**Memory** is a sum of terms with different growth, and it is why the ceiling is high rather than dangerous:
+
+| What grows | How it scales | Notes |
+| --- | --- | --- |
+| Deduplication hash set (`seenStates`) | **~linear**, ≈200 bytes per *distinct* state | The dominant term. inkcheck stores a hash per state, not the state, which is what makes millions of states affordable. |
+| DFS / beam frontier | **flat** | DFS is bounded by depth; the beam has a hard frontier cap. Neither grows with the budget. |
+| Random sampling | **flat** (O of findings) | Keeps no dedup structure. |
+| BFS repro-shortening frontier | **the one super-linear risk** | On a deep, loop-light, branching story it can balloon (a research run queued ~631K full states). `--no-min-repro` removes this slice entirely. |
+
+Two practical rules of thumb from that:
+
+- **Budget heap, not just states.** As a worst-case estimate (no state deduplication), plan for roughly **2 GB of heap per 10M distinct states**. Stories with loops deduplicate heavily and use far less; a low-dedup story uses close to the worst case. So a 10M-state run's worst case (~2 GB) sits near Node's default heap limit: a loop-heavy story stays well under it, but a large low-dedup one can reach the memory guard before finishing even at the default budget. A 100M-state run exceeds a normal default heap and will stop at the guard unless you raise `--max-old-space-size`. Either way it stops cleanly with a partial report — the guard is what makes the high ceiling safe to point at, not a promise the run will complete.
+- **The memory guard is the real limiter, not the ceiling.** A run stops cleanly at 85% of the V8 heap (or your `--max-memory`) and returns a *partial* report with `truncatedBy.memory` rather than crashing. So setting `--max-states 100000000` is not reckless — on a normal machine the guard, not the ceiling, decides where it stops. To go further, give Node more heap: `NODE_OPTIONS=--max-old-space-size=8192 inkcheck big.ink --max-states 100000000`.
+
+Levers, in order of impact, when a story is too big to finish: raise `--max-old-space-size` (more headroom), pass `--no-min-repro` (drops the super-linear BFS frontier), lower `--max-states` (bounds both time and memory), or split the story and check parts separately. The `nextRun` verdict names the binding limit after each run so you know which lever applies.
 
 ## MCP server
 
@@ -132,7 +154,7 @@ inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--auto] [--pro
 inkcheck mcp    # start the MCP server on stdio
 ```
 
-`--max-depth` accepts 1–1,000 and `--max-states` accepts 1–1,000,000. These hard ceilings prevent malformed automation inputs from accidentally disabling the exploration bounds. The default state budget is 100,000.
+`--max-depth` accepts 1–1,000 and `--max-states` accepts 1–100,000,000, with a **default budget of 10,000,000**. These hard ceilings prevent malformed automation inputs from accidentally disabling the exploration bounds. The default is deliberately ambitious because three things make a big budget safe rather than reckless: a fully-explorable story early-exits the moment a systematic pass proves it exhaustive (so small stories still finish in a handful of states), the memory guard stops cleanly before an out-of-memory crash, and progress reporting lets you watch and interrupt a long run. A large, non-exhaustive story will therefore *use* that budget — see [Performance and memory](#performance-and-memory) before running one in CI, and pin a smaller `--max-states` there if a bounded runtime matters more than depth of coverage.
 
 `--max-states` is a total budget for the run, not a promise that one single DFS walk will spend all states. By default the CLI divides most of that budget across three complementary DFS views of the choice tree plus a seeded random-sampling slice, and keeps a small breadth-first slice for shorter failure and ending repro paths. Use `--no-min-repro` to spend that repro slice on the DFS portfolio instead when breadth-first shortening is less important than broader search.
 
@@ -155,8 +177,10 @@ GitHub Actions:
   shell: bash
   run: |
     set -o pipefail
-    npx -y inkcheck story/main.ink --strict --markdown | tee -a "$GITHUB_STEP_SUMMARY"
+    npx -y inkcheck story/main.ink --strict --markdown --max-states 500000 | tee -a "$GITHUB_STEP_SUMMARY"
 ```
+
+The example pins `--max-states 500000` so the job has a predictable runtime; the default budget is 10,000,000, which a large, non-exhaustive story would actually spend (see [Performance and memory](#performance-and-memory)). Pin a budget in CI whenever a bounded wall-clock matters more than maximum coverage.
 
 `--strict` fails not only on warnings and unvisited knots, but also when exploration is truncated or an `EXTERNAL` function had to be stubbed. This prevents a partial check from wearing a green “complete” badge.
 
@@ -185,7 +209,7 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 - **Compilation** uses `inklecate`, the canonical compiler — found via `$INKLECATE_PATH`, then `PATH`, then auto-downloaded from the pinned official ink 1.2.1 release into `~/.cache/inkcheck` on first run. Downloaded archives are verified against pinned SHA-256 hashes before extraction. Stories are compiled with `-c` so all knot visits are counted.
 - **Exploration** runs the compiled story in [inkjs](https://github.com/y-lohse/inkjs) (the official JS runtime port), reusing pooled story instances so the compiled JSON is parsed once per pass and states rewind via `LoadJson`. States are deduplicated by content hash. Turn and RNG state are preserved whenever the source uses those features; otherwise that bookkeeping is safely canonicalized so ordinary loops can converge. `INCLUDE`s are followed.
 - The CLI uses a bounded, adaptive portfolio search. Complementary passes — last-choice-first, first-choice-first, and inside-out DFS, a diversity-first beam, and seeded random walks — run interleaved in ten deterministic rounds. Initial weights (roughly 20/20/26/15/20%, or a shape profile's suggestion under `--auto`) are reallocated each round toward passes whose findings are still growing, with a guaranteed floor per pass so a discovery dry spell never defunds a pass outright. The passes are complementary: the DFS orderings systematically exhaust subtrees, the beam spreads budget across every variable-state lineage within a hard frontier cap, and the random walks re-roll every choice point so early-choice state combinations get sampled instead of repeated. Findings merge into one report, each labeled with the pass that found it, and the executed schedule appears in `--json` output.
-- The moment any systematic pass visits every reachable state without hitting a limit, the whole portfolio stops: every further state would be redundant. A small fully-explorable story at the default 100,000-state budget now finishes in the handful of states it actually has.
+- The moment any systematic pass visits every reachable state without hitting a limit, the whole portfolio stops: every further state would be redundant. A small fully-explorable story at the default 10,000,000-state budget still finishes in the handful of states it actually has — the large default costs nothing when a story is exhaustible.
 - The beam pass answers "what should a beam optimize for" concretely: survivors are selected round-robin across variable-signature groups (diversity first), ranked within each group by novelty — newly visited knots, then new variable signatures, then new offered-choice sets. It is deterministic without a seed, and it reports the run as truncated whenever it had to prune a reachable state, so a beam never silently claims complete coverage.
 - Unless skipped with `--no-min-repro`, the CLI reserves about 10% of the requested `--max-states` budget for a breadth-first repro-shortening slice. BFS reaches shared findings by shorter choice trails where possible and may contribute extra shallow findings.
 - Bounds (`--max-depth`, `--max-states`) keep worst-case combinatorics in check; the report says explicitly when it was truncated.

@@ -747,8 +747,8 @@ export function explore(
   opts: ExploreOptions = {}
 ): ExploreResult {
   const maxStates = opts.maxStates ?? 100_000;
-  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 1_000_000) {
-    throw new RangeError("maxStates must be an integer from 1 to 1000000");
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 100_000_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 100000000");
   }
   const engine = createSearchEngine(storyJson, knots, externals, opts);
   return runEngineToBudget(engine, maxStates, opts);
@@ -1003,8 +1003,8 @@ export function exploreRandom(
   opts: ExploreOptions = {}
 ): ExploreResult {
   const maxStates = opts.maxStates ?? 100_000;
-  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 1_000_000) {
-    throw new RangeError("maxStates must be an integer from 1 to 1000000");
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 100_000_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 100000000");
   }
   const engine = createRandomEngine(storyJson, knots, externals, opts);
   return runEngineToBudget(engine, maxStates, opts);
@@ -1352,8 +1352,8 @@ export function exploreBeam(
   opts: ExploreOptions = {}
 ): ExploreResult {
   const maxStates = opts.maxStates ?? 100_000;
-  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 1_000_000) {
-    throw new RangeError("maxStates must be an integer from 1 to 1000000");
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 100_000_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 100000000");
   }
   const engine = createBeamEngine(storyJson, knots, externals, opts);
   return runEngineToBudget(engine, maxStates, opts);
@@ -1426,8 +1426,8 @@ export function explorePortfolio(
   opts: ExploreOptions = {}
 ): ExploreResult {
   const maxStates = opts.maxStates ?? 100_000;
-  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 1_000_000) {
-    throw new RangeError("maxStates must be an integer from 1 to 1000000");
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 100_000_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 100000000");
   }
   if (maxStates === 1) return explore(storyJson, knots, externals, opts);
 

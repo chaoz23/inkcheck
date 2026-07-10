@@ -116,7 +116,7 @@ export function webConfigFromEnv(): WebConfig {
     maxFiles: integerEnv("INKCHECK_WEB_MAX_FILES", 200, 1, 500),
     maxFileBytes: integerEnv("INKCHECK_WEB_MAX_FILE_BYTES", 2_621_440, 1_024, 10_485_760),
     maxDepth: integerEnv("INKCHECK_WEB_MAX_DEPTH", 1_000, 1, 2_000),
-    maxStates: integerEnv("INKCHECK_WEB_MAX_STATES", 100_000, 1, 1_000_000),
+    maxStates: integerEnv("INKCHECK_WEB_MAX_STATES", 1_000_000, 1, 1_000_000),
     maxReportBytes: integerEnv("INKCHECK_WEB_MAX_REPORT_BYTES", 83_886_080, 65_536, 209_715_200),
     rateLimit: integerEnv("INKCHECK_WEB_RATE_LIMIT", 10, 1, 1_000),
     globalRateLimit: integerEnv("INKCHECK_WEB_GLOBAL_RATE_LIMIT", 60, 1, 10_000),

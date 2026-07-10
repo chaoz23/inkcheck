@@ -480,7 +480,7 @@ test("recommendNextRun issues the right verdict per story shape", async () => {
 
 test("recommendNextRun degrades to reseed or investigate at the ceilings", () => {
   const base = {
-    statesExplored: 1_000_000,
+    statesExplored: 100_000_000,
     endingsFound: [],
     runtimeErrors: [],
     runtimeWarnings: [],
@@ -489,9 +489,10 @@ test("recommendNextRun degrades to reseed or investigate at the ceilings", () =>
     externalFunctionsStubbed: [],
     randomnessDetected: false,
     truncated: true,
-    truncatedBy: { maxDepth: false, maxStates: true, beamWidth: false },
+    truncatedBy: { maxDepth: false, maxStates: true, beamWidth: false, memory: false },
+    // At the state ceiling (100M), so no broaden is possible.
+    limits: { maxDepth: 1000, maxStates: 100_000_000, seed: 3 },
     exhaustive: false,
-    limits: { maxDepth: 1000, maxStates: 1_000_000, seed: 3 },
   };
   // Random still hot, systematic passes saturated, budget at ceiling → reseed.
   const reseed = recommendNextRun({
@@ -835,14 +836,14 @@ test("CLI rejects invalid numeric and unknown options as usage errors", () => {
     encoding: "utf8",
   });
   assert.strictEqual(invalid.status, 2);
-  assert.match(invalid.stderr, /requires an integer from 1 to 1000000/);
+  assert.match(invalid.stderr, /requires an integer from 1 to 100000000/);
   const unbounded = spawnSync(
     process.execPath,
     [CLI, CLEAN_BRANCH, "--max-states", "999999999999999999999999"],
     { encoding: "utf8" }
   );
   assert.strictEqual(unbounded.status, 2);
-  assert.match(unbounded.stderr, /requires an integer from 1 to 1000000/);
+  assert.match(unbounded.stderr, /requires an integer from 1 to 100000000/);
   const unknown = spawnSync(process.execPath, [CLI, CLEAN_BRANCH, "--surprise"], {
     encoding: "utf8",
   });
@@ -860,6 +861,72 @@ test("explore rejects unsafe limits even when called as a library", async () => 
   assert.throws(
     () => explore(compiled.storyJson, [], [], { maxStates: Number.POSITIVE_INFINITY }),
     /maxStates must be an integer/
+  );
+});
+
+// The state ceiling is 100M and the CLI/library default budget is 10M; small
+// stories still finish in the handful of states they actually have because a
+// systematic pass early-exits on exhaustive coverage.
+test("state ceiling is 100M and above it is rejected", async () => {
+  const compiled = await compile(CLEAN_BRANCH);
+  const knots = scanKnots(CLEAN_BRANCH);
+  // At the ceiling: accepted (clean-branch exhausts in 2 states, so this is instant).
+  const ok = explore(compiled.storyJson, knots, [], { maxStates: 100_000_000 });
+  assert.strictEqual(ok.exhaustive, true);
+  // One over the ceiling: rejected.
+  assert.throws(
+    () => explore(compiled.storyJson, knots, [], { maxStates: 100_000_001 }),
+    /maxStates must be an integer from 1 to 100000000/
+  );
+});
+
+test("CLI defaults the state budget to 10,000,000", () => {
+  // The progress stream reports the configured budget exactly; clean-branch
+  // is fully explorable so the run early-exits despite the large default.
+  const proc = spawnSync(
+    process.execPath,
+    [CLI, CLEAN_BRANCH, "--progress=ndjson", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(JSON.parse(proc.stdout).explore.exhaustive, true);
+  const events = proc.stderr
+    .trim()
+    .split(/\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  assert.ok(events.length > 0);
+  assert.ok(events.every((e) => e.stateBudget === 10_000_000));
+});
+
+test("hosted checker defaults and caps the state budget at 1,000,000", () => {
+  const config = webConfigFromEnv();
+  assert.strictEqual(config.maxStates, 1_000_000);
+  const submission = validateSubmission(
+    {
+      root: "story.ink",
+      files: { "story.ink": "Hello -> END" },
+      authorized: true,
+      privacyAcknowledged: true,
+    },
+    config
+  );
+  // No maxStates in the request → hosted default applies.
+  assert.strictEqual(submission.maxStates, 1_000_000);
+  // A request above the hosted cap is rejected (the API surfaces a "use the
+  // CLI" issue link); big jobs up to 100M states belong on the local CLI.
+  assert.throws(
+    () =>
+      validateSubmission(
+        {
+          root: "story.ink",
+          files: { "story.ink": "Hello -> END" },
+          authorized: true,
+          privacyAcknowledged: true,
+          maxStates: 50_000_000,
+        },
+        config
+      ),
+    SubmissionError
   );
 });
 

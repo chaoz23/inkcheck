@@ -82,8 +82,8 @@ server.registerTool(
       file: z.string().describe("Path to the root .ink file"),
       maxDepth: z.number().int().min(1).max(1000).optional()
         .describe("Max choices deep to explore (default 30)"),
-      maxStates: z.number().int().min(1).max(1000000).optional()
-        .describe("Max story states to visit (default 100000)"),
+      maxStates: z.number().int().min(1).max(100000000).optional()
+        .describe("Max story states to visit (default 10000000)"),
       seed: z.number().int().min(0).max(4294967295).optional()
         .describe("Seed for the reproducible random-sampling slice (default 1)"),
       minRepro: z.boolean().optional()
@@ -101,7 +101,7 @@ server.registerTool(
     const knots = scanKnots(file);
     const externals = scanExternals(file);
     const semantics = scanStorySemantics(file);
-    const totalMaxStates = maxStates ?? 100_000;
+    const totalMaxStates = maxStates ?? 10_000_000;
     const reproStates = minRepro !== false && totalMaxStates > 1 ? Math.max(1, Math.floor(totalMaxStates * 0.1)) : 0;
     const portfolioStates = totalMaxStates - reproStates;
     // Stop cleanly before a V8 heap OOM (uncatchable after the fact); the

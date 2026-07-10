@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Raise the state-budget ceiling to 100,000,000 and the CLI/MCP default to 10,000,000 (from 1,000,000 / 100,000). The large default is safe because exhaustible stories early-exit, the memory guard stops cleanly before an out-of-memory crash, and progress reporting lets you watch and interrupt a long run — so the practical limiter on a big run is memory (or the wall clock you choose), not the ceiling. The hosted web checker keeps a 1,000,000-state default and cap so one story cannot monopolize the shared server; larger jobs belong on the local CLI. Pin `--max-states` in CI when a bounded runtime matters more than depth of coverage.
+- Add a **Performance and memory** section to the README: per-million-states timing, the memory-term breakdown (dedup hash floor ~200 B/distinct state and dominant; DFS/beam/random flat; BFS repro frontier the one super-linear risk), a "~2 GB heap per 10M distinct states" worst-case rule of thumb, and the levers (`--max-old-space-size`, `--no-min-repro`, `--max-states`) for a story too big to finish.
+
 ## 0.4.0 — 2026-07-10
 
 - Add a memory guard so large runs degrade gracefully instead of crashing. A V8 heap out-of-memory abort cannot be caught after the fact, so exploration now watches heap use and stops cleanly before the wall, keeping every finding so far and reporting `truncatedBy.memory` in a partial report. The cap defaults to 85% of the V8 heap limit (honoring `--max-old-space-size`) and is overridable with `--max-memory <mb>`; the guard is active in the CLI and the MCP `explore_story` tool. On a memory stop the `nextRun` verdict is `investigate` (raise the heap, lower `--max-states`, or split the story), never `broaden`, since more budget would hit the wall sooner.
