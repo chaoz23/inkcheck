@@ -128,7 +128,7 @@ The intended loop for an agent editing a story: edit `.ink` → `compile_story` 
 ## CLI
 
 ```
-inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--auto] [--profile] [--no-min-repro] [--strict] [--progress=ndjson] [--human|--json|--markdown]
+inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--auto] [--profile] [--next] [--no-min-repro] [--strict] [--progress=ndjson] [--human|--json|--markdown]
 inkcheck mcp    # start the MCP server on stdio
 ```
 
@@ -141,6 +141,8 @@ inkcheck mcp    # start the MCP server on stdio
 `--profile` prints a cheap static shape profile of the story — variables and where they are assigned, choice density, the longest divert path — plus the depth limit and pass weights inkcheck would choose for that shape, without running any exploration. `--auto` applies those suggestions: it raises `--max-depth` when static divert paths outrun the default (never lowers it, and your explicit flags always win) and hands the profile's pass weights to the portfolio. On a story whose main path is 40 choices deep, default settings find nothing while `--auto` reaches the ending and proves the story exhaustive in ~111 states.
 
 `--progress=ndjson` writes versioned progress events to stderr for agents and CI while keeping the final stdout report authoritative. Events use the configured state budget as a work meter (`budgetFraction`), not as a percent of total story coverage. The stream contains counters and phase/pass names only; it never includes story prose, choices, variables, or source snippets. Omit the option, or use `--progress=off`, for the unchanged default output.
+
+Every report also carries a `nextRun` verdict — a small closed vocabulary (`stop`, `deepen`, `broaden`, `reseed`, `investigate`) computed deterministically from the report itself, with concrete flags, a rationale that cites the fields it used, and the evidence-backed expected gain. `--next` acts on it: after the check, inkcheck applies the recommended escalation and reruns, up to three times, stopping on a `stop`/`investigate` verdict, at the flag ceilings, or when an escalated run finds nothing new (fixpoint). The per-run trail lands in `--json` output as `runs`; hop narration goes to stderr so machine output stays clean. Recommendations never exceed the documented hard ceilings — when no flag increase has evidence behind it, the verdict degrades to `investigate` and points at the knots worth reviewing.
 
 GitHub Actions:
 
@@ -172,6 +174,7 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 - **Deterministic exit codes:** `0` clean · `1` compile/runtime errors (or, under `--strict`, warnings, unvisited knots, truncation, or external stubs) · `2` usage error. Branch on the exit code; don't grep the text.
 - **MCP:** `claude mcp add inkcheck -- npx -y inkcheck mcp` exposes `compile_story`, `story_stats`, `playtest_story`, and `explore_story` as tools.
 - **The loop:** edit `.ink` → `compile_story` → `explore_story` → fix what it reports → repeat. inkcheck is a repeatable mechanical check for a story graph you generated or edited — use it to verify your own work before returning it.
+- **The coverage loop:** `explore_story` (and CLI `--json`) returns `nextRun` — switch on its `recommendation` (`stop` / `deepen` / `broaden` / `reseed` / `investigate`) and rerun with `nextRun.flags` until `stop: true`. Or let the CLI drive it: `inkcheck story.ink --next`.
 
 `llms.txt` at the repo root is a compact, model-friendly summary of all of the above.
 
