@@ -100,7 +100,7 @@ docker compose exec -T inkcheck node dist/usage-report.js --days 30
 | Files | 200 |
 | Individual file | 2.5 MiB |
 | Maximum choice depth | 1,000 |
-| Maximum states | 100,000 by default; configurable up to 1,000,000 |
+| Maximum states | 1,000,000 (default and cap; larger jobs up to 100M states belong on the local CLI) |
 | Check timeout | 450 seconds |
 | Concurrent checks | 1 |
 | Checks per client | 10 per hour |

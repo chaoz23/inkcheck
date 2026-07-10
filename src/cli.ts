@@ -40,7 +40,7 @@ Usage: inkcheck <story.ink> [options]
 
 Options:
   --max-depth <n>    Max choices deep to explore, 1–1000 (default 30)
-  --max-states <n>   Max story states to visit, 1–1000000 (default 100000)
+  --max-states <n>   Max story states to visit, 1–100000000 (default 10000000)
   --seed <n>         Seed for the random-sampling slice, 1–4294967295 (default 1)
   --max-memory <mb>  Stop cleanly before heap use exceeds <mb> (default: 85% of the V8 heap limit)
   --profile          Print the story's shape profile and suggested settings, without exploring
@@ -86,7 +86,7 @@ async function main() {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--max-depth") maxDepth = boundedInt(arg, args[++i], 1_000);
-    else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 1_000_000);
+    else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 100_000_000);
     else if (arg === "--seed") seed = boundedInt(arg, args[++i], 4_294_967_295);
     else if (arg === "--max-memory") maxMemoryMb = boundedInt(arg, args[++i], 1_000_000);
     else if (arg === "--profile") profileOnly = true;
@@ -132,7 +132,7 @@ async function main() {
       : undefined;
   if (autoDepth !== undefined) maxDepth = autoDepth;
 
-  const totalMaxStates = maxStates ?? 100_000;
+  const totalMaxStates = maxStates ?? 10_000_000;
   const startedAt = Date.now();
   let sequence = 0;
   let statesExplored = 0;
@@ -208,7 +208,7 @@ async function main() {
   const memoryGuard = () => process.memoryUsage().heapUsed < memoryCapBytes;
 
   const runCheck = (bounds: { maxDepth?: number; maxStates?: number; seed?: number }): ExploreResult => {
-    const runStates = bounds.maxStates ?? 100_000;
+    const runStates = bounds.maxStates ?? 10_000_000;
     const reproStates = minRepro && runStates > 1 ? Math.max(1, Math.floor(runStates * 0.1)) : 0;
     const portfolioStates = runStates - reproStates;
     // Progress accumulates across --next escalations, so offset by the

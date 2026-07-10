@@ -2,7 +2,7 @@ import { ExploreResult, PassTelemetry } from "./explore";
 import { StoryShapeProfile } from "./inklecate";
 
 export const MAX_DEPTH_CEILING = 1_000;
-export const MAX_STATES_CEILING = 1_000_000;
+export const MAX_STATES_CEILING = 100_000_000;
 export const MAX_SEED = 4_294_967_295;
 
 /**

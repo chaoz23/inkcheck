@@ -39,7 +39,7 @@
       },
       {
         "flag": "--max-states <n>",
-        "description": "Total exploration state budget across the complementary DFS portfolio, diversity-first beam slice, seeded random-sampling slice, and repro-shortening slice, from 1 to 1000000. Default 100000."
+        "description": "Total exploration state budget across the complementary DFS portfolio, diversity-first beam slice, seeded random-sampling slice, and repro-shortening slice, from 1 to 100000000. Default 10000000. The memory guard (85% of the V8 heap by default) stops cleanly before OOM, so the practical limiter on a big run is memory, not this ceiling; small stories early-exit on exhaustive coverage."
       },
       {
         "flag": "--seed <n>",
