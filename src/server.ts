@@ -82,11 +82,13 @@ server.registerTool(
         .describe("Max choices deep to explore (default 30)"),
       maxStates: z.number().int().min(1).max(1000000).optional()
         .describe("Max story states to visit (default 100000)"),
+      seed: z.number().int().min(0).max(4294967295).optional()
+        .describe("Seed for the reproducible random-sampling slice (default 1)"),
       minRepro: z.boolean().optional()
         .describe("Reserve a small breadth-first slice to shorten repro paths (default true)"),
     },
   },
-  async ({ file, maxDepth, maxStates, minRepro }) => {
+  async ({ file, maxDepth, maxStates, seed, minRepro }) => {
     const compiled = await compile(file);
     if (!compiled.success || !compiled.storyJson) {
       return err(
@@ -103,6 +105,7 @@ server.registerTool(
     const options = {
       maxDepth,
       maxStates: Math.max(1, portfolioStates),
+      seed,
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,

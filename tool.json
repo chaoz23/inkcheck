@@ -39,7 +39,11 @@
       },
       {
         "flag": "--max-states <n>",
-        "description": "Total exploration state budget across the complementary DFS portfolio and repro-shortening slice, from 1 to 1000000. Default 100000."
+        "description": "Total exploration state budget across the complementary DFS portfolio, seeded random-sampling slice, and repro-shortening slice, from 1 to 1000000. Default 100000."
+      },
+      {
+        "flag": "--seed <n>",
+        "description": "Seed for the reproducible random-sampling slice, from 1 to 4294967295. Default 1; the same seed always samples the same walks."
       },
       {
         "flag": "--no-min-repro",
@@ -54,7 +58,7 @@
     "jsonSchema": {
       "compile": "{ success: bool, issues: [{severity, file, line, message}], errors: int, warnings: int, todos: int }",
       "stats": "{ words, knots, stitches, functions, choices, gathers, diverts }",
-      "explore": "{ statesExplored: int, endingsFound: [{path: string[], finalText, variables}], runtimeErrors: [{message, path, sourceLocation?}], unvisitedKnots: [{name, file, line}], externalFunctionsStubbed: string[], randomnessDetected: bool, truncated: bool, limits: {maxDepth, maxStates} }"
+      "explore": "{ statesExplored: int, endingsFound: [{path: string[], finalText, variables, foundBy?}], runtimeErrors: [{message, path, sourceLocation?, foundBy?}], unvisitedKnots: [{name, file, line}], externalFunctionsStubbed: string[], randomnessDetected: bool, truncated: bool, limits: {maxDepth, maxStates, seed?} }"
     }
   },
   "mcp": {

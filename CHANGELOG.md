@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add a seeded random-sampling slice (~20%) to the exploration portfolio so early-choice state combinations get sampled instead of repeated; the deterministic DFS portfolio alone missed 4 of 7 endings on an adversarial early-choice fixture even at a 1M state budget (#20, #21).
+- Add `--seed` to the CLI and a `seed` input to the MCP `explore_story` tool; a fixed default seed keeps CI runs reproducible, and the used seed is reported in `explore.limits.seed`.
+- Label every reported ending and runtime error with the search pass that found it (`foundBy`, e.g. `dfs:last`, `bfs`, `random:seed=1`).
+- Add `examples/early-choice-grid.ink`, the community-motivated fixture behind issue #20, plus regression tests that the portfolio now reaches all seven endings within a bounded budget.
+
 ## 0.3.2 — 2026-07-09
 
 - Raise the default exploration state budget to 100,000 and the maximum accepted `--max-states` value to 1,000,000 across CLI, MCP, and hosted checker validation.

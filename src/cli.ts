@@ -20,6 +20,7 @@ Usage: inkcheck <story.ink> [options]
 Options:
   --max-depth <n>    Max choices deep to explore, 1–1000 (default 30)
   --max-states <n>   Max story states to visit, 1–1000000 (default 100000)
+  --seed <n>         Seed for the random-sampling slice, 1–4294967295 (default 1)
   --no-min-repro     Skip the small breadth-first repro-shortening slice
   --strict           Also fail on warnings, unvisited knots, truncation, or external stubs
   --human            Emit a prioritized human-readable fix list
@@ -38,6 +39,7 @@ async function main() {
   let file: string | undefined;
   let maxDepth: number | undefined;
   let maxStates: number | undefined;
+  let seed: number | undefined;
   let strict = false;
   let asJson = false;
   let asMarkdown = false;
@@ -54,6 +56,7 @@ async function main() {
     const arg = args[i];
     if (arg === "--max-depth") maxDepth = boundedInt(arg, args[++i], 1_000);
     else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 1_000_000);
+    else if (arg === "--seed") seed = boundedInt(arg, args[++i], 4_294_967_295);
     else if (arg === "--strict") strict = true;
     else if (arg === "--human") asHuman = true;
     else if (arg === "--json") asJson = true;
@@ -95,6 +98,7 @@ async function main() {
   const exploreOptions = {
     maxDepth,
     maxStates: Math.max(1, portfolioStates),
+    seed,
     preserveTurnState: semantics.usesTurns,
     preserveRandomState: semantics.usesRandomness,
     randomnessDetected: semantics.usesRandomness,
