@@ -32,10 +32,11 @@ export function truncationAdvice(
       `the ${result.limits?.maxStates ?? "configured"}-state budget ran out; raise --max-states for broader coverage`
     );
   }
-  if (causes?.beamWidth) {
-    hints.push("the beam slice pruned reachable states at its frontier cap");
-  }
-  if (!hints.length) hints.push("raise --max-depth or --max-states for broader coverage");
+  // The beam's internal frontier cap is not a reader-facing lever — a pure
+  // beam prune still means the story is bigger than this run covered, which
+  // the depth/state hints and the states-explored count already convey, so we
+  // never surface "beam width" / "frontier cap" jargon in a human report.
+  if (!hints.length) hints.push("raise --max-states for broader coverage");
   return hints.join("; ");
 }
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Drop internal "beam width" / "frontier cap" jargon from human-readable truncation advice. A pure beam prune still means the story is bigger than the run covered — which the depth/state hints and the states-explored count already convey — so `truncationAdvice` no longer surfaces the beam's internal cap in `--human`/text/Markdown reports (or in the `humanFindings` the hosted web checker renders).
+
 ## 0.4.1 — 2026-07-10
 
 - Raise the state-budget ceiling to 100,000,000 and the CLI/MCP default to 10,000,000 (from 1,000,000 / 100,000). The large default is safe because exhaustible stories early-exit, the memory guard stops cleanly before an out-of-memory crash, and progress reporting lets you watch and interrupt a long run — so the practical limiter on a big run is memory (or the wall clock you choose), not the ceiling. The hosted web checker keeps a 1,000,000-state default and cap so one story cannot monopolize the shared server; larger jobs belong on the local CLI. Pin `--max-states` in CI when a bounded runtime matters more than depth of coverage.
