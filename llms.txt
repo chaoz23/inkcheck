@@ -8,7 +8,7 @@ inkcheck exists because compiling an ink story only proves the syntax is valid. 
 
 inkcheck itself does not use AI, machine learning, LLMs, or generative models. It does not train on story source, infer prose changes, rewrite text, or send story content to an AI service. Humans, CI systems, and optional AI coding agents can drive inkcheck, but the checking remains deterministic mechanical QA.
 
-The CLI uses a bounded exploration portfolio rather than a single traversal order. It spends the requested `--max-states` budget across complementary DFS views of the choice tree (last-choice-first, first-choice-first, and inside-out) plus a seeded random-sampling slice that varies early-choice prefixes, then by default reserves a small BFS slice to shorten repro paths. The random slice uses a fixed default seed (`--seed`, default 1), so runs are reproducible; each reported finding's `foundBy` field names the pass that discovered it. This improves coverage at the same limit but remains partial when the report says traversal was truncated. The default state budget is 100,000 and the maximum accepted budget is 1,000,000.
+The CLI uses a bounded exploration portfolio rather than a single traversal order. It spends the requested `--max-states` budget across complementary DFS views of the choice tree (last-choice-first, first-choice-first, and inside-out), a seeded random-sampling slice that varies early-choice prefixes, and a frontier-capped diversity beam that advances level-by-level while keeping one state per variable-signature lineage, then by default reserves a small BFS slice to shorten repro paths. The random slice uses a fixed default seed (`--seed`, default 1) and the beam is deterministic without a seed, so runs are reproducible; each reported finding's `foundBy` field names the pass that discovered it. This improves coverage at the same limit but remains partial when the report says traversal was truncated. The default state budget is 100,000 and the maximum accepted budget is 1,000,000.
 
 ## Install / run
 
@@ -49,6 +49,7 @@ Not a writing tool, not an authoring aid, and not an AI system. It generates zer
 
 - `--max-states` is the total exploration budget across portfolio passes, not a single DFS count.
 - Inkcheck is systematic and reproducible inside its budget; the built-in seeded random-sampling slice is itself reproducible, and rerunning with other `--seed` values samples different early-choice combinations. External random sampling can still be complementary for very large or random-heavy stories.
+- The beam pass caps its frontier at a fixed width and marks the run truncated whenever it prunes a reachable state, so bounded memory never turns into a silent completeness claim.
 - Truncation means the report is partial; strict mode fails.
 - EXTERNAL functions are stubbed to zero and named in the report; strict mode fails.
 - Random behavior is detected, but every possible seed is not enumerated.

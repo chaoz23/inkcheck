@@ -39,7 +39,7 @@
       },
       {
         "flag": "--max-states <n>",
-        "description": "Total exploration state budget across the complementary DFS portfolio, seeded random-sampling slice, and repro-shortening slice, from 1 to 1000000. Default 100000."
+        "description": "Total exploration state budget across the complementary DFS portfolio, diversity-first beam slice, seeded random-sampling slice, and repro-shortening slice, from 1 to 1000000. Default 100000."
       },
       {
         "flag": "--seed <n>",

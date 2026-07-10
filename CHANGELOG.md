@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a frontier-capped, diversity-first beam-search slice (~15%) to the exploration portfolio (#21). The beam advances level-by-level like BFS but keeps at most 64 states per level, selected round-robin across variable-signature groups (novelty-ranked within each group: new knots, new variable signatures, new offered-choice sets). It is deterministic without a seed, bounds the frontier memory that made naive BFS impractical on large stories, and marks the run truncated whenever it prunes a reachable state. On the early-choice grid fixture, the beam alone finds all seven endings in ~2.2K states.
 - Add a seeded random-sampling slice (~20%) to the exploration portfolio so early-choice state combinations get sampled instead of repeated; the deterministic DFS portfolio alone missed 4 of 7 endings on an adversarial early-choice fixture even at a 1M state budget (#20, #21).
 - Add `--seed` to the CLI and a `seed` input to the MCP `explore_story` tool; a fixed default seed keeps CI runs reproducible, and the used seed is reported in `explore.limits.seed`.
 - Label every reported ending and runtime error with the search pass that found it (`foundBy`, e.g. `dfs:last`, `bfs`, `random:seed=1`).
