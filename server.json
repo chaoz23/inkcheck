@@ -6,13 +6,13 @@
     "url": "https://github.com/chaoz23/inkcheck",
     "source": "github"
   },
-  "version": "0.4.0",
+  "version": "0.4.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "inkcheck",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "transport": {
         "type": "stdio"
       },
