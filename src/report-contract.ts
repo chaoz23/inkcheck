@@ -5,6 +5,7 @@ import type { ExploreResult, EndingReport, RuntimeErrorReport } from "./explore"
 import type { NextRunAdvice } from "./advice";
 import { REPORT_SCHEMA_VERSION } from "./discovery";
 import { VERSION } from "./version";
+import type { AssertionResult, AssertionViolation } from "./assertions";
 
 export type FindingKind =
   | "compile.missing_divert"
@@ -16,6 +17,7 @@ export type FindingKind =
   | "runtime.choice_failure"
   | "runtime.state_restore_failure"
   | "runtime.error"
+  | "assertion.violation"
   | "ending.reached";
 
 function canonical(value: unknown): string {
@@ -78,6 +80,27 @@ export function enrichEnding(ending: EndingReport) {
     suggestedAction: "replay_witness" as const,
     documentation: `inkcheck://findings/${kind}`,
   };
+}
+
+export function enrichAssertionViolation(violation: AssertionViolation) {
+  const kind = "assertion.violation" as const;
+  return {
+    ...violation,
+    id: stableId(kind, { ruleId: violation.ruleId }),
+    kind,
+    replay: { tool: "playtest_story" as const, choices: [...violation.choiceIndices] },
+    witness: {
+      choiceText: [...violation.path],
+      choiceIndices: [...violation.choiceIndices],
+      ...(violation.sourceLocation ? { triggeringSourceLocation: violation.sourceLocation } : {}),
+    },
+    suggestedAction: "replay_witness" as const,
+    documentation: `inkcheck://findings/${kind}`,
+  };
+}
+
+function enrichAssertionResult(result: AssertionResult) {
+  return { ...result, violations: result.violations.map(enrichAssertionViolation) };
 }
 
 export function bindingLimit(explore: ExploreResult): string | null {
@@ -162,6 +185,7 @@ export function buildReportEnvelope(input: ReportInput) {
     ...input.explore,
     endingsFound: input.explore.endingsFound.map(enrichEnding),
     runtimeErrors: input.explore.runtimeErrors.map(enrichRuntimeError),
+    assertionResults: input.explore.assertionResults.map(enrichAssertionResult),
   };
   return {
     schemaVersion: REPORT_SCHEMA_VERSION,

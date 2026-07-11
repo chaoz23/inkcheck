@@ -20,6 +20,36 @@ export interface AssertionDefinition {
   condition: AssertionCondition;
 }
 
+export interface AssertionViolation {
+  ruleId: string;
+  description?: string;
+  observedValues: Record<string, unknown>;
+  path: string[];
+  choiceIndices: number[];
+  firstDiscoveredAtState: number;
+  foundBy: string;
+  knot?: string;
+  sourceLocation?: { file: string; line: number; approximate: false };
+}
+
+export interface AssertionResult {
+  id: string;
+  description?: string;
+  when: AssertionScope;
+  status: "violated" | "not_observed" | "exhaustively_verified";
+  observations: number;
+  violations: AssertionViolation[];
+}
+
+export interface AssertionObservation {
+  variables: Record<string, unknown>;
+  terminal: boolean;
+  knots?: string[];
+  path: string[];
+  choiceIndices: number[];
+  state: number;
+}
+
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -217,4 +247,58 @@ export function observedValues(condition: AssertionCondition, variables: Record<
     }
   }
   return result;
+}
+
+function applies(rule: AssertionDefinition, observation: AssertionObservation): boolean {
+  if (rule.when === "always") return true;
+  if (rule.when === "terminal") return observation.terminal;
+  return observation.knots?.includes(rule.when.knot) ?? false;
+}
+
+export class AssertionTracker {
+  private readonly observations = new Map<string, number>();
+  private readonly violations = new Map<string, AssertionViolation>();
+
+  constructor(
+    private readonly definitions: AssertionDefinition[],
+    private readonly foundBy: string,
+    private readonly knotLocations: Record<string, { file: string; line: number }> = {}
+  ) {}
+
+  observe(observation: AssertionObservation): void {
+    for (const rule of this.definitions) {
+      if (!applies(rule, observation)) continue;
+      this.observations.set(rule.id, (this.observations.get(rule.id) ?? 0) + 1);
+      if (evaluateCondition(rule.condition, observation.variables)) continue;
+      const violation: AssertionViolation = {
+        ruleId: rule.id,
+        ...(rule.description ? { description: rule.description } : {}),
+        observedValues: observedValues(rule.condition, observation.variables),
+        path: [...observation.path],
+        choiceIndices: [...observation.choiceIndices],
+        firstDiscoveredAtState: observation.state,
+        foundBy: this.foundBy,
+        ...(typeof rule.when === "object" ? { knot: rule.when.knot } : {}),
+        ...(typeof rule.when === "object" && this.knotLocations[rule.when.knot]
+          ? { sourceLocation: { ...this.knotLocations[rule.when.knot], approximate: false as const } }
+          : {}),
+      };
+      const previous = this.violations.get(rule.id);
+      if (!previous || violation.path.length < previous.path.length) this.violations.set(rule.id, violation);
+    }
+  }
+
+  results(exhaustive: boolean): AssertionResult[] {
+    return this.definitions.map((rule) => {
+      const violation = this.violations.get(rule.id);
+      return {
+        id: rule.id,
+        ...(rule.description ? { description: rule.description } : {}),
+        when: rule.when,
+        status: violation ? "violated" : exhaustive ? "exhaustively_verified" : "not_observed",
+        observations: this.observations.get(rule.id) ?? 0,
+        violations: violation ? [violation] : [],
+      };
+    });
+  }
 }

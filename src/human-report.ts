@@ -133,6 +133,22 @@ export function buildHumanFindings(input: HumanReportInput): HumanFinding[] {
     });
   }
 
+  const assertionResults = Array.isArray(input.explore?.assertionResults)
+    ? input.explore.assertionResults
+    : [];
+  for (const result of assertionResults) {
+    for (const violation of result.violations) {
+      findings.push({
+        severity: "error",
+        category: "Story assertion",
+        title: result.description ?? `Assertion ${result.id} was violated`,
+        message: `Observed values: ${JSON.stringify(violation.observedValues)}`,
+        path: violation.path,
+        action: "Replay the indexed choice witness, then inspect where these variables changed before adjusting story logic or the approved rule.",
+      });
+    }
+  }
+
   const runtimeWarnings = Array.isArray(input.explore?.runtimeWarnings)
     ? input.explore.runtimeWarnings
     : [];

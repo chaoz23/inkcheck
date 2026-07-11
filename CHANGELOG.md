@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add safe author-defined story assertions (#64): versioned config and structured MCP input accept typed variable/literal comparisons composed with `all`, `any`, and `not`, scoped always, at terminal states, or on entering a named knot. Every search engine evaluates the same prevalidated rules on visited states; violations fail CI and carry stable IDs, observed values, exact indexed witnesses, and replay operations. Reports distinguish violations, bounded runs where no violation was observed, and exhaustive verification. No JavaScript, shell, or arbitrary Ink expressions are accepted.
 - Add strict project configuration schema v1: `inkcheck.yml` can commit a project-relative entrypoint and bounded CI defaults, `inkcheck validate-config [path] [--json]` reports actionable path-specific errors, explicit CLI flags win, and unknown keys fail rather than pretending future assertions/goals are active. The JSON Schema is packaged and `capabilities` now advertises config schema v1.
 - Add idempotent project bootstrap commands: `inkcheck init` creates a validated minimal config after unambiguous entrypoint discovery, and `inkcheck agent-kit --format codex` scaffolds pinned CI, generated-artifact ignore rules, and compact version-matched agent instructions. All writes are preflighted; a conflicting target aborts the operation before any file is created or overwritten.
 

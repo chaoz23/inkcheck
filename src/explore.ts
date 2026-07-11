@@ -7,6 +7,12 @@ import {
   variableStateKey,
   variableTransitionKey,
 } from "./search-benchmark";
+import {
+  AssertionDefinition,
+  AssertionResult,
+  AssertionTracker,
+  validateAssertions,
+} from "./assertions";
 
 export interface PlaytestStep {
   text: string;
@@ -80,6 +86,7 @@ export interface ExploreResult {
   statesExplored: number;
   endingsFound: EndingReport[];
   runtimeErrors: RuntimeErrorReport[];
+  assertionResults: AssertionResult[];
   runtimeWarnings: string[];
   /** Authored knots never visited on any explored path (functions excluded). */
   unvisitedKnots: UnvisitedKnotReport[];
@@ -134,14 +141,82 @@ function cleanInkValue(v: unknown): unknown {
 
 function extractVariables(story: InstanceType<typeof Story>): Record<string, unknown> {
   try {
-    const state = JSON.parse(story.state.ToJson());
-    const vars = state.variablesState ?? {};
+    // Ink save JSON contains only globals changed from their defaults. Enumerate
+    // the declared globals instead, then use the public VariablesState accessor
+    // so unchanged variables remain visible to reports and assertions.
+    const state = story.variablesState as unknown as {
+      _defaultGlobalVariables?: Map<string, unknown>;
+      [name: string]: unknown;
+    };
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(vars)) out[k] = cleanInkValue(v);
+    for (const name of state._defaultGlobalVariables?.keys() ?? []) {
+      out[name] = cleanInkValue(state[name]);
+    }
     return out;
   } catch {
     return {};
   }
+}
+
+function assertionKnotCounts(
+  story: InstanceType<typeof Story>,
+  definitions: AssertionDefinition[] | undefined
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const rule of definitions ?? []) {
+    if (typeof rule.when !== "object" || counts.has(rule.when.knot)) continue;
+    try {
+      counts.set(rule.when.knot, story.state.VisitCountAtPathString(rule.when.knot));
+    } catch {
+      counts.set(rule.when.knot, 0);
+    }
+  }
+  return counts;
+}
+
+function enteredAssertionKnots(
+  story: InstanceType<typeof Story>,
+  before: Map<string, number>
+): string[] {
+  return [...before].filter(([name, count]) => {
+    try {
+      return story.state.VisitCountAtPathString(name) > count;
+    } catch {
+      return false;
+    }
+  }).map(([name]) => name);
+}
+
+function assertionTracker(
+  story: InstanceType<typeof Story>,
+  knots: KnotInfo[],
+  definitions: AssertionDefinition[] | undefined,
+  foundBy: string
+): AssertionTracker {
+  const rules = definitions ?? [];
+  const issues = validateAssertions(rules, extractVariables(story), knots.filter((knot) => !knot.isFunction).map((knot) => knot.name));
+  if (issues.length) throw new RangeError(`Invalid assertions:\n${issues.map((issue) => `- ${issue}`).join("\n")}`);
+  return new AssertionTracker(
+    rules,
+    foundBy,
+    Object.fromEntries(knots.filter((knot) => !knot.isFunction).map((knot) => [knot.name, { file: knot.file, line: knot.line }]))
+  );
+}
+
+export function validateAssertionsForStory(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[],
+  definitions: AssertionDefinition[]
+): void {
+  const session = makeStory(storyJson, externals);
+  continueMaximally(session);
+  const issues = validateAssertions(
+    definitions,
+    extractVariables(session.story),
+    knots.filter((knot) => !knot.isFunction).map((knot) => knot.name)
+  );
+  if (issues.length) throw new RangeError(`Invalid assertions:\n${issues.map((issue) => `- ${issue}`).join("\n")}`);
 }
 
 interface StorySession {
@@ -347,6 +422,8 @@ export interface ExploreOptions {
   timeGuard?: () => boolean;
   /** Internal selector for the experimental variable-aware shared frontier. */
   sharedVariableAware?: boolean;
+  /** Prevalidated non-executable project assertions evaluated on visited states. */
+  assertions?: AssertionDefinition[];
 }
 
 export const DEFAULT_RANDOM_SEED = 1;
@@ -572,11 +649,22 @@ function createSearchEngine(
 
   // Root: continue the fresh story to the first choice point.
   const rootStep = continueMaximally(s);
+  const assertions = assertionTracker(s.story, knots, opts.assertions, foundBy);
   s.errors.forEach((e) =>
     runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
+  const rootVariables = extractVariables(s.story);
+  const rootEnded = rootStep.choicesOffered.length === 0 && s.errors.length === 0;
+  assertions.observe({
+    variables: rootVariables,
+    terminal: rootEnded,
+    knots: [...assertionKnotCounts(s.story, opts.assertions)].filter(([, count]) => count > 0).map(([name]) => name),
+    path: [],
+    choiceIndices: [],
+    state: 0,
+  });
 
   if (rootStep.choicesOffered.length === 0 && s.errors.length === 0) {
     // Linear story (or immediate end).
@@ -585,7 +673,7 @@ function createSearchEngine(
       choiceIndices: [],
       firstDiscoveredAtState: 0,
       finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
-      variables: extractVariables(s.story),
+      variables: rootVariables,
       foundBy,
     });
   }
@@ -637,6 +725,7 @@ function createSearchEngine(
     if (current.cursor >= current.order.length) current = null;
     resetSession();
     s.story.state.LoadJson(frame.stateJson);
+    const assertionCountsBefore = assertionKnotCounts(s.story, opts.assertions);
     const choice = s.story.currentChoices[i] as { text?: string; sourcePath?: string } | undefined;
     const choiceText = choice?.text ?? `#${i}`;
     const path = [...frame.path, choiceText];
@@ -677,11 +766,20 @@ function createSearchEngine(
     noteDiscoveryProgress();
 
     const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
+    const stateVariables = extractVariables(s.story);
+    assertions.observe({
+      variables: stateVariables,
+      terminal: ended && s.errors.length === 0,
+      knots: enteredAssertionKnots(s.story, assertionCountsBefore),
+      path,
+      choiceIndices,
+      state: statesExplored,
+    });
     if (ended && s.errors.length === 0) {
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
-      const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
+      const key = finalText + "|" + JSON.stringify(stateVariables);
       if (!endings.has(key)) {
-        endings.set(key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: extractVariables(s.story), foundBy });
+        endings.set(key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy });
         noteDiscoveryProgress();
       }
       return true;
@@ -711,10 +809,13 @@ function createSearchEngine(
     finished ||
     (!current && (strategy === "bfs" ? head >= frames.length : frames.length === 0));
 
-  const buildResult = (): ExploreResult => ({
+  const buildResult = (): ExploreResult => {
+    const exhaustive = !truncated && (finished || done());
+    return ({
     statesExplored,
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
+    assertionResults: assertions.results(exhaustive),
     runtimeWarnings: [...runtimeWarnings],
     unvisitedKnots: nonFunctionKnots
       .filter((k) => !visitedKnots.has(k.name))
@@ -724,9 +825,10 @@ function createSearchEngine(
     randomnessDetected: opts.randomnessDetected ?? false,
     truncated,
     truncatedBy,
-    exhaustive: !truncated && (finished || done()),
+    exhaustive,
     limits: { maxDepth, maxStates: totalGranted },
-  });
+    });
+  };
 
   return {
     label: foundBy,
@@ -1091,6 +1193,7 @@ function createSharedEngine(
   };
 
   const rootStep = continueMaximally(session);
+  const assertions = assertionTracker(session.story, knots, opts.assertions, foundBy);
   session.errors.forEach((message) =>
     runtimeErrors.set(message, {
       message,
@@ -1104,6 +1207,14 @@ function createSharedEngine(
   session.warnings.forEach((warning) => runtimeWarnings.add(warning));
   recordKnotCoverage(session);
   const rootVariables = extractVariables(session.story);
+  assertions.observe({
+    variables: rootVariables,
+    terminal: rootStep.choicesOffered.length === 0 && session.errors.length === 0,
+    knots: [...assertionKnotCounts(session.story, opts.assertions)].filter(([, count]) => count > 0).map(([name]) => name),
+    path: [],
+    choiceIndices: [],
+    state: 0,
+  });
   variableStateCounts.set(variableStateKey(rootVariables), 1);
 
   if (rootStep.choicesOffered.length === 0) {
@@ -1192,6 +1303,7 @@ function createSharedEngine(
     };
     resetSession();
     session.story.state.LoadJson(node.stateJson!);
+    const assertionCountsBefore = assertionKnotCounts(session.story, opts.assertions);
     const witness = witnessFor(active.nodeId, { text: choice.text, index: choice.index });
     const { path, choiceIndices } = witness;
     const choiceLocation = sourceLocationForChoiceSourcePath(choice.sourcePath, knots);
@@ -1250,6 +1362,14 @@ function createSharedEngine(
     }
 
     const ended = !session.story.canContinue && session.story.currentChoices.length === 0;
+    assertions.observe({
+      variables: nextVariables,
+      terminal: ended && session.errors.length === 0,
+      knots: enteredAssertionKnots(session.story, assertionCountsBefore),
+      path,
+      choiceIndices,
+      state: statesExplored,
+    });
     if (ended) {
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = `${finalText}|${JSON.stringify(nextVariables)}`;
@@ -1306,10 +1426,13 @@ function createSharedEngine(
 
   const done = () => finished || (!current && pendingStates === 0);
 
-  const buildResult = (): ExploreResult => ({
+  const buildResult = (): ExploreResult => {
+    const exhaustive = done() && !truncated;
+    return ({
     statesExplored,
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
+    assertionResults: assertions.results(exhaustive),
     runtimeWarnings: [...runtimeWarnings],
     unvisitedKnots: nonFunctionKnots
       .filter((knot) => !visitedKnots.has(knot.name))
@@ -1319,9 +1442,10 @@ function createSharedEngine(
     randomnessDetected: opts.randomnessDetected ?? false,
     truncated,
     truncatedBy,
-    exhaustive: done() && !truncated,
+    exhaustive,
     limits: { maxDepth, maxStates: totalGranted, seed },
-  });
+    });
+  };
 
   return {
     label: foundBy,
@@ -1484,22 +1608,32 @@ function createRandomEngine(
   };
 
   const rootStep = continueMaximally(s);
+  const assertions = assertionTracker(s.story, knots, opts.assertions, foundBy);
   s.errors.forEach((e) =>
     runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
+  const rootVariables = extractVariables(s.story);
 
   // Linear story (or immediate end): a single walk covers it; further
   // sampling would revisit the same line of text forever.
   const linear = rootStep.choicesOffered.length === 0;
+  assertions.observe({
+    variables: rootVariables,
+    terminal: linear && s.errors.length === 0,
+    knots: [...assertionKnotCounts(s.story, opts.assertions)].filter(([, count]) => count > 0).map(([name]) => name),
+    path: [],
+    choiceIndices: [],
+    state: 0,
+  });
   if (linear && s.errors.length === 0) {
     endings.set(rootStep.text, {
       path: [],
       choiceIndices: [],
       firstDiscoveredAtState: 0,
       finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
-      variables: extractVariables(s.story),
+      variables: rootVariables,
       foundBy,
     });
   }
@@ -1531,6 +1665,7 @@ function createRandomEngine(
     const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
     walkPath.push(choiceText);
     walkChoiceIndices!.push(i);
+    const assertionCountsBefore = assertionKnotCounts(s.story, opts.assertions);
     // Count the transition attempt up front so failing walks still consume
     // budget and the sampling loop always terminates.
     statesExplored++;
@@ -1562,11 +1697,20 @@ function createRandomEngine(
       return;
     }
     const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
+    const stateVariables = extractVariables(s.story);
+    assertions.observe({
+      variables: stateVariables,
+      terminal: ended,
+      knots: enteredAssertionKnots(s.story, assertionCountsBefore),
+      path: [...walkPath!],
+      choiceIndices: [...walkChoiceIndices!],
+      state: statesExplored,
+    });
     if (ended) {
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
-      const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
+      const key = finalText + "|" + JSON.stringify(stateVariables);
       if (!endings.has(key)) {
-        endings.set(key, { path: [...walkPath], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, finalText, variables: extractVariables(s.story), foundBy });
+        endings.set(key, { path: [...walkPath], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy });
         noteDiscoveryProgress();
       }
       walkPath = null;
@@ -1587,6 +1731,7 @@ function createRandomEngine(
     statesExplored,
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
+    assertionResults: assertions.results(false),
     runtimeWarnings: [...runtimeWarnings],
     unvisitedKnots: nonFunctionKnots
       .filter((k) => !visitedKnots.has(k.name))
@@ -1772,11 +1917,21 @@ function createBeamEngine(
   };
 
   const rootStep = continueMaximally(s);
+  const assertions = assertionTracker(s.story, knots, opts.assertions, foundBy);
   s.errors.forEach((e) =>
     runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
+  const rootVariables = extractVariables(s.story);
+  assertions.observe({
+    variables: rootVariables,
+    terminal: rootStep.choicesOffered.length === 0 && s.errors.length === 0,
+    knots: [...assertionKnotCounts(s.story, opts.assertions)].filter(([, count]) => count > 0).map(([name]) => name),
+    path: [],
+    choiceIndices: [],
+    state: 0,
+  });
 
   interface BeamFrame {
     stateJson: string;
@@ -1805,7 +1960,7 @@ function createBeamEngine(
         choiceIndices: [],
         firstDiscoveredAtState: 0,
         finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
-        variables: extractVariables(s.story),
+        variables: rootVariables,
         foundBy,
       });
     }
@@ -1891,6 +2046,7 @@ function createBeamEngine(
     const path = [...frame.path, choiceText];
     const choiceIndices = [...frame.choiceIndices, i];
     const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
+    const assertionCountsBefore = assertionKnotCounts(s.story, opts.assertions);
     try {
       s.story.ChooseChoiceIndex(i);
     } catch (e) {
@@ -1917,11 +2073,20 @@ function createBeamEngine(
     if (s.errors.length > 0) return true;
 
     const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
+    const stateVariables = extractVariables(s.story);
+    assertions.observe({
+      variables: stateVariables,
+      terminal: ended,
+      knots: enteredAssertionKnots(s.story, assertionCountsBefore),
+      path,
+      choiceIndices,
+      state: statesExplored,
+    });
     if (ended) {
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
-      const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
+      const key = finalText + "|" + JSON.stringify(stateVariables);
       if (!endings.has(key)) {
-        endings.set(key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: extractVariables(s.story), foundBy });
+        endings.set(key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy });
         noteDiscoveryProgress();
       }
       return true;
@@ -1957,10 +2122,13 @@ function createBeamEngine(
     return true;
   };
 
-  const buildResult = (): ExploreResult => ({
+  const buildResult = (): ExploreResult => {
+    const exhaustive = finished && !truncated;
+    return ({
     statesExplored,
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
+    assertionResults: assertions.results(exhaustive),
     runtimeWarnings: [...runtimeWarnings],
     unvisitedKnots: nonFunctionKnots
       .filter((k) => !visitedKnots.has(k.name))
@@ -1970,9 +2138,10 @@ function createBeamEngine(
     randomnessDetected: opts.randomnessDetected ?? false,
     truncated,
     truncatedBy,
-    exhaustive: finished && !truncated,
+    exhaustive,
     limits: { maxDepth, maxStates: totalGranted },
-  });
+    });
+  };
 
   return {
     label: foundBy,
@@ -2331,6 +2500,22 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
   for (const e of other.runtimeErrors) {
     if (!mainErrs.has(e.message)) main.runtimeErrors.push(e);
   }
+  const assertionsById = new Map(main.assertionResults.map((result) => [result.id, result]));
+  for (const result of other.assertionResults) {
+    const existing = assertionsById.get(result.id);
+    if (!existing) {
+      main.assertionResults.push(result);
+      assertionsById.set(result.id, result);
+      continue;
+    }
+    existing.observations += result.observations;
+    const candidate = result.violations[0];
+    const previous = existing.violations[0];
+    if (candidate && (!previous || candidate.path.length < previous.path.length)) {
+      existing.violations = [candidate];
+    }
+    if (existing.violations.length) existing.status = "violated";
+  }
   main.runtimeWarnings = [...new Set([...main.runtimeWarnings, ...other.runtimeWarnings])];
   const visited = new Set([...main.visitedKnots, ...other.visitedKnots]);
   main.visitedKnots = [...visited];
@@ -2351,6 +2536,13 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
   if (main.exhaustive) {
     main.truncated = false;
     main.truncatedBy = { maxDepth: false, maxStates: false, beamWidth: false, memory: false, time: false };
+  }
+  for (const result of main.assertionResults) {
+    result.status = result.violations.length
+      ? "violated"
+      : main.exhaustive
+        ? "exhaustively_verified"
+        : "not_observed";
   }
   main.externalFunctionsStubbed = [...new Set([...main.externalFunctionsStubbed, ...other.externalFunctionsStubbed])];
   main.randomnessDetected ||= other.randomnessDetected;
