@@ -8,6 +8,7 @@ const {
 const {
   applyBrowserOrigin,
   createInkcheckWebServer,
+  gracefulTimeoutSeconds,
   parseMultipartBody,
   webConfigFromEnv,
 } = require("../dist/web");
@@ -311,4 +312,30 @@ test("web API validates input and returns a no-retention report", async (t) => {
     { event: "check_rejected", details: undefined },
     { event: "check_complete", details: { durationMs: 7 } },
   ]);
+});
+
+test("hosted config defaults keep depth and time bounded for the web", () => {
+  const config = webConfigFromEnv();
+  // maxDepth 1000 was the system's escalation ceiling, not a sane default: it
+  // let a single deep-loop trail burn the whole state budget. 100 is generous
+  // headroom over real story depths while staying an order of magnitude below
+  // the ceiling (#71).
+  assert.strictEqual(config.maxDepth, 100);
+  // A 7m30s hosted wait that returned nothing is worse than a fast partial
+  // report; the ceiling is now 5 minutes.
+  assert.strictEqual(config.timeoutMs, 300_000);
+});
+
+test("gracefulTimeoutSeconds reserves a real margin below the hard deadline", () => {
+  // 15% margin (>= 30s) so the CLI can flush a multi-MB partial report before
+  // the SIGKILL backstop, instead of the old fixed 10s that lost the report.
+  assert.strictEqual(gracefulTimeoutSeconds(300_000), 255);
+  const budget = 300_000;
+  const margin = budget / 1000 - gracefulTimeoutSeconds(budget);
+  assert.ok(margin >= 30, `expected >= 30s margin, got ${margin}s`);
+  // Large budgets scale the margin with the budget, not a fixed 10s.
+  assert.ok(600 - gracefulTimeoutSeconds(600_000) >= 90);
+  // Never returns less than 1s, even for tiny budgets.
+  assert.strictEqual(gracefulTimeoutSeconds(1_000), 1);
+  assert.strictEqual(gracefulTimeoutSeconds(2_000), 1);
 });
