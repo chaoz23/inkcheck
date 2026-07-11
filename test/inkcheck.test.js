@@ -144,7 +144,7 @@ test("compile succeeds and returns story JSON for a valid story", async () => {
 test("capabilities explicitly reports supported and unavailable features", () => {
   const value = capabilities();
   assert.strictEqual(value.schemaVersion, 1);
-  assert.strictEqual(value.inkcheckVersion, "0.5.0");
+  assert.strictEqual(value.inkcheckVersion, "0.5.1");
   assert.deepStrictEqual(value.searchModes, ["portfolio", "shared", "shared-variable"]);
   assert.strictEqual(value.limits.maxStates, 100_000_000);
   assert.strictEqual(value.features.projectInspection, true);
@@ -458,8 +458,8 @@ test("Codex agent kit creates synchronized config, CI, ignore rules, and instruc
     fs.writeFileSync(path.join(tmp, "story.ink"), "-> END\n");
     const first = createAgentKit(tmp, "codex");
     assert.deepStrictEqual(first.files.map((file) => file.status), ["created", "created", "created", "created"]);
-    assert.match(fs.readFileSync(path.join(tmp, ".inkcheck", "AGENTS.md"), "utf8"), /Inkcheck 0\.5\.0/);
-    assert.match(fs.readFileSync(path.join(tmp, ".github", "workflows", "inkcheck.yml"), "utf8"), /inkcheck@0\.5\.0/);
+    assert.match(fs.readFileSync(path.join(tmp, ".inkcheck", "AGENTS.md"), "utf8"), /Inkcheck 0\.5\.1/);
+    assert.match(fs.readFileSync(path.join(tmp, ".github", "workflows", "inkcheck.yml"), "utf8"), /inkcheck@0\.5\.1/);
     assert.match(fs.readFileSync(path.join(tmp, ".inkcheck", ".gitignore"), "utf8"), /checkpoints\//);
     const second = createAgentKit(tmp, "codex");
     assert.ok(second.files.every((file) => file.status === "unchanged"));
@@ -626,7 +626,7 @@ test("versioned JSON reports have stable identities and exact replay instruction
   const first = JSON.parse(run().stdout);
   const second = JSON.parse(run().stdout);
   assert.strictEqual(first.schemaVersion, 1);
-  assert.strictEqual(first.inkcheckVersion, "0.5.0");
+  assert.strictEqual(first.inkcheckVersion, "0.5.1");
   assert.strictEqual(first.storyFingerprint.value, second.storyFingerprint.value);
   assert.strictEqual(first.explore.runtimeErrors[0].id, second.explore.runtimeErrors[0].id);
   assert.strictEqual(first.explore.runtimeErrors[0].kind, "runtime.content_exhaustion");
@@ -1911,7 +1911,7 @@ test("release version stays synchronized across package and manifests", () => {
   const tool = readJson("tool.json");
   const server = readJson("server.json");
   const { VERSION } = require("../dist/version");
-  assert.strictEqual(pkg.version, "0.5.0");
+  assert.strictEqual(pkg.version, "0.5.1");
   assert.strictEqual(lock.version, pkg.version);
   assert.strictEqual(lock.packages[""].version, pkg.version);
   assert.strictEqual(tool.version, pkg.version);
