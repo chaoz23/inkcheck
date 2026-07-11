@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add strict project configuration schema v1: `inkcheck.yml` can commit a project-relative entrypoint and bounded CI defaults, `inkcheck validate-config [path] [--json]` reports actionable path-specific errors, explicit CLI flags win, and unknown keys fail rather than pretending future assertions/goals are active. The JSON Schema is packaged and `capabilities` now advertises config schema v1.
+- Add idempotent project bootstrap commands: `inkcheck init` creates a validated minimal config after unambiguous entrypoint discovery, and `inkcheck agent-kit --format codex` scaffolds pinned CI, generated-artifact ignore rules, and compact version-matched agent instructions. All writes are preflighted; a conflicting target aborts the operation before any file is created or overwritten.
 
 ## 0.5.0 — 2026-07-11
 

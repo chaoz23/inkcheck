@@ -35,6 +35,7 @@ const {
   PROJECT_INSPECTION_SCHEMA_VERSION,
 } = require("../dist/discovery");
 const { CONFIG_SCHEMA_VERSION, parseProjectConfig, loadProjectConfig } = require("../dist/config");
+const { initProject, createAgentKit } = require("../dist/scaffold");
 
 const MANOR = path.join(__dirname, "..", "examples", "manor.ink");
 const BROKEN = path.join(__dirname, "..", "examples", "broken.ink");
@@ -197,6 +198,85 @@ test("CLI validates config and applies its defaults with explicit flags winning"
     });
     assert.strictEqual(overridden.status, 0, overridden.stderr);
     assert.strictEqual(JSON.parse(overridden.stdout).explore.limits.maxStates, 2);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("init creates one minimal config and is idempotent", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-init-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "story"));
+    fs.writeFileSync(path.join(tmp, "story", "main.ink"), "Hello\n-> END\n");
+    const first = initProject(tmp);
+    assert.strictEqual(first.entrypoint, "story/main.ink");
+    assert.strictEqual(first.files[0].status, "created");
+    const content = fs.readFileSync(path.join(tmp, "inkcheck.yml"), "utf8");
+    const second = initProject(tmp);
+    assert.strictEqual(second.files[0].status, "unchanged");
+    assert.strictEqual(fs.readFileSync(path.join(tmp, "inkcheck.yml"), "utf8"), content);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("init requires an explicit entrypoint for multi-file projects", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-init-many-"));
+  try {
+    fs.writeFileSync(path.join(tmp, "one.ink"), "-> END\n");
+    fs.writeFileSync(path.join(tmp, "two.ink"), "-> END\n");
+    assert.throws(() => initProject(tmp), /Multiple \.ink files found/);
+    const result = initProject(tmp, "two.ink");
+    assert.strictEqual(result.entrypoint, "two.ink");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("Codex agent kit creates synchronized config, CI, ignore rules, and instructions", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-agent-kit-"));
+  try {
+    fs.writeFileSync(path.join(tmp, "story.ink"), "-> END\n");
+    const first = createAgentKit(tmp, "codex");
+    assert.deepStrictEqual(first.files.map((file) => file.status), ["created", "created", "created", "created"]);
+    assert.match(fs.readFileSync(path.join(tmp, ".inkcheck", "AGENTS.md"), "utf8"), /Inkcheck 0\.5\.0/);
+    assert.match(fs.readFileSync(path.join(tmp, ".github", "workflows", "inkcheck.yml"), "utf8"), /inkcheck@0\.5\.0/);
+    assert.match(fs.readFileSync(path.join(tmp, ".inkcheck", ".gitignore"), "utf8"), /checkpoints\//);
+    const second = createAgentKit(tmp, "codex");
+    assert.ok(second.files.every((file) => file.status === "unchanged"));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("agent kit preflights conflicts and never partially overwrites a project", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-agent-conflict-"));
+  try {
+    fs.writeFileSync(path.join(tmp, "story.ink"), "-> END\n");
+    fs.mkdirSync(path.join(tmp, ".github", "workflows"), { recursive: true });
+    const workflow = path.join(tmp, ".github", "workflows", "inkcheck.yml");
+    fs.writeFileSync(workflow, "custom workflow\n");
+    assert.throws(() => createAgentKit(tmp, "codex"), /Refusing to overwrite existing file/);
+    assert.strictEqual(fs.readFileSync(workflow, "utf8"), "custom workflow\n");
+    assert.strictEqual(fs.existsSync(path.join(tmp, "inkcheck.yml")), false);
+    assert.strictEqual(fs.existsSync(path.join(tmp, ".inkcheck", "AGENTS.md")), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("CLI init and agent-kit expose machine-readable idempotent results", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-scaffold-cli-"));
+  try {
+    fs.writeFileSync(path.join(tmp, "story.ink"), "-> END\n");
+    const initialized = spawnSync(process.execPath, [CLI, "init", tmp, "--json"], { encoding: "utf8" });
+    assert.strictEqual(initialized.status, 0, initialized.stderr);
+    assert.strictEqual(JSON.parse(initialized.stdout).files[0].status, "created");
+    const kit = spawnSync(process.execPath, [CLI, "agent-kit", "--format", "codex", tmp, "--json"], {
+      encoding: "utf8",
+    });
+    assert.strictEqual(kit.status, 0, kit.stderr);
+    assert.strictEqual(JSON.parse(kit.stdout).files.length, 3);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
