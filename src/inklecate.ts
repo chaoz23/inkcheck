@@ -11,6 +11,17 @@ const INKLECATE_SHA256: Record<string, string> = {
   "inklecate_windows.zip": "96bc130f57d134faf3d52019f36ce0879ea015fa7e84d280ccc1a9c8d376843f",
 };
 
+/**
+ * Default choice-trail depth explored when no `--max-depth` is given. Real
+ * stories rarely branch more than a few dozen choices deep, so this is
+ * generous headroom; a story deeper than this truncates cleanly with
+ * `truncatedBy.maxDepth` and a `deepen` recommendation, and `--auto` raises it
+ * per-story via the shape profile. Lives here (the base module) so the
+ * exploration engines, the profiler, the CLI, and the MCP tool share one
+ * source of truth without a circular import.
+ */
+export const DEFAULT_MAX_DEPTH = 100;
+
 export type Severity = "ERROR" | "WARNING" | "TODO" | "RUNTIME ERROR";
 
 export interface Issue {
@@ -488,10 +499,10 @@ export function scanShapeProfile(inkFile: string): StoryShapeProfile {
       : assignmentPositions.filter((line) => line <= totalLines / 3).length / varAssignments;
 
   const rationale: string[] = [];
-  const suggestedMaxDepth = Math.min(1000, Math.max(30, choiceDepthEstimate * 2));
-  if (suggestedMaxDepth > 30) {
+  const suggestedMaxDepth = Math.min(1000, Math.max(DEFAULT_MAX_DEPTH, choiceDepthEstimate * 2));
+  if (suggestedMaxDepth > DEFAULT_MAX_DEPTH) {
     rationale.push(
-      `static divert paths pass ${choiceDepthEstimate} choice-bearing knots, so the default depth of 30 would cut them off; suggesting ${suggestedMaxDepth} with headroom`
+      `static divert paths pass ${choiceDepthEstimate} choice-bearing knots, so the default depth of ${DEFAULT_MAX_DEPTH} would cut them off; suggesting ${suggestedMaxDepth} with headroom`
     );
   }
   if (hasCycles) {

@@ -3,7 +3,7 @@ import * as v8 from "v8";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { compile, stats, scanKnots, scanExternals, scanInboundDiverts, scanShapeProfile, scanStorySemantics } from "./inklecate";
+import { compile, stats, scanKnots, scanExternals, scanInboundDiverts, scanShapeProfile, scanStorySemantics, DEFAULT_MAX_DEPTH } from "./inklecate";
 import { classifyUnvisitedKnots, playtest, explore, explorePortfolio, mergeMinRepro } from "./explore";
 import { recommendNextRun } from "./advice";
 import { VERSION } from "./version";
@@ -81,7 +81,7 @@ server.registerTool(
     inputSchema: {
       file: z.string().describe("Path to the root .ink file"),
       maxDepth: z.number().int().min(1).max(1000).optional()
-        .describe("Max choices deep to explore (default 30)"),
+        .describe(`Max choices deep to explore (default ${DEFAULT_MAX_DEPTH})`),
       maxStates: z.number().int().min(1).max(100000000).optional()
         .describe("Max story states to visit (default 10000000)"),
       seed: z.number().int().min(0).max(4294967295).optional()

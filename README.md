@@ -61,7 +61,7 @@ The compiler tells you the story is *valid*. Clicking through tells you the path
 ```
 $ inkcheck examples/manor.ink
 ✓ compiled — 92 words, 7 knots, 6 choices
-✓ explored 18050 states within limits (depth 30, 100000 states, seed 1) — exhaustive (every reachable state visited) — 5 distinct terminal state(s)
+✓ explored 18050 states within limits (depth 100, 10000000 states, seed 1) — exhaustive (every reachable state visited) — 5 distinct terminal state(s)
     terminal via [Enter in darkness → Search the study → Leave with your loot]: "You slip out the servant door, heavier by half a purse."
     ...
 ✗ 1 runtime error(s):
@@ -85,7 +85,7 @@ Inkcheck is not a promise to visit every possible state in a non-trivial story. 
 
 Random sampling remains useful, especially for stories with randomness or huge state spaces. Treat the approaches as complementary: random play can stumble into surprising paths, while inkcheck gives deterministic CI-friendly evidence inside a declared budget.
 
-In a local test of *The Intercept* at the default depth of 30, higher budgets found more terminal states but still did not prove complete coverage. Timings are from one local development machine and should be read as scale evidence, not a universal benchmark:
+In a local test of *The Intercept* at a depth limit of 30, higher budgets found more terminal states but still did not prove complete coverage. Timings are from one local development machine and should be read as scale evidence, not a universal benchmark:
 
 | State budget | Time | Distinct terminal states | Runtime errors | Unvisited knots | Result |
 | ---: | ---: | ---: | ---: | ---: | --- |

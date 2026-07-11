@@ -2,6 +2,7 @@
 import * as v8 from "v8";
 import {
   CompileResult,
+  DEFAULT_MAX_DEPTH,
   KnotInfo,
   StoryShapeProfile,
   StorySemantics,
@@ -39,7 +40,7 @@ Usage: inkcheck <story.ink> [options]
        inkcheck mcp              Start the MCP server (stdio)
 
 Options:
-  --max-depth <n>    Max choices deep to explore, 1–1000 (default 30)
+  --max-depth <n>    Max choices deep to explore, 1–1000 (default 100)
   --max-states <n>   Max story states to visit, 1–100000000 (default 10000000)
   --seed <n>         Seed for the random-sampling slice, 1–4294967295 (default 1)
   --max-memory <mb>  Stop cleanly before heap use exceeds <mb> (default: 85% of the V8 heap limit)
@@ -130,7 +131,7 @@ async function main() {
   const profile = auto ? scanShapeProfile(file) : undefined;
   // Explicit flags always win over the profile; --auto never lowers a limit.
   const autoDepth =
-    profile && maxDepth === undefined && profile.suggested.maxDepth > 30
+    profile && maxDepth === undefined && profile.suggested.maxDepth > DEFAULT_MAX_DEPTH
       ? profile.suggested.maxDepth
       : undefined;
   if (autoDepth !== undefined) maxDepth = autoDepth;
@@ -342,7 +343,7 @@ async function main() {
     if (profile) {
       const w = profile.suggested.weights;
       console.log(
-        `⚙ auto: shape profile applied — depth ${maxDepth ?? 30}${autoDepth !== undefined ? " (raised from 30)" : ""}, weights dfs ${Math.round((w.last + w.first + w.insideOut) * 100)}% / beam ${Math.round(w.beam * 100)}% / random ${Math.round(w.random * 100)}%`
+        `⚙ auto: shape profile applied — depth ${maxDepth ?? DEFAULT_MAX_DEPTH}${autoDepth !== undefined ? ` (raised from ${DEFAULT_MAX_DEPTH})` : ""}, weights dfs ${Math.round((w.last + w.first + w.insideOut) * 100)}% / beam ${Math.round(w.beam * 100)}% / random ${Math.round(w.random * 100)}%`
       );
       for (const reason of profile.suggested.rationale) console.log(`    ${reason}`);
     }

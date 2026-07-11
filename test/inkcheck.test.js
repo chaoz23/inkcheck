@@ -275,14 +275,14 @@ test("scanShapeProfile reads story shape and suggests matching settings", () => 
   assert.ok(grid.suggested.weights.random > grid.suggested.weights.last, "sampling weighted up");
 
   const deep = scanShapeProfile(DEEP_CHAIN);
-  assert.strictEqual(deep.choiceDepthEstimate, 40);
-  assert.strictEqual(deep.suggested.maxDepth, 80);
+  assert.strictEqual(deep.choiceDepthEstimate, 130);
+  assert.strictEqual(deep.suggested.maxDepth, 260);
   assert.strictEqual(deep.variables, 0);
   assert.strictEqual(deep.suggested.weights.random, 0, "no variables: sampling dropped");
 
   const clean = scanShapeProfile(CLEAN_BRANCH);
   assert.strictEqual(clean.suggested.weights.beam, 0);
-  assert.strictEqual(clean.suggested.maxDepth, 30);
+  assert.strictEqual(clean.suggested.maxDepth, 100);
 });
 
 // Issue #27: the runtime scheduler cannot fix a too-low depth limit — only
@@ -304,8 +304,8 @@ test("--auto applies the shape profile where defaults find nothing", () => {
     { encoding: "utf8" }
   );
   const autoOut = JSON.parse(auto.stdout);
-  assert.strictEqual(autoOut.profile.suggested.maxDepth, 80);
-  assert.strictEqual(autoOut.explore.limits.maxDepth, 80);
+  assert.strictEqual(autoOut.profile.suggested.maxDepth, 260);
+  assert.strictEqual(autoOut.explore.limits.maxDepth, 260);
   assert.strictEqual(autoOut.explore.endingsFound.length, 1);
   assert.strictEqual(autoOut.explore.exhaustive, true);
 
@@ -462,7 +462,7 @@ test("recommendNextRun issues the right verdict per story shape", async () => {
   );
   const deepen = recommendNextRun(chainReport, chainProfile);
   assert.strictEqual(deepen.recommendation, "deepen");
-  assert.strictEqual(deepen.flags.maxDepth, 80);
+  assert.strictEqual(deepen.flags.maxDepth, 260);
   assert.strictEqual(deepen.flags.maxStates, 500);
   assert.match(deepen.rationale, /truncatedBy\.maxDepth/);
   assert.match(deepen.expectedGain, /inbound diverts/);
@@ -530,7 +530,7 @@ test("--next follows recommendations to an exhaustive result", () => {
   assert.strictEqual(out.runs.length, 2);
   assert.strictEqual(out.runs[0].endings, 0);
   assert.strictEqual(out.runs[0].recommendation, "deepen");
-  assert.strictEqual(out.runs[1].flags.maxDepth, 80);
+  assert.strictEqual(out.runs[1].flags.maxDepth, 260);
   assert.strictEqual(out.runs[1].endings, 1);
   assert.strictEqual(out.explore.exhaustive, true);
   assert.strictEqual(out.nextRun.recommendation, "stop");
@@ -716,7 +716,7 @@ test("markdown and text reports state limits and targeted advice", () => {
     [CLI, MANOR, "--max-states", "200", "--markdown"],
     { encoding: "utf8" }
   );
-  assert.match(md.stdout, /\| Depth limit \| 30 \|/);
+  assert.match(md.stdout, /\| Depth limit \| 100 \|/);
   assert.match(md.stdout, /\| State budget \| 200 \|/);
   // A systematic pass exhausts manor within this budget, so the run is
   // complete even though the sampling slice spent its whole sub-budget.

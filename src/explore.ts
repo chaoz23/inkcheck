@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { Story } from "inkjs";
-import { KnotInfo } from "./inklecate";
+import { KnotInfo, DEFAULT_MAX_DEPTH } from "./inklecate";
 
 export interface PlaytestStep {
   text: string;
@@ -484,7 +484,7 @@ function createSearchEngine(
   externals: string[],
   opts: ExploreOptions
 ): PassEngine {
-  const maxDepth = opts.maxDepth ?? 30;
+  const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
     throw new RangeError("maxDepth must be an integer from 1 to 1000");
   }
@@ -792,7 +792,7 @@ function createRandomEngine(
   externals: string[],
   opts: ExploreOptions
 ): PassEngine {
-  const maxDepth = opts.maxDepth ?? 30;
+  const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
     throw new RangeError("maxDepth must be an integer from 1 to 1000");
   }
@@ -1061,7 +1061,7 @@ function createBeamEngine(
   externals: string[],
   opts: ExploreOptions
 ): PassEngine {
-  const maxDepth = opts.maxDepth ?? 30;
+  const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
   const beamWidth = opts.beamWidth ?? DEFAULT_BEAM_WIDTH;
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
     throw new RangeError("maxDepth must be an integer from 1 to 1000");
