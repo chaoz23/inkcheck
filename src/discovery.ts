@@ -2,11 +2,11 @@ import * as fs from "fs";
 import * as path from "path";
 import { scanExternals, scanShapeProfile, scanStorySemantics } from "./inklecate";
 import { VERSION } from "./version";
+import { CONFIG_SCHEMA_VERSION } from "./config";
 
 export const CAPABILITIES_SCHEMA_VERSION = 1;
 export const PROJECT_INSPECTION_SCHEMA_VERSION = 1;
 export const REPORT_SCHEMA_VERSION = 1;
-export const CONFIG_SCHEMA_VERSION = 0;
 export const MAX_INSPECT_VARIABLES = 200;
 export const MAX_INSPECT_LOCATIONS = 20;
 export const MAX_INSPECT_INCLUDES = 500;
@@ -40,7 +40,7 @@ export function capabilities(): InkcheckCapabilities {
     limits: {
       maxDepth: 1_000,
       maxStates: 100_000_000,
-      defaultMaxDepth: 30,
+      defaultMaxDepth: 100,
       defaultMaxStates: 10_000_000,
     },
     searchModes: ["portfolio", "shared", "shared-variable"],

@@ -44,6 +44,7 @@ import {
   renderCapabilitiesHuman,
   renderInspectionHuman,
 } from "./discovery";
+import { findDefaultProjectConfig, loadProjectConfig } from "./config";
 
 function usage(message?: string): never {
   if (message) console.error(`inkcheck: ${message}\n`);
@@ -52,6 +53,7 @@ function usage(message?: string): never {
 Usage: inkcheck <story.ink> [options]
        inkcheck capabilities [--json]
        inkcheck inspect <story.ink> [--json]
+       inkcheck validate-config [inkcheck.yml] [--json]
        inkcheck mcp              Start the MCP server (stdio)
 
 Options:
@@ -88,6 +90,30 @@ async function main() {
     console.log(args.includes("--json") ? JSON.stringify(value, null, 2) : renderCapabilitiesHuman(value));
     return;
   }
+  if (args[0] === "validate-config") {
+    const values = args.slice(1).filter((arg) => arg !== "--json");
+    if (values.length > 1 || args.slice(1).some((arg) => arg.startsWith("--") && arg !== "--json")) {
+      usage("validate-config accepts an optional config path and --json only");
+    }
+    try {
+      const loaded = loadProjectConfig(values[0]);
+      const result = {
+        valid: true,
+        schemaVersion: loaded.config.schemaVersion,
+        configFile: loaded.path,
+        entrypoint: loaded.entrypoint,
+        config: loaded.config,
+      };
+      console.log(
+        args.includes("--json")
+          ? JSON.stringify(result, null, 2)
+          : `Valid Inkcheck config v${result.schemaVersion}: ${result.configFile}\nEntrypoint: ${result.entrypoint}`
+      );
+      return;
+    } catch (error) {
+      usage(error instanceof Error ? error.message : String(error));
+    }
+  }
   const inspectMode = args[0] === "inspect";
   if (inspectMode) args.shift();
   let file: string | undefined;
@@ -100,11 +126,13 @@ async function main() {
   let asMarkdown = false;
   let asHuman = false;
   let minRepro = true;
+  let minReproSpecified = false;
   let profileOnly = false;
   let auto = false;
   let followNext = false;
   let progressMode: "auto" | "human" | "ndjson" | "off" = process.stderr.isTTY ? "auto" : "off";
   let progressSpecified = false;
+  let searchSpecified = false;
   let maxMemoryMb: number | undefined;
   let maxTimeSec: number | undefined;
   const boundedInt = (flag: string, raw: string | undefined, max: number): number => {
@@ -120,6 +148,7 @@ async function main() {
     else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 100_000_000);
     else if (arg === "--seed") seed = boundedInt(arg, args[++i], 4_294_967_295);
     else if (arg === "--search" || arg.startsWith("--search=")) {
+      searchSpecified = true;
       const mode = arg === "--search" ? args[++i] : arg.slice("--search=".length);
       if (mode !== "portfolio" && mode !== "shared" && mode !== "shared-variable") {
         usage("--search must be portfolio, shared, or shared-variable");
@@ -135,7 +164,10 @@ async function main() {
     else if (arg === "--human") asHuman = true;
     else if (arg === "--json") asJson = true;
     else if (arg === "--markdown") asMarkdown = true;
-    else if (arg === "--no-min-repro") minRepro = false;
+    else if (arg === "--no-min-repro") {
+      minRepro = false;
+      minReproSpecified = true;
+    }
     else if (arg.startsWith("--progress=")) {
       progressSpecified = true;
       const mode = arg.slice("--progress=".length);
@@ -149,7 +181,14 @@ async function main() {
     else if (file) usage(`unexpected extra argument: ${arg}`);
     else file = arg;
   }
-  if (!file) usage("missing story file");
+  let projectConfig;
+  try {
+    projectConfig = findDefaultProjectConfig();
+  } catch (error) {
+    usage(error instanceof Error ? error.message : String(error));
+  }
+  if (!file) file = projectConfig?.entrypoint;
+  if (!file) usage("missing story file (or inkcheck.yml entrypoint)");
   if ([asJson, asMarkdown, asHuman].filter(Boolean).length > 1) {
     usage("--json, --markdown, and --human cannot be used together");
   }
@@ -169,6 +208,16 @@ async function main() {
       usage(error instanceof Error ? error.message : String(error));
     }
   }
+
+  const configDefaults = projectConfig?.config.ci;
+  maxDepth ??= configDefaults?.maxDepth;
+  maxStates ??= configDefaults?.maxStates;
+  seed ??= configDefaults?.seed;
+  maxMemoryMb ??= configDefaults?.maxMemoryMb;
+  maxTimeSec ??= configDefaults?.maxTimeSec;
+  if (!searchSpecified && configDefaults?.search) search = configDefaults.search;
+  if (!strict && configDefaults?.strict) strict = true;
+  if (!minReproSpecified && configDefaults?.minRepro !== undefined) minRepro = configDefaults.minRepro;
 
   if (profileOnly) {
     const profile = scanShapeProfile(file);

@@ -34,6 +34,7 @@ const {
   inspectProject,
   PROJECT_INSPECTION_SCHEMA_VERSION,
 } = require("../dist/discovery");
+const { CONFIG_SCHEMA_VERSION, parseProjectConfig, loadProjectConfig } = require("../dist/config");
 
 const MANOR = path.join(__dirname, "..", "examples", "manor.ink");
 const BROKEN = path.join(__dirname, "..", "examples", "broken.ink");
@@ -105,10 +106,100 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.limits.maxStates, 100_000_000);
   assert.strictEqual(value.features.projectInspection, true);
   assert.strictEqual(value.schemas.report, 1);
+  assert.strictEqual(value.schemas.config, CONFIG_SCHEMA_VERSION);
+  assert.strictEqual(value.limits.defaultMaxDepth, 100);
   assert.strictEqual(value.features.indexedWitnesses, true);
   assert.strictEqual(value.features.assertions, false);
   assert.strictEqual(value.features.goals, false);
   assert.strictEqual(value.features.resumableSearch, false);
+});
+
+test("config schema v1 validates bounded executable project defaults", () => {
+  const parsed = parseProjectConfig(`
+schemaVersion: 1
+entrypoint: stories/main.ink
+ci:
+  maxDepth: 120
+  maxStates: 50000
+  seed: 7
+  search: shared-variable
+  maxMemoryMb: 512
+  maxTimeSec: 60
+  strict: true
+  minRepro: false
+`);
+  assert.strictEqual(parsed.schemaVersion, 1);
+  assert.strictEqual(parsed.entrypoint, "stories/main.ink");
+  assert.deepStrictEqual(parsed.ci, {
+    maxDepth: 120,
+    maxStates: 50000,
+    seed: 7,
+    maxMemoryMb: 512,
+    maxTimeSec: 60,
+    search: "shared-variable",
+    strict: true,
+    minRepro: false,
+  });
+});
+
+test("config rejects unknown keys, unsafe entrypoints, and invalid bounds", () => {
+  assert.throws(
+    () => parseProjectConfig("schemaVersion: 1\nentrypoint: ../story.ink\nfutureGoals: []\nci:\n  maxDepth: 0\n"),
+    /root\.futureGoals: unknown key[\s\S]*entrypoint: must stay inside[\s\S]*ci\.maxDepth/
+  );
+  assert.throws(
+    () => parseProjectConfig("schemaVersion: 2\nentrypoint: story.ink\nentrypoint: other.ink\n"),
+    /Map keys must be unique/
+  );
+});
+
+test("config loader resolves a project-local entrypoint and reports missing files", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-config-"));
+  try {
+    fs.mkdirSync(path.join(tmp, "stories"));
+    fs.writeFileSync(path.join(tmp, "stories", "main.ink"), "Hello\n-> END\n");
+    const configFile = path.join(tmp, "inkcheck.yml");
+    fs.writeFileSync(configFile, "schemaVersion: 1\nentrypoint: stories/main.ink\n");
+    const loaded = loadProjectConfig(configFile);
+    assert.strictEqual(loaded.entrypoint, path.join(tmp, "stories", "main.ink"));
+    fs.unlinkSync(loaded.entrypoint);
+    assert.throws(() => loadProjectConfig(configFile), /entrypoint: file not found/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("CLI validates config and applies its defaults with explicit flags winning", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-config-cli-"));
+  try {
+    fs.copyFileSync(CLEAN_BRANCH, path.join(tmp, "story.ink"));
+    fs.writeFileSync(
+      path.join(tmp, "inkcheck.yml"),
+      "schemaVersion: 1\nentrypoint: story.ink\nci:\n  maxDepth: 4\n  maxStates: 1\n  seed: 9\n"
+    );
+    const validated = spawnSync(process.execPath, [CLI, "validate-config", "--json"], {
+      cwd: tmp,
+      encoding: "utf8",
+    });
+    assert.strictEqual(validated.status, 0, validated.stderr);
+    assert.strictEqual(JSON.parse(validated.stdout).valid, true);
+
+    const configured = spawnSync(process.execPath, [CLI, "--json"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(configured.status, 0, configured.stderr);
+    assert.deepStrictEqual(JSON.parse(configured.stdout).explore.limits, {
+      maxDepth: 4,
+      maxStates: 1,
+    });
+
+    const overridden = spawnSync(process.execPath, [CLI, "--json", "--max-states", "2"], {
+      cwd: tmp,
+      encoding: "utf8",
+    });
+    assert.strictEqual(overridden.status, 0, overridden.stderr);
+    assert.strictEqual(JSON.parse(overridden.stdout).explore.limits.maxStates, 2);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("project inspection follows includes and returns a bounded deterministic map", () => {

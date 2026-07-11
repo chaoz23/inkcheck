@@ -32,6 +32,23 @@ No global install is required. The first run downloads the pinned official ink c
 
 Want to see the failure-path report before trying your own story? Run the [two-minute synthetic demo](docs/two-minute-demo.md).
 
+### Project configuration
+
+Commit an `inkcheck.yml` when a project should use the same entrypoint and bounded CI settings for every human or agent session:
+
+```yaml
+schemaVersion: 1
+entrypoint: story.ink
+ci:
+  maxDepth: 100
+  maxStates: 1000000
+  seed: 1
+  search: portfolio
+  strict: true
+```
+
+Run `inkcheck validate-config` to check it. From that directory, `inkcheck` uses the configured entrypoint and defaults; explicit CLI flags still win. Unknown keys fail validation so future assertions, goals, external behavior, and edit-policy fields cannot appear supported before their implementations exist. The published contract is [config schema v1](docs/config-schema-v1.json).
+
 ## Hosted checker
 
 The repository now includes a self-hosted web interface for writers who do not want to use a terminal. Hosted mode temporarily uploads authorized `.ink` source, creates a short-lived private job, streams real phase and work-budget progress, and deletes the temporary job directory after completion, cancellation, or failure. It does not make reports public or retain story text in application logs. Optional first-party usage metrics keep only daily aggregate counts and can produce unattended weekly reports without an analytics vendor.
