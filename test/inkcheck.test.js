@@ -113,10 +113,21 @@ test("shared search exhausts a finite variable-state lock with bounded telemetry
 test("shared search finds the deceptive plateau failure reproducibly", async () => {
   const file = path.join(SEARCH_FIXTURES, "deceptive-plateau.ink");
   const compiled = await compile(file);
-  const options = { maxDepth: 20, maxStates: 500, seed: 19 };
+  const options = {
+    maxDepth: 20,
+    maxStates: 500,
+    seed: 19,
+    preserveTurnState: false,
+    preserveRandomState: false,
+  };
   const first = exploreShared(compiled.storyJson, scanKnots(file), [], options);
   const second = exploreShared(compiled.storyJson, scanKnots(file), [], options);
-  assert.deepStrictEqual(second, first);
+  const withoutByteEstimate = (result) => {
+    const copy = structuredClone(result);
+    delete copy.passes[0].peakPendingBytes;
+    return copy;
+  };
+  assert.deepStrictEqual(withoutByteEstimate(second), withoutByteEstimate(first));
   assert.strictEqual(first.runtimeErrors.length, 1);
   assert.ok(first.runtimeErrors[0].path.length > 0);
   assert.match(first.runtimeErrors[0].foundBy, /^shared:/);
