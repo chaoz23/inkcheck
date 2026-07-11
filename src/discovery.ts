@@ -5,7 +5,7 @@ import { VERSION } from "./version";
 
 export const CAPABILITIES_SCHEMA_VERSION = 1;
 export const PROJECT_INSPECTION_SCHEMA_VERSION = 1;
-export const REPORT_SCHEMA_VERSION = 0;
+export const REPORT_SCHEMA_VERSION = 1;
 export const CONFIG_SCHEMA_VERSION = 0;
 export const MAX_INSPECT_VARIABLES = 200;
 export const MAX_INSPECT_LOCATIONS = 20;
@@ -46,7 +46,7 @@ export function capabilities(): InkcheckCapabilities {
     searchModes: ["portfolio", "shared", "shared-variable"],
     features: {
       projectInspection: true,
-      indexedWitnesses: false,
+      indexedWitnesses: true,
       assertions: false,
       goals: false,
       resumableSearch: false,

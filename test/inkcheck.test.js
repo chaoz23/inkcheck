@@ -52,6 +52,7 @@ const CLI = path.join(__dirname, "..", "dist", "cli.js");
 const ROOT = path.join(__dirname, "..");
 const SEARCH_FIXTURES = path.join(__dirname, "fixtures", "search");
 const INSPECT_PROJECT = path.join(__dirname, "fixtures", "inspect", "project.ink");
+const DUPLICATE_CHOICE_TEXT = path.join(__dirname, "fixtures", "duplicate-choice-text.ink");
 
 test("parseIssue extracts severity, file, line, message", () => {
   const i = parseIssue("ERROR: 'story.ink' line 42: Divert target not found: '-> nowhere'");
@@ -103,6 +104,8 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.deepStrictEqual(value.searchModes, ["portfolio", "shared", "shared-variable"]);
   assert.strictEqual(value.limits.maxStates, 100_000_000);
   assert.strictEqual(value.features.projectInspection, true);
+  assert.strictEqual(value.schemas.report, 1);
+  assert.strictEqual(value.features.indexedWitnesses, true);
   assert.strictEqual(value.features.assertions, false);
   assert.strictEqual(value.features.goals, false);
   assert.strictEqual(value.features.resumableSearch, false);
@@ -172,6 +175,89 @@ test("CLI capabilities and inspect provide concise human and JSON output", () =>
   const human = spawnSync(process.execPath, [CLI, "inspect", INSPECT_PROJECT], { encoding: "utf8" });
   assert.strictEqual(human.status, 0, human.stderr);
   assert.match(human.stdout, /Next: compile the story before exploring it/);
+});
+
+test("indexed witnesses disambiguate duplicate choice text and replay exactly", async () => {
+  const compiled = await compile(DUPLICATE_CHOICE_TEXT);
+  const result = explore(compiled.storyJson, scanKnots(DUPLICATE_CHOICE_TEXT), [], {
+    maxStates: 20,
+    preserveTurnState: false,
+    preserveRandomState: false,
+  });
+  assert.strictEqual(result.endingsFound.length, 1);
+  assert.strictEqual(result.runtimeErrors.length, 1);
+  assert.deepStrictEqual(result.endingsFound[0].path, ["Continue"]);
+  assert.deepStrictEqual(result.runtimeErrors[0].path, ["Continue"]);
+  assert.notDeepStrictEqual(
+    result.endingsFound[0].choiceIndices,
+    result.runtimeErrors[0].choiceIndices
+  );
+  const replay = playtest(compiled.storyJson, result.runtimeErrors[0].choiceIndices);
+  assert.strictEqual(replay.replayStatus, "runtime_error");
+  assert.match(replay.runtimeErrors.join("\n"), /ran out of content/);
+  const changed = playtest(compiled.storyJson, [99]);
+  assert.strictEqual(changed.replayStatus, "path_changed");
+});
+
+test("every exploration engine preserves aligned indexed witnesses", async () => {
+  const compiled = await compile(DUPLICATE_CHOICE_TEXT);
+  const knots = scanKnots(DUPLICATE_CHOICE_TEXT);
+  const options = {
+    maxStates: 100,
+    seed: 3,
+    preserveTurnState: false,
+    preserveRandomState: false,
+  };
+  for (const run of [
+    () => explore(compiled.storyJson, knots, [], options),
+    () => exploreRandom(compiled.storyJson, knots, [], options),
+    () => exploreBeam(compiled.storyJson, knots, [], options),
+    () => exploreShared(compiled.storyJson, knots, [], options),
+    () => exploreSharedVariableAware(compiled.storyJson, knots, [], options),
+    () => explorePortfolio(compiled.storyJson, knots, [], options),
+  ]) {
+    const result = run();
+    const findings = [...result.endingsFound, ...result.runtimeErrors];
+    assert.ok(findings.length > 0);
+    for (const finding of findings) {
+      assert.strictEqual(finding.choiceIndices.length, finding.path.length);
+      assert.ok(finding.choiceIndices.every((index) => Number.isInteger(index) && index >= 0));
+      assert.ok(Number.isInteger(finding.firstDiscoveredAtState));
+    }
+  }
+});
+
+test("versioned JSON reports have stable identities and exact replay instructions", () => {
+  const run = (extra = []) => spawnSync(
+    process.execPath,
+    [CLI, CONTENT_EXHAUSTION, "--max-states", "100", "--json", ...extra],
+    { encoding: "utf8" }
+  );
+  const first = JSON.parse(run().stdout);
+  const second = JSON.parse(run().stdout);
+  assert.strictEqual(first.schemaVersion, 1);
+  assert.strictEqual(first.inkcheckVersion, "0.4.1");
+  assert.strictEqual(first.storyFingerprint.value, second.storyFingerprint.value);
+  assert.strictEqual(first.explore.runtimeErrors[0].id, second.explore.runtimeErrors[0].id);
+  assert.strictEqual(first.explore.runtimeErrors[0].kind, "runtime.content_exhaustion");
+  assert.deepStrictEqual(
+    first.explore.runtimeErrors[0].replay.choices,
+    first.explore.runtimeErrors[0].choiceIndices
+  );
+  assert.strictEqual(first.explore.runtimeErrors[0].replay.tool, "playtest_story");
+  assert.strictEqual(first.effectiveConfiguration.search, "portfolio");
+
+  const depthLimited = spawnSync(
+    process.execPath,
+    [CLI, DEEP_CHAIN, "--max-depth", "1", "--max-states", "100", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(JSON.parse(depthLimited.stdout).bindingLimit, "maxDepth");
+
+  const broken = spawnSync(process.execPath, [CLI, BROKEN, "--json"], { encoding: "utf8" });
+  const compileFailure = JSON.parse(broken.stdout);
+  assert.strictEqual(compileFailure.schemaVersion, 1);
+  assert.ok(compileFailure.compile.issues.every((issue) => issue.id && issue.kind));
 });
 
 test("shared search exhausts a finite variable-state lock with bounded telemetry", async () => {
@@ -1421,6 +1507,7 @@ test("release version stays synchronized across package and manifests", () => {
     "web",
     "docs/hosted-checker.md",
     "docs/agent-discovery.md",
+    "docs/report-schema-v1.md",
     "docs/inkjam-qa-guide.md",
     "CHANGELOG.md",
     "llms.txt",

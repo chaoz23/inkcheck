@@ -25,11 +25,17 @@ export interface PlaytestResult {
   runtimeWarnings: string[];
   /** EXTERNAL functions replaced with zero during this playtest. */
   externalFunctionsStubbed: string[];
+  /** Whether an indexed witness still follows the same shape. */
+  replayStatus: "completed" | "runtime_error" | "path_changed";
 }
 
 export interface EndingReport {
   /** Choice-text trail that led here, e.g. ["Pick the lock", "Go north"]. */
   path: string[];
+  /** Zero-based choice indices matching `path`, suitable for exact replay. */
+  choiceIndices: number[];
+  /** Transition count when this finding was first observed. */
+  firstDiscoveredAtState: number;
   finalText: string;
   variables: Record<string, unknown>;
   /** Search pass that found this ending, e.g. "dfs:last" or "random:seed=1". */
@@ -39,6 +45,8 @@ export interface EndingReport {
 export interface RuntimeErrorReport {
   message: string;
   path: string[];
+  choiceIndices: number[];
+  firstDiscoveredAtState: number;
   sourceLocation?: { file: string; line: number; approximate: boolean };
   /** Search pass that found this error, e.g. "dfs:last" or "random:seed=1". */
   foundBy?: string;
@@ -195,9 +203,11 @@ export function playtest(
 ): PlaytestResult {
   const s = makeStory(storyJson, externals);
   const steps: PlaytestStep[] = [];
+  let pathChanged = false;
   let step = continueMaximally(s);
   for (const idx of choices) {
     if (idx < 0 || idx >= s.story.currentChoices.length) {
+      pathChanged = true;
       s.errors.push(
         `Choice index ${idx} out of range (${s.story.currentChoices.length} available) after: "${step.text.trim().slice(-80)}"`
       );
@@ -224,12 +234,14 @@ export function playtest(
     runtimeErrors: s.errors,
     runtimeWarnings: s.warnings,
     externalFunctionsStubbed: [...externals],
+    replayStatus: pathChanged ? "path_changed" : s.errors.length > 0 ? "runtime_error" : "completed",
   };
 }
 
 interface Frame {
   stateJson: string;
   path: string[];
+  choiceIndices: number[];
   depth: number;
 }
 
@@ -561,7 +573,7 @@ function createSearchEngine(
   // Root: continue the fresh story to the first choice point.
   const rootStep = continueMaximally(s);
   s.errors.forEach((e) =>
-    runtimeErrors.set(e, { message: e, path: [], sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
+    runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
@@ -570,6 +582,8 @@ function createSearchEngine(
     // Linear story (or immediate end).
     endings.set(rootStep.text, {
       path: [],
+      choiceIndices: [],
+      firstDiscoveredAtState: 0,
       finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
       variables: extractVariables(s.story),
       foundBy,
@@ -579,7 +593,7 @@ function createSearchEngine(
 
   const rootState = s.story.state.ToJson();
   seenStates.add(stateKey(rootState, stateSensitivity));
-  const frames: Frame[] = [{ stateJson: rootState, path: [], depth: 0 }];
+  const frames: Frame[] = [{ stateJson: rootState, path: [], choiceIndices: [], depth: 0 }];
   let head = 0; // BFS read pointer (avoids O(n) shifts)
   // Pause state: the frame currently being expanded and its choice cursor.
   let current: { frame: Frame; order: number[]; cursor: number } | null = null;
@@ -601,6 +615,8 @@ function createSearchEngine(
         runtimeErrors.set(String(e), {
           message: `State restore failed: ${e instanceof Error ? e.message : e}`,
           path: frame.path,
+          choiceIndices: frame.choiceIndices,
+          firstDiscoveredAtState: statesExplored,
           foundBy,
         });
         continue;
@@ -624,6 +640,7 @@ function createSearchEngine(
     const choice = s.story.currentChoices[i] as { text?: string; sourcePath?: string } | undefined;
     const choiceText = choice?.text ?? `#${i}`;
     const path = [...frame.path, choiceText];
+    const choiceIndices = [...frame.choiceIndices, i];
     const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
     try {
       s.story.ChooseChoiceIndex(i);
@@ -632,6 +649,8 @@ function createSearchEngine(
       runtimeErrors.set(msg, {
         message: msg,
         path,
+        choiceIndices,
+        firstDiscoveredAtState: statesExplored,
         sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
         foundBy,
       });
@@ -646,6 +665,8 @@ function createSearchEngine(
         runtimeErrors.set(msg, {
           message: msg,
           path,
+          choiceIndices,
+          firstDiscoveredAtState: statesExplored,
           sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
           foundBy,
         });
@@ -660,7 +681,7 @@ function createSearchEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
       if (!endings.has(key)) {
-        endings.set(key, { path, finalText, variables: extractVariables(s.story), foundBy });
+        endings.set(key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: extractVariables(s.story), foundBy });
         noteDiscoveryProgress();
       }
       return true;
@@ -677,7 +698,7 @@ function createSearchEngine(
       return true; // identical state: subtree already covered
     }
     seenStates.add(key);
-    frames.push({ stateJson: nextState, path, depth: frame.depth + 1 });
+    frames.push({ stateJson: nextState, path, choiceIndices, depth: frame.depth + 1 });
     return true;
   };
 
@@ -800,6 +821,7 @@ interface SharedNode {
   variables?: Record<string, unknown>;
   parent: number | null;
   choiceText?: string;
+  choiceIndex?: number;
   depth: number;
 }
 
@@ -952,17 +974,28 @@ function createSharedEngine(
     return added;
   };
 
-  const pathFor = (nodeId: number, extraChoice?: string): string[] => {
+  const witnessFor = (
+    nodeId: number,
+    extraChoice?: { text: string; index: number }
+  ): { path: string[]; choiceIndices: number[] } => {
     const path: string[] = [];
+    const choiceIndices: number[] = [];
     let id: number | null = nodeId;
     while (id !== null) {
       const node: SharedNode = nodes[id];
-      if (node.choiceText !== undefined) path.push(node.choiceText);
+      if (node.choiceText !== undefined) {
+        path.push(node.choiceText);
+        choiceIndices.push(node.choiceIndex!);
+      }
       id = node.parent;
     }
     path.reverse();
-    if (extraChoice !== undefined) path.push(extraChoice);
-    return path;
+    choiceIndices.reverse();
+    if (extraChoice !== undefined) {
+      path.push(extraChoice.text);
+      choiceIndices.push(extraChoice.index);
+    }
+    return { path, choiceIndices };
   };
 
   const valid = (id: number | undefined): id is number =>
@@ -973,12 +1006,13 @@ function createSharedEngine(
     variables: Record<string, unknown>,
     parent: number | null,
     choiceText: string | undefined,
+    choiceIndex: number | undefined,
     depth: number,
     noveltyScore: number,
     variableScore = 0
   ): void => {
     const id = nodes.length;
-    nodes.push({ stateJson, variables, parent, choiceText, depth });
+    nodes.push({ stateJson, variables, parent, choiceText, choiceIndex, depth });
     expanded.push(false);
     deep.push(id);
     random.push(id);
@@ -1061,6 +1095,8 @@ function createSharedEngine(
     runtimeErrors.set(message, {
       message,
       path: [],
+      choiceIndices: [],
+      firstDiscoveredAtState: 0,
       sourceLocation: sourceLocationForRuntimeError(message, knots),
       foundBy,
     })
@@ -1075,6 +1111,8 @@ function createSharedEngine(
       const finalText = rootStep.text.trim().split(/\n/).slice(-3).join("\n");
       endings.set(`${finalText}|${JSON.stringify(rootVariables)}`, {
         path: [],
+        choiceIndices: [],
+        firstDiscoveredAtState: 0,
         finalText,
         variables: rootVariables,
         foundBy,
@@ -1085,7 +1123,7 @@ function createSharedEngine(
     const rootState = session.story.state.ToJson();
     seenStates.add(stateKey(rootState, stateSensitivity));
     seenChoiceSets.add(rootStep.choicesOffered.slice().sort().join("\u0001"));
-    addNode(rootState, rootVariables, null, undefined, 0, 1);
+    addNode(rootState, rootVariables, null, undefined, undefined, 0, 1);
   }
   noteDiscoveryProgress();
 
@@ -1120,7 +1158,12 @@ function createSharedEngine(
         session.story.state.LoadJson(node.stateJson!);
       } catch (error) {
         const message = `State restore failed: ${error instanceof Error ? error.message : error}`;
-        runtimeErrors.set(message, { message, path: pathFor(nodeId), foundBy });
+        runtimeErrors.set(message, {
+          message,
+          ...witnessFor(nodeId),
+          firstDiscoveredAtState: statesExplored,
+          foundBy,
+        });
         node.stateJson = undefined;
         node.variables = undefined;
         noteDiscoveryProgress();
@@ -1149,7 +1192,8 @@ function createSharedEngine(
     };
     resetSession();
     session.story.state.LoadJson(node.stateJson!);
-    const path = pathFor(active.nodeId, choice.text);
+    const witness = witnessFor(active.nodeId, { text: choice.text, index: choice.index });
+    const { path, choiceIndices } = witness;
     const choiceLocation = sourceLocationForChoiceSourcePath(choice.sourcePath, knots);
     try {
       session.story.ChooseChoiceIndex(choice.index);
@@ -1158,6 +1202,8 @@ function createSharedEngine(
       runtimeErrors.set(message, {
         message,
         path,
+        choiceIndices,
+        firstDiscoveredAtState: statesExplored,
         sourceLocation: sourceLocationForRuntimeError(message, knots) ?? choiceLocation,
         foundBy,
       });
@@ -1174,6 +1220,8 @@ function createSharedEngine(
         runtimeErrors.set(message, {
           message,
           path,
+          choiceIndices,
+          firstDiscoveredAtState: statesExplored,
           sourceLocation: sourceLocationForRuntimeError(message, knots) ?? choiceLocation,
           foundBy,
         });
@@ -1206,7 +1254,7 @@ function createSharedEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = `${finalText}|${JSON.stringify(nextVariables)}`;
       if (!endings.has(key)) {
-        endings.set(key, { path, finalText, variables: nextVariables, foundBy });
+        endings.set(key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: nextVariables, foundBy });
         noteDiscoveryProgress();
       }
       finishIfLast();
@@ -1247,6 +1295,7 @@ function createSharedEngine(
       nextVariables,
       active.nodeId,
       choice.text,
+      choice.index,
       path.length,
       noveltyScore,
       variableScore
@@ -1436,7 +1485,7 @@ function createRandomEngine(
 
   const rootStep = continueMaximally(s);
   s.errors.forEach((e) =>
-    runtimeErrors.set(e, { message: e, path: [], sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
+    runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
@@ -1447,6 +1496,8 @@ function createRandomEngine(
   if (linear && s.errors.length === 0) {
     endings.set(rootStep.text, {
       path: [],
+      choiceIndices: [],
+      firstDiscoveredAtState: 0,
       finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
       variables: extractVariables(s.story),
       foundBy,
@@ -1458,6 +1509,7 @@ function createRandomEngine(
   // Pause state: the walk in progress. The pooled story instance holds the
   // live mid-walk position between grants; only this engine touches it.
   let walkPath: string[] | null = null;
+  let walkChoiceIndices: number[] | null = null;
 
   /** Take one transition of the current (or a fresh) walk. */
   const advance = (): void => {
@@ -1465,10 +1517,12 @@ function createRandomEngine(
       resetSession();
       s.story.state.LoadJson(rootState);
       walkPath = [];
+      walkChoiceIndices = [];
     }
     const numChoices = s.story.currentChoices.length;
     if (numChoices === 0) {
       walkPath = null;
+      walkChoiceIndices = null;
       return;
     }
     const i = Math.floor(rng() * numChoices);
@@ -1476,6 +1530,7 @@ function createRandomEngine(
     const choiceText = choice?.text ?? `#${i}`;
     const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
     walkPath.push(choiceText);
+    walkChoiceIndices!.push(i);
     // Count the transition attempt up front so failing walks still consume
     // budget and the sampling loop always terminates.
     statesExplored++;
@@ -1485,16 +1540,17 @@ function createRandomEngine(
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (!runtimeErrors.has(msg)) {
-        runtimeErrors.set(msg, { message: msg, path: [...walkPath], sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+        runtimeErrors.set(msg, { message: msg, path: [...walkPath], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
       }
       noteDiscoveryProgress();
       walkPath = null;
+      walkChoiceIndices = null;
       return;
     }
     const step = continueMaximally(s);
     s.errors.forEach((msg) => {
       if (!runtimeErrors.has(msg)) {
-        runtimeErrors.set(msg, { message: msg, path: [...walkPath!], sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+        runtimeErrors.set(msg, { message: msg, path: [...walkPath!], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
       }
     });
     s.warnings.forEach((w) => runtimeWarnings.add(w));
@@ -1502,6 +1558,7 @@ function createRandomEngine(
     noteDiscoveryProgress();
     if (s.errors.length > 0) {
       walkPath = null;
+      walkChoiceIndices = null;
       return;
     }
     const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
@@ -1509,16 +1566,18 @@ function createRandomEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
       if (!endings.has(key)) {
-        endings.set(key, { path: [...walkPath], finalText, variables: extractVariables(s.story), foundBy });
+        endings.set(key, { path: [...walkPath], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, finalText, variables: extractVariables(s.story), foundBy });
         noteDiscoveryProgress();
       }
       walkPath = null;
+      walkChoiceIndices = null;
       return;
     }
     if (walkPath.length >= maxDepth) {
       truncated = true;
       truncatedBy.maxDepth = true;
       walkPath = null;
+      walkChoiceIndices = null;
       return;
     }
     resetSession();
@@ -1714,7 +1773,7 @@ function createBeamEngine(
 
   const rootStep = continueMaximally(s);
   s.errors.forEach((e) =>
-    runtimeErrors.set(e, { message: e, path: [], sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
+    runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
@@ -1722,6 +1781,7 @@ function createBeamEngine(
   interface BeamFrame {
     stateJson: string;
     path: string[];
+    choiceIndices: number[];
   }
   interface BeamChild {
     frame: BeamFrame;
@@ -1742,6 +1802,8 @@ function createBeamEngine(
     if (s.errors.length === 0) {
       endings.set(rootStep.text, {
         path: [],
+        choiceIndices: [],
+        firstDiscoveredAtState: 0,
         finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
         variables: extractVariables(s.story),
         foundBy,
@@ -1753,7 +1815,7 @@ function createBeamEngine(
     seenStates.add(stateKey(rootState, stateSensitivity));
     seenVarSignatures.add(JSON.stringify(extractVariables(s.story)));
     seenChoiceSets.add(rootStep.choicesOffered.slice().sort().join(""));
-    frontier = [{ stateJson: rootState, path: [] }];
+    frontier = [{ stateJson: rootState, path: [], choiceIndices: [] }];
     peakFrontier = 1;
   }
   noteDiscoveryProgress();
@@ -1827,13 +1889,14 @@ function createBeamEngine(
     const choice = s.story.currentChoices[i] as { text?: string; sourcePath?: string } | undefined;
     const choiceText = choice?.text ?? `#${i}`;
     const path = [...frame.path, choiceText];
+    const choiceIndices = [...frame.choiceIndices, i];
     const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
     try {
       s.story.ChooseChoiceIndex(i);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (!runtimeErrors.has(msg)) {
-        runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+        runtimeErrors.set(msg, { message: msg, path, choiceIndices, firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
       }
       noteDiscoveryProgress();
       return true;
@@ -1844,7 +1907,7 @@ function createBeamEngine(
     const knotsBefore = visitedKnots.size;
     s.errors.forEach((msg) => {
       if (!runtimeErrors.has(msg)) {
-        runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+        runtimeErrors.set(msg, { message: msg, path, choiceIndices, firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
       }
     });
     s.warnings.forEach((w) => runtimeWarnings.add(w));
@@ -1858,7 +1921,7 @@ function createBeamEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
       if (!endings.has(key)) {
-        endings.set(key, { path, finalText, variables: extractVariables(s.story), foundBy });
+        endings.set(key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: extractVariables(s.story), foundBy });
         noteDiscoveryProgress();
       }
       return true;
@@ -1890,7 +1953,7 @@ function createBeamEngine(
       score += 2;
       seenChoiceSets.add(choiceSet);
     }
-    children.push({ frame: { stateJson: nextState, path }, score, varSig });
+    children.push({ frame: { stateJson: nextState, path, choiceIndices }, score, varSig });
     return true;
   };
 
@@ -2244,6 +2307,8 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
     const match = other.runtimeErrors.find((e) => e.message === err.message);
     if (match && match.path.length < err.path.length) {
       err.path = match.path;
+      err.choiceIndices = match.choiceIndices;
+      err.firstDiscoveredAtState = match.firstDiscoveredAtState;
       err.foundBy = match.foundBy;
     }
   }
@@ -2252,6 +2317,8 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
     const match = otherEndings.get(endingKey(end));
     if (match && match.path.length < end.path.length) {
       end.path = match.path;
+      end.choiceIndices = match.choiceIndices;
+      end.firstDiscoveredAtState = match.firstDiscoveredAtState;
       end.foundBy = match.foundBy;
     }
   }
