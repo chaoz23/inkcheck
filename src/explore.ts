@@ -48,6 +48,8 @@ export interface TruncationCauses {
   beamWidth: boolean;
   /** Exploration stopped early to stay under the memory guard. */
   memory: boolean;
+  /** Exploration stopped early because the wall-clock time budget elapsed. */
+  time: boolean;
 }
 
 export interface UnvisitedKnotReport {
@@ -318,6 +320,13 @@ export interface ExploreOptions {
    * after the fact, so staying under a watermark is the only safe option.
    */
   memoryGuard?: () => boolean;
+  /**
+   * Time guard, checked periodically during exploration. Return false when a
+   * wall-clock budget has elapsed; the pass stops cleanly, keeps whatever it
+   * found, and reports `truncatedBy.time`. Lets a hosted or CI run hand back
+   * a partial report at a deadline instead of being hard-killed mid-run.
+   */
+  timeGuard?: () => boolean;
 }
 
 export const DEFAULT_RANDOM_SEED = 1;
@@ -421,6 +430,8 @@ interface PassEngine {
   exhaustive(): boolean;
   /** True once the memory guard stopped this pass early. */
   stoppedForMemory(): boolean;
+  /** True once the time guard stopped this pass early. */
+  stoppedForTime(): boolean;
   /** Findings so far, without budget-truncation flags. */
   snapshot(): ExploreResult;
   /** Final result: marks maxStates truncation when work remained. */
@@ -446,7 +457,7 @@ function runEngineToBudget(engine: PassEngine, maxStates: number, opts: ExploreO
   let remaining = maxStates;
   let lastStates = 0;
   let lastAt = Date.now();
-  while (remaining > 0 && !engine.done() && !engine.stoppedForMemory()) {
+  while (remaining > 0 && !engine.done() && !engine.stoppedForMemory() && !engine.stoppedForTime()) {
     const consumed = engine.run(Math.min(chunkSize, remaining));
     remaining -= consumed;
     const snapshot = engine.snapshot();
@@ -493,7 +504,7 @@ function createSearchEngine(
   let statesExplored = 0;
   let totalGranted = 0;
   let truncated = false;
-  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false, memory: false };
+  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false, memory: false, time: false };
   let dedupeHits = 0;
   let maxDepthReached = 0;
   let lastDiscoveryAtState: number | null = null;
@@ -653,6 +664,8 @@ function createSearchEngine(
   let finished = false;
   let memoryStopped = false;
   const memoryGuard = opts.memoryGuard;
+  let timeStopped = false;
+  const timeGuard = opts.timeGuard;
   const done = () =>
     finished ||
     (!current && (strategy === "bfs" ? head >= frames.length : frames.length === 0));
@@ -682,10 +695,14 @@ function createSearchEngine(
       const start = statesExplored;
       let sinceGuard = 0;
       while (statesExplored - start < grant) {
-        if (memoryGuard && ++sinceGuard >= 512) {
+        if ((memoryGuard || timeGuard) && ++sinceGuard >= 512) {
           sinceGuard = 0;
-          if (!memoryGuard()) {
+          if (memoryGuard && !memoryGuard()) {
             memoryStopped = true;
+            break;
+          }
+          if (timeGuard && !timeGuard()) {
+            timeStopped = true;
             break;
           }
         }
@@ -699,11 +716,15 @@ function createSearchEngine(
     done,
     exhaustive: () => done() && !truncated,
     stoppedForMemory: () => memoryStopped,
+    stoppedForTime: () => timeStopped,
     snapshot: buildResult,
     finalize(): ExploreResult {
       if (memoryStopped) {
         truncated = true;
         truncatedBy.memory = true;
+      } else if (timeStopped) {
+        truncated = true;
+        truncatedBy.time = true;
       } else if (!done()) {
         truncated = true;
         truncatedBy.maxStates = true;
@@ -789,9 +810,11 @@ function createRandomEngine(
   let statesExplored = 0;
   let totalGranted = 0;
   let truncated = false;
-  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false, memory: false };
+  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false, memory: false, time: false };
   let memoryStopped = false;
   const memoryGuard = opts.memoryGuard;
+  let timeStopped = false;
+  const timeGuard = opts.timeGuard;
   let maxDepthReached = 0;
   let lastDiscoveryAtState: number | null = null;
   let findingWatermark = 0;
@@ -938,10 +961,14 @@ function createRandomEngine(
       const start = statesExplored;
       let sinceGuard = 0;
       while (statesExplored - start < grant) {
-        if (memoryGuard && ++sinceGuard >= 512) {
+        if ((memoryGuard || timeGuard) && ++sinceGuard >= 512) {
           sinceGuard = 0;
-          if (!memoryGuard()) {
+          if (memoryGuard && !memoryGuard()) {
             memoryStopped = true;
+            break;
+          }
+          if (timeGuard && !timeGuard()) {
+            timeStopped = true;
             break;
           }
         }
@@ -954,6 +981,7 @@ function createRandomEngine(
     done: () => linear,
     exhaustive: () => false,
     stoppedForMemory: () => memoryStopped,
+    stoppedForTime: () => timeStopped,
     telemetry(): PassTelemetry {
       return {
         pass: foundBy,
@@ -978,6 +1006,9 @@ function createRandomEngine(
       if (memoryStopped) {
         truncated = true;
         truncatedBy.memory = true;
+      } else if (timeStopped) {
+        truncated = true;
+        truncatedBy.time = true;
       } else if (!linear) {
         truncated = true;
         truncatedBy.maxStates = true;
@@ -1054,9 +1085,11 @@ function createBeamEngine(
   let statesExplored = 0;
   let totalGranted = 0;
   let truncated = false;
-  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false, memory: false };
+  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false, memory: false, time: false };
   let memoryStopped = false;
   const memoryGuard = opts.memoryGuard;
+  let timeStopped = false;
+  const timeGuard = opts.timeGuard;
   let dedupeHits = 0;
   let maxDepthReached = 0;
   let peakFrontier = 0;
@@ -1296,10 +1329,14 @@ function createBeamEngine(
       const start = statesExplored;
       let sinceGuard = 0;
       while (statesExplored - start < grant) {
-        if (memoryGuard && ++sinceGuard >= 512) {
+        if ((memoryGuard || timeGuard) && ++sinceGuard >= 512) {
           sinceGuard = 0;
-          if (!memoryGuard()) {
+          if (memoryGuard && !memoryGuard()) {
             memoryStopped = true;
+            break;
+          }
+          if (timeGuard && !timeGuard()) {
+            timeStopped = true;
             break;
           }
         }
@@ -1310,11 +1347,15 @@ function createBeamEngine(
     done: () => finished,
     exhaustive: () => finished && !truncated,
     stoppedForMemory: () => memoryStopped,
+    stoppedForTime: () => timeStopped,
     snapshot: buildResult,
     finalize(): ExploreResult {
       if (memoryStopped) {
         truncated = true;
         truncatedBy.memory = true;
+      } else if (timeStopped) {
+        truncated = true;
+        truncatedBy.time = true;
       } else if (!finished) {
         truncated = true;
         truncatedBy.maxStates = true;
@@ -1482,12 +1523,17 @@ export function explorePortfolio(
   let remaining = maxStates;
   let exhaustedEarly = false;
   let memoryStopped = false;
+  let timeStopped = false;
 
-  while (remaining > 0 && !exhaustedEarly && !memoryStopped && engines.some((e) => !e.done())) {
-    // Stop before a round begins if the guard has already tripped, so we do
-    // not start allocating another round's worth of frontier/state hashes.
+  while (remaining > 0 && !exhaustedEarly && !memoryStopped && !timeStopped && engines.some((e) => !e.done())) {
+    // Stop before a round begins if a guard has already tripped, so we do not
+    // start allocating another round's worth of frontier/state hashes.
     if (opts.memoryGuard && !opts.memoryGuard()) {
       memoryStopped = true;
+      break;
+    }
+    if (opts.timeGuard && !opts.timeGuard()) {
+      timeStopped = true;
       break;
     }
     const active = engines
@@ -1518,8 +1564,11 @@ export function explorePortfolio(
       scores[i] =
         marginal.newRuntimeErrors * 5 + marginal.newEndings * 3 + marginal.newKnots * 2;
       if (engine.stoppedForMemory()) {
-        // The guard tripped mid-round; finish recording this round, then stop.
+        // A guard tripped mid-round; finish recording this round, then stop.
         memoryStopped = true;
+      }
+      if (engine.stoppedForTime()) {
+        timeStopped = true;
       }
       if (engine.done() && engine.exhaustive()) {
         // The reachable space is proven covered; all further work is redundant.
@@ -1528,7 +1577,7 @@ export function explorePortfolio(
       }
     }
     schedule.push({ round: schedule.length + 1, entries });
-    if (memoryStopped) break;
+    if (memoryStopped || timeStopped) break;
     const totalScore = scores.reduce((a, b) => a + b, 0);
     if (totalScore > 0) {
       const pool = 1 - minShare * engines.length;
@@ -1544,11 +1593,14 @@ export function explorePortfolio(
   // Limits report the configured budget; what was actually consumed is in
   // statesExplored and the schedule (early exit can leave budget unspent).
   merged.limits.maxStates = maxStates;
-  // When the memory guard stopped the run, memory is the true cause — the
-  // budget did not actually run out, so do not also blame maxStates.
+  // When a guard stopped the run, that guard is the true cause — the budget
+  // did not actually run out, so do not also blame maxStates.
   if (memoryStopped && !merged.exhaustive) {
     merged.truncated = true;
     merged.truncatedBy = { ...merged.truncatedBy, maxStates: false, memory: true };
+  } else if (timeStopped && !merged.exhaustive) {
+    merged.truncated = true;
+    merged.truncatedBy = { ...merged.truncatedBy, maxStates: false, time: true };
   }
   merged.schedule = schedule;
   // Per-pass lifetime telemetry, with new* replaced by the true
@@ -1620,6 +1672,7 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
     maxStates: main.truncatedBy.maxStates || other.truncatedBy.maxStates,
     beamWidth: main.truncatedBy.beamWidth || other.truncatedBy.beamWidth,
     memory: main.truncatedBy.memory || other.truncatedBy.memory,
+    time: main.truncatedBy.time || other.truncatedBy.time,
   };
   // One systematic pass finishing without truncation proves every reachable
   // state was visited, so partial-coverage flags from budget-bound sampling
@@ -1627,7 +1680,7 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
   main.exhaustive ||= other.exhaustive;
   if (main.exhaustive) {
     main.truncated = false;
-    main.truncatedBy = { maxDepth: false, maxStates: false, beamWidth: false, memory: false };
+    main.truncatedBy = { maxDepth: false, maxStates: false, beamWidth: false, memory: false, time: false };
   }
   main.externalFunctionsStubbed = [...new Set([...main.externalFunctionsStubbed, ...other.externalFunctionsStubbed])];
   main.randomnessDetected ||= other.randomnessDetected;

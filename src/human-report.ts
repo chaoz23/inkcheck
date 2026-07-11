@@ -22,6 +22,10 @@ export function truncationAdvice(
     // Memory is the binding constraint — do not suggest a bigger budget.
     return "exploration stopped early to stay under the memory guard; raise --max-old-space-size for more headroom or lower --max-states, then rerun";
   }
+  if (causes?.time) {
+    // Time is the binding constraint — a bigger budget would run out sooner.
+    return "exploration stopped at its time budget; raise --max-time, or run locally without a wall-clock limit, for broader coverage";
+  }
   if (causes?.maxDepth) {
     hints.push(
       `paths were cut at ${result.limits?.maxDepth ?? "the configured"} choices deep; raise --max-depth to follow longer trails`

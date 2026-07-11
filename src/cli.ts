@@ -43,6 +43,7 @@ Options:
   --max-states <n>   Max story states to visit, 1–100000000 (default 10000000)
   --seed <n>         Seed for the random-sampling slice, 1–4294967295 (default 1)
   --max-memory <mb>  Stop cleanly before heap use exceeds <mb> (default: 85% of the V8 heap limit)
+  --max-time <s>     Stop cleanly after <s> seconds and return a partial report (default: no time limit)
   --profile          Print the story's shape profile and suggested settings, without exploring
   --auto             Apply the shape profile: suggested depth (unless --max-depth given) and pass weights
   --next             After the check, apply the recommended escalation automatically (up to 3 reruns)
@@ -76,6 +77,7 @@ async function main() {
   let followNext = false;
   let progressMode: "auto" | "human" | "ndjson" | "off" = process.stderr.isTTY ? "auto" : "off";
   let maxMemoryMb: number | undefined;
+  let maxTimeSec: number | undefined;
   const boundedInt = (flag: string, raw: string | undefined, max: number): number => {
     const value = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
     if (!Number.isSafeInteger(value) || value < 1 || value > max) {
@@ -89,6 +91,7 @@ async function main() {
     else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 100_000_000);
     else if (arg === "--seed") seed = boundedInt(arg, args[++i], 4_294_967_295);
     else if (arg === "--max-memory") maxMemoryMb = boundedInt(arg, args[++i], 1_000_000);
+    else if (arg === "--max-time") maxTimeSec = boundedInt(arg, args[++i], 86_400);
     else if (arg === "--profile") profileOnly = true;
     else if (arg === "--auto") auto = true;
     else if (arg === "--next") followNext = true;
@@ -207,6 +210,11 @@ async function main() {
     : Math.floor(heapLimit * 0.85);
   const memoryGuard = () => process.memoryUsage().heapUsed < memoryCapBytes;
 
+  // Time guard: stop cleanly at a wall-clock deadline and hand back a partial
+  // report, rather than being killed mid-run. No deadline unless --max-time.
+  const deadline = maxTimeSec !== undefined ? Date.now() + maxTimeSec * 1000 : undefined;
+  const timeGuard = deadline !== undefined ? () => Date.now() < deadline : undefined;
+
   const runCheck = (bounds: { maxDepth?: number; maxStates?: number; seed?: number }): ExploreResult => {
     const runStates = bounds.maxStates ?? 10_000_000;
     const reproStates = minRepro && runStates > 1 ? Math.max(1, Math.floor(runStates * 0.1)) : 0;
@@ -221,6 +229,7 @@ async function main() {
       seed: bounds.seed,
       weights: profile?.suggested.weights,
       memoryGuard,
+      timeGuard,
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
@@ -243,6 +252,7 @@ async function main() {
         maxStates: reproStates,
         strategy: "bfs",
         memoryGuard,
+      timeGuard,
         preserveTurnState: semantics.usesTurns,
         preserveRandomState: semantics.usesRandomness,
         randomnessDetected: semantics.usesRandomness,
@@ -383,6 +393,10 @@ async function main() {
     if (report.truncatedBy.memory) {
       console.log(
         `⚠ stopped early at ${report.statesExplored} states to stay under the memory guard (${Math.round(memoryCapBytes / 1048576)} MB) — the results above are partial but complete as far as they go`
+      );
+    } else if (report.truncatedBy.time) {
+      console.log(
+        `⚠ stopped early at ${report.statesExplored} states after the ${maxTimeSec}s time budget — the results above are partial but complete as far as they go`
       );
     } else if (report.truncated) {
       console.log(`⚠ coverage is partial, not a proof — ${truncationAdvice(report)}`);

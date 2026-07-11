@@ -188,6 +188,10 @@ export async function runSubmission(
     }
     const root = path.join(jobDir, ...submission.root.split("/"));
     const cli = path.join(__dirname, "cli.js");
+    // Give the CLI a wall-clock budget a bit under the hard SIGKILL deadline so
+    // it stops cleanly and prints a partial report (truncatedBy.time) before the
+    // backstop kill fires; the kill only ever triggers for a genuinely wedged run.
+    const gracefulSeconds = Math.max(1, Math.ceil(config.timeoutMs / 1000) - 10);
     const args = [
       "--max-old-space-size=768",
       cli,
@@ -198,6 +202,8 @@ export async function runSubmission(
       String(submission.maxDepth),
       "--max-states",
       String(submission.maxStates),
+      "--max-time",
+      String(gracefulSeconds),
     ];
 
     const output = await new Promise<string>((resolve, reject) => {
