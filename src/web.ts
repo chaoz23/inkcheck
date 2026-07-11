@@ -328,7 +328,11 @@ export async function runSubmission(
       },
     };
   } finally {
-    fs.rmSync(jobDir, { recursive: true, force: true });
+    // Windows can briefly retain a child process handle after `close`, making
+    // immediate recursive deletion fail with EBUSY/EPERM. Node's bounded
+    // retry keeps the no-retention guarantee without turning a completed
+    // report into a flaky hosted failure.
+    fs.rmSync(jobDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
