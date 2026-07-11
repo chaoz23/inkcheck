@@ -29,6 +29,11 @@ const {
 const { recommendNextRun } = require("../dist/advice");
 const { runSubmission, webConfigFromEnv } = require("../dist/web");
 const { SubmissionError, validateSubmission } = require("../dist/web-validation");
+const {
+  capabilities,
+  inspectProject,
+  PROJECT_INSPECTION_SCHEMA_VERSION,
+} = require("../dist/discovery");
 
 const MANOR = path.join(__dirname, "..", "examples", "manor.ink");
 const BROKEN = path.join(__dirname, "..", "examples", "broken.ink");
@@ -46,6 +51,7 @@ const EXTERNAL_STORY = path.join(__dirname, "..", "examples", "external-story.in
 const CLI = path.join(__dirname, "..", "dist", "cli.js");
 const ROOT = path.join(__dirname, "..");
 const SEARCH_FIXTURES = path.join(__dirname, "fixtures", "search");
+const INSPECT_PROJECT = path.join(__dirname, "fixtures", "inspect", "project.ink");
 
 test("parseIssue extracts severity, file, line, message", () => {
   const i = parseIssue("ERROR: 'story.ink' line 42: Divert target not found: '-> nowhere'");
@@ -88,6 +94,84 @@ test("compile succeeds and returns story JSON for a valid story", async () => {
   const result = await compile(MANOR);
   assert.strictEqual(result.success, true);
   assert.ok(result.storyJson.length > 100);
+});
+
+test("capabilities explicitly reports supported and unavailable features", () => {
+  const value = capabilities();
+  assert.strictEqual(value.schemaVersion, 1);
+  assert.strictEqual(value.inkcheckVersion, "0.4.1");
+  assert.deepStrictEqual(value.searchModes, ["portfolio", "shared", "shared-variable"]);
+  assert.strictEqual(value.limits.maxStates, 100_000_000);
+  assert.strictEqual(value.features.projectInspection, true);
+  assert.strictEqual(value.features.assertions, false);
+  assert.strictEqual(value.features.goals, false);
+  assert.strictEqual(value.features.resumableSearch, false);
+});
+
+test("project inspection follows includes and returns a bounded deterministic map", () => {
+  const first = inspectProject(INSPECT_PROJECT);
+  const second = inspectProject(INSPECT_PROJECT);
+  assert.deepStrictEqual(second, first);
+  assert.strictEqual(first.schemaVersion, PROJECT_INSPECTION_SCHEMA_VERSION);
+  assert.strictEqual(first.entrypoint, "project.ink");
+  assert.deepStrictEqual(first.includes, ["chapters/market.ink"]);
+  assert.strictEqual(first.semantics.usesTurns, true);
+  assert.strictEqual(first.semantics.usesRandomness, true);
+  assert.deepStrictEqual(first.externals, ["award_badge"]);
+  assert.ok(first.knots.some((knot) => knot.name === "market" && knot.file === "chapters/market.ink"));
+  const gold = first.variables.find((item) => item.name === "gold");
+  assert.deepStrictEqual(gold.initialValue, 10);
+  assert.ok(gold.readCount >= 1);
+  assert.ok(gold.writeCount >= 1);
+  assert.strictEqual(first.recommendedNextOperation, "compile_story");
+});
+
+test("project inspection rejects missing and outside-root includes", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-inspect-"));
+  try {
+    fs.writeFileSync(path.join(tmp, "missing.ink"), "INCLUDE nope.ink\n");
+    assert.throws(() => inspectProject(path.join(tmp, "missing.ink")), /Included Ink file not found/);
+    fs.writeFileSync(path.join(tmp, "outside.ink"), "-> END\n");
+    const child = path.join(tmp, "child");
+    fs.mkdirSync(child);
+    fs.writeFileSync(path.join(child, "project.ink"), "INCLUDE ../outside.ink\n");
+    assert.throws(() => inspectProject(path.join(child, "project.ink")), /Unsafe INCLUDE/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("project inspection caps large variable inventories explicitly", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-inspect-large-"));
+  try {
+    const file = path.join(tmp, "large.ink");
+    fs.writeFileSync(
+      file,
+      Array.from({ length: 205 }, (_, index) => `VAR value_${index} = ${index}`).join("\n") +
+        "\n-> END\n"
+    );
+    const result = inspectProject(file);
+    assert.strictEqual(result.variables.length, 200);
+    assert.strictEqual(result.truncation.variables, true);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("CLI capabilities and inspect provide concise human and JSON output", () => {
+  const caps = spawnSync(process.execPath, [CLI, "capabilities", "--json"], { encoding: "utf8" });
+  assert.strictEqual(caps.status, 0, caps.stderr);
+  assert.strictEqual(JSON.parse(caps.stdout).features.projectInspection, true);
+
+  const inspected = spawnSync(process.execPath, [CLI, "inspect", INSPECT_PROJECT, "--json"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(inspected.status, 0, inspected.stderr);
+  assert.strictEqual(JSON.parse(inspected.stdout).entrypoint, "project.ink");
+
+  const human = spawnSync(process.execPath, [CLI, "inspect", INSPECT_PROJECT], { encoding: "utf8" });
+  assert.strictEqual(human.status, 0, human.stderr);
+  assert.match(human.stdout, /Next: compile the story before exploring it/);
 });
 
 test("shared search exhausts a finite variable-state lock with bounded telemetry", async () => {
@@ -1293,6 +1377,7 @@ test("release version stays synchronized across package and manifests", () => {
     "dist",
     "web",
     "docs/hosted-checker.md",
+    "docs/agent-discovery.md",
     "docs/inkjam-qa-guide.md",
     "CHANGELOG.md",
     "llms.txt",
