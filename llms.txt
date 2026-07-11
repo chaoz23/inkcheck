@@ -12,6 +12,8 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 
 `--search=shared` opts into an experimental deterministic multi-frontier engine. Deep, novelty, and seeded views share one deduplicated state graph, expand each state at most once, and retain compact parent links for repro paths. JSON pass telemetry includes unique states, peak pending states/bytes, and observed variable-state/rare-transition counts. Portfolio remains the default; variable rarity is measured but does not steer search yet.
 
+`--search=shared-variable` gives 12.5% of shared-frontier selections to uncommon observed variable snapshots and transitions. It is deterministic, mechanical, bounded, and experimental; it does not interpret variable meaning. Benchmark evidence is mixed, so neither shared mode is the default.
+
 ## Install / run
 
 - CLI: `npx -y inkcheck <story.ink>`
@@ -23,6 +25,7 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 - Skip BFS repro shortening: `npx -y inkcheck story/main.ink --no-min-repro`
 - Different random sample: `npx -y inkcheck story/main.ink --seed 2`
 - Experimental shared-state search: `npx -y inkcheck story/main.ink --search=shared`
+- Experimental variable-aware search: `npx -y inkcheck story/main.ink --search=shared-variable`
 - Show story shape + suggested settings: `npx -y inkcheck story/main.ink --profile`
 - Apply the shape profile (depth + pass weights): `npx -y inkcheck story/main.ink --auto`
 - Auto-escalate limits until nothing new is found: `npx -y inkcheck story/main.ink --next`

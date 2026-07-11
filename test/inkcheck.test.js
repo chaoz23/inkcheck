@@ -18,6 +18,7 @@ const {
   explore,
   explorePortfolio,
   exploreShared,
+  exploreSharedVariableAware,
   exploreRandom,
   exploreBeam,
   classifyUnvisitedKnots,
@@ -156,6 +157,28 @@ test("shared search reports state, memory, and time limits honestly", async () =
   assert.strictEqual(time.truncatedBy.maxStates, false);
 });
 
+test("variable-aware shared search prioritizes uncommon storylet states reproducibly", async () => {
+  const file = path.join(SEARCH_FIXTURES, "storylet-machine.ink");
+  const compiled = await compile(file);
+  const knots = scanKnots(file);
+  const options = {
+    maxDepth: 100,
+    maxStates: 100,
+    seed: 7,
+    preserveTurnState: false,
+    preserveRandomState: false,
+  };
+  const baseline = exploreShared(compiled.storyJson, knots, [], options);
+  const first = exploreSharedVariableAware(compiled.storyJson, knots, [], options);
+  const second = exploreSharedVariableAware(compiled.storyJson, knots, [], options);
+  assert.ok(first.endingsFound.length > baseline.endingsFound.length);
+  assert.deepStrictEqual(
+    first.endingsFound.map((ending) => [ending.path, ending.finalText, ending.variables]),
+    second.endingsFound.map((ending) => [ending.path, ending.finalText, ending.variables])
+  );
+  assert.match(first.passes[0].pass, /^shared:variable-aware-v1:/);
+});
+
 test("CLI shared search is opt-in and validates its mode", () => {
   const normal = spawnSync(
     process.execPath,
@@ -174,11 +197,19 @@ test("CLI shared search is opt-in and validates its mode", () => {
   const report = JSON.parse(shared.stdout);
   assert.match(report.explore.passes[0].pass, /^shared:/);
 
+  const variable = spawnSync(
+    process.execPath,
+    [CLI, MANOR, "--search=shared-variable", "--max-states", "1000", "--no-min-repro", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.ok(variable.status === 0 || variable.status === 1, variable.stderr);
+  assert.match(JSON.parse(variable.stdout).explore.passes[0].pass, /^shared:variable-aware-v1:/);
+
   const invalid = spawnSync(process.execPath, [CLI, MANOR, "--search", "nope"], {
     encoding: "utf8",
   });
   assert.strictEqual(invalid.status, 2);
-  assert.match(invalid.stderr, /--search must be portfolio or shared/);
+  assert.match(invalid.stderr, /--search must be portfolio, shared, or shared-variable/);
 });
 
 test("explore finds endings, runtime errors with repro, and unvisited knots", async () => {
