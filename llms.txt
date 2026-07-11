@@ -10,6 +10,8 @@ inkcheck itself does not use AI, machine learning, LLMs, or generative models. I
 
 The CLI uses a bounded, adaptive exploration portfolio rather than a single traversal order. Complementary passes — DFS in three orderings, a frontier-capped diversity beam, and seeded random walks — run interleaved in deterministic rounds; each round's budget shifts toward passes still producing new findings (with a per-pass floor), and the whole portfolio stops early the moment a systematic pass proves every reachable state visited. `--profile` prints a static shape profile with suggested settings; `--auto` applies them (raising depth for statically deep stories, tuning pass weights — explicit flags always win). The random slice uses a fixed default seed (`--seed`, default 1) and the beam is deterministic without a seed, so runs are reproducible; each finding's `foundBy` names the pass that discovered it, and JSON output carries the executed round schedule plus lifetime per-pass telemetry (`passes`: states explored vs granted, marginal first discoveries, dedupe hits, max depth reached, `lastDiscoveryAtState`, beam frontier stats) — the facts needed to judge which pass earned its budget and whether more budget would help. A long gap since a pass's last discovery does not prove it is finished; late discoveries after long dry spells are real. Coverage remains partial whenever the report says traversal was truncated. The default CLI/MCP state budget is 10,000,000 and the maximum accepted budget is 100,000,000; the memory guard (default 85% of the V8 heap) is what makes an ambitious budget safe, since it stops cleanly before an out-of-memory crash rather than the ceiling being the practical limiter. The hosted web checker defaults to and caps at 1,000,000 — larger jobs (up to 100M states) belong on the local CLI.
 
+`--search=shared` opts into an experimental deterministic multi-frontier engine. Deep, novelty, and seeded views share one deduplicated state graph, expand each state at most once, and retain compact parent links for repro paths. JSON pass telemetry includes unique states, peak pending states/bytes, and observed variable-state/rare-transition counts. Portfolio remains the default; variable rarity is measured but does not steer search yet.
+
 ## Install / run
 
 - CLI: `npx -y inkcheck <story.ink>`
@@ -20,6 +22,7 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 - Broader bounded check: `npx -y inkcheck story/main.ink --max-states 100000000` (paired with the memory guard; raise --max-old-space-size for headroom)
 - Skip BFS repro shortening: `npx -y inkcheck story/main.ink --no-min-repro`
 - Different random sample: `npx -y inkcheck story/main.ink --seed 2`
+- Experimental shared-state search: `npx -y inkcheck story/main.ink --search=shared`
 - Show story shape + suggested settings: `npx -y inkcheck story/main.ink --profile`
 - Apply the shape profile (depth + pass weights): `npx -y inkcheck story/main.ink --auto`
 - Auto-escalate limits until nothing new is found: `npx -y inkcheck story/main.ink --next`

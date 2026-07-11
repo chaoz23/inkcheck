@@ -17,6 +17,7 @@ const { buildHumanFindings } = require("../dist/human-report");
 const {
   explore,
   explorePortfolio,
+  exploreShared,
   exploreRandom,
   exploreBeam,
   classifyUnvisitedKnots,
@@ -43,6 +44,7 @@ const DEEP_CHAIN = path.join(__dirname, "..", "examples", "deep-chain.ink");
 const EXTERNAL_STORY = path.join(__dirname, "..", "examples", "external-story.ink");
 const CLI = path.join(__dirname, "..", "dist", "cli.js");
 const ROOT = path.join(__dirname, "..");
+const SEARCH_FIXTURES = path.join(__dirname, "fixtures", "search");
 
 test("parseIssue extracts severity, file, line, message", () => {
   const i = parseIssue("ERROR: 'story.ink' line 42: Divert target not found: '-> nowhere'");
@@ -85,6 +87,98 @@ test("compile succeeds and returns story JSON for a valid story", async () => {
   const result = await compile(MANOR);
   assert.strictEqual(result.success, true);
   assert.ok(result.storyJson.length > 100);
+});
+
+test("shared search exhausts a finite variable-state lock with bounded telemetry", async () => {
+  const file = path.join(SEARCH_FIXTURES, "combination-lock.ink");
+  const compiled = await compile(file);
+  const result = exploreShared(compiled.storyJson, scanKnots(file), [], {
+    maxDepth: 20,
+    maxStates: 1_000,
+    seed: 7,
+  });
+  assert.strictEqual(result.exhaustive, true);
+  assert.strictEqual(result.truncated, false);
+  assert.strictEqual(result.endingsFound.length, 27);
+  assert.match(result.endingsFound[0].foundBy, /^shared:/);
+  const telemetry = result.passes[0];
+  assert.ok(telemetry.uniqueStates > 0);
+  assert.ok(telemetry.peakPendingStates > 0);
+  assert.ok(telemetry.peakPendingBytes > 0);
+  assert.ok(telemetry.variableStatesObserved > 0);
+  assert.ok(telemetry.variableTransitionsObserved > 0);
+  assert.ok(telemetry.rareVariableTransitions > 0);
+});
+
+test("shared search finds the deceptive plateau failure reproducibly", async () => {
+  const file = path.join(SEARCH_FIXTURES, "deceptive-plateau.ink");
+  const compiled = await compile(file);
+  const options = {
+    maxDepth: 20,
+    maxStates: 500,
+    seed: 19,
+    preserveTurnState: false,
+    preserveRandomState: false,
+  };
+  const first = exploreShared(compiled.storyJson, scanKnots(file), [], options);
+  const second = exploreShared(compiled.storyJson, scanKnots(file), [], options);
+  const withoutByteEstimate = (result) => {
+    const copy = structuredClone(result);
+    delete copy.passes[0].peakPendingBytes;
+    return copy;
+  };
+  assert.deepStrictEqual(withoutByteEstimate(second), withoutByteEstimate(first));
+  assert.strictEqual(first.runtimeErrors.length, 1);
+  assert.ok(first.runtimeErrors[0].path.length > 0);
+  assert.match(first.runtimeErrors[0].foundBy, /^shared:/);
+});
+
+test("shared search reports state, memory, and time limits honestly", async () => {
+  const file = path.join(SEARCH_FIXTURES, "storylet-machine.ink");
+  const compiled = await compile(file);
+  const knots = scanKnots(file);
+  const budget = exploreShared(compiled.storyJson, knots, [], { maxStates: 10 });
+  assert.strictEqual(budget.truncatedBy.maxStates, true);
+  assert.strictEqual(budget.exhaustive, false);
+
+  const memory = exploreShared(compiled.storyJson, knots, [], {
+    maxStates: 10_000,
+    memoryGuard: () => false,
+  });
+  assert.strictEqual(memory.truncatedBy.memory, true);
+  assert.strictEqual(memory.truncatedBy.maxStates, false);
+
+  const time = exploreShared(compiled.storyJson, knots, [], {
+    maxStates: 10_000,
+    timeGuard: () => false,
+  });
+  assert.strictEqual(time.truncatedBy.time, true);
+  assert.strictEqual(time.truncatedBy.maxStates, false);
+});
+
+test("CLI shared search is opt-in and validates its mode", () => {
+  const normal = spawnSync(
+    process.execPath,
+    [CLI, MANOR, "--max-states", "1000", "--no-min-repro", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.ok(normal.status === 0 || normal.status === 1, normal.stderr);
+  assert.doesNotMatch(JSON.parse(normal.stdout).explore.passes[0].pass, /^shared:/);
+
+  const shared = spawnSync(
+    process.execPath,
+    [CLI, MANOR, "--search=shared", "--max-states", "1000", "--no-min-repro", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.ok(shared.status === 0 || shared.status === 1, shared.stderr);
+  const report = JSON.parse(shared.stdout);
+  assert.match(report.explore.passes[0].pass, /^shared:/);
+
+  const invalid = spawnSync(process.execPath, [CLI, MANOR, "--search", "nope"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(invalid.status, 2);
+  assert.match(invalid.stderr, /--search must be portfolio or shared/);
 });
 
 test("explore finds endings, runtime errors with repro, and unvisited knots", async () => {

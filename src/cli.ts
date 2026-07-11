@@ -20,6 +20,7 @@ import {
   classifyUnvisitedKnots,
   explore,
   explorePortfolio,
+  exploreShared,
   mergeMinRepro,
 } from "./explore";
 import { NextRunAdvice, recommendNextRun } from "./advice";
@@ -42,6 +43,7 @@ Options:
   --max-depth <n>    Max choices deep to explore, 1–1000 (default 30)
   --max-states <n>   Max story states to visit, 1–100000000 (default 10000000)
   --seed <n>         Seed for the random-sampling slice, 1–4294967295 (default 1)
+  --search <mode>    Search engine: portfolio (default) or experimental shared
   --max-memory <mb>  Stop cleanly before heap use exceeds <mb> (default: 85% of the V8 heap limit)
   --max-time <s>     Stop cleanly after <s> seconds and return a partial report (default: no time limit)
   --profile          Print the story's shape profile and suggested settings, without exploring
@@ -67,6 +69,7 @@ async function main() {
   let maxDepth: number | undefined;
   let maxStates: number | undefined;
   let seed: number | undefined;
+  let search: "portfolio" | "shared" = "portfolio";
   let strict = false;
   let asJson = false;
   let asMarkdown = false;
@@ -90,6 +93,13 @@ async function main() {
     if (arg === "--max-depth") maxDepth = boundedInt(arg, args[++i], 1_000);
     else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 100_000_000);
     else if (arg === "--seed") seed = boundedInt(arg, args[++i], 4_294_967_295);
+    else if (arg === "--search" || arg.startsWith("--search=")) {
+      const mode = arg === "--search" ? args[++i] : arg.slice("--search=".length);
+      if (mode !== "portfolio" && mode !== "shared") {
+        usage("--search must be portfolio or shared");
+      }
+      search = mode;
+    }
     else if (arg === "--max-memory") maxMemoryMb = boundedInt(arg, args[++i], 1_000_000);
     else if (arg === "--max-time") maxTimeSec = boundedInt(arg, args[++i], 86_400);
     else if (arg === "--profile") profileOnly = true;
@@ -223,7 +233,8 @@ async function main() {
     // states already spent in earlier runs.
     const statesBase = statesExplored;
     emitProgress("phase_start", { phase: "explore" });
-    let checked = explorePortfolio(compiled.storyJson!, knots, externals, {
+    const searchStory = search === "shared" ? exploreShared : explorePortfolio;
+    let checked = searchStory(compiled.storyJson!, knots, externals, {
       maxDepth: bounds.maxDepth,
       maxStates: Math.max(1, portfolioStates),
       seed: bounds.seed,
