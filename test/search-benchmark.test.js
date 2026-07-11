@@ -105,7 +105,7 @@ test("finite lock benchmark preserves exact states and proves the graph exhausti
   ]);
   assert.ok(run.summary.findings.visitedKnots.includes("vault"));
   assert.deepStrictEqual(run.summary.stateSpace.terminalVariableValues.success, {
-    "<absent>": 26,
+    false: 26,
     true: 1,
   });
 });

@@ -24,6 +24,7 @@ import {
   exploreShared,
   exploreSharedVariableAware,
   mergeMinRepro,
+  validateAssertionsForStory,
 } from "./explore";
 import { NextRunAdvice, recommendNextRun } from "./advice";
 import {
@@ -351,6 +352,12 @@ async function main() {
   const semantics = scanStorySemantics(file);
   const st = await stats(file);
   const inboundDiverts = scanInboundDiverts(file);
+  const configuredAssertions = projectConfig?.config.assertions ?? [];
+  try {
+    validateAssertionsForStory(compiled.storyJson!, knots, externals, configuredAssertions);
+  } catch (error) {
+    usage(error instanceof Error ? error.message : String(error));
+  }
   // The recommender uses the shape profile for a better deepen target even
   // when --auto was not requested; the scan is cheap and deterministic.
   const adviceProfile = profile ?? scanShapeProfile(file);
@@ -393,6 +400,7 @@ async function main() {
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
+      assertions: configuredAssertions,
       onProgress: (progress) => {
         statesExplored = statesBase + progress.statesExplored;
         emitProgress("progress", {
@@ -416,6 +424,7 @@ async function main() {
         preserveTurnState: semantics.usesTurns,
         preserveRandomState: semantics.usesRandomness,
         randomnessDetected: semantics.usesRandomness,
+        assertions: configuredAssertions,
       });
       checked = mergeMinRepro(checked, bfs);
       statesExplored = statesBase + checked.statesExplored;
@@ -531,6 +540,16 @@ async function main() {
           `    ${e.message}\n      repro: [${e.path.join(" → ")}]${e.foundBy ? ` (found by ${e.foundBy})` : ""}`
         );
     }
+    const violatedAssertions = report.assertionResults.filter((result) => result.status === "violated");
+    if (violatedAssertions.length) {
+      console.log(`✗ ${violatedAssertions.length} story assertion(s) violated:`);
+      for (const result of violatedAssertions) {
+        const violation = result.violations[0];
+        console.log(
+          `    ${result.id}${result.description ? ` — ${result.description}` : ""}\n      observed: ${JSON.stringify(violation.observedValues)}\n      repro: [${violation.path.join(" → ") || "linear"}]`
+        );
+      }
+    }
     if (report.unvisitedKnots.length) {
       console.log(
         `⚠ ${report.unvisitedKnots.length} knot(s) never visited on any explored path — unreached is not necessarily unreachable:`
@@ -578,7 +597,8 @@ async function main() {
     unvisitedKnots: report.unvisitedKnots.length,
   });
 
-  const hardFail = report.runtimeErrors.length > 0;
+  const assertionFail = report.assertionResults.some((result) => result.status === "violated");
+  const hardFail = report.runtimeErrors.length > 0 || assertionFail;
   const softFail =
     strict &&
     (compiled.warnings > 0 ||
@@ -634,11 +654,16 @@ function renderMarkdown(
 ): string {
   const complete =
     !report.truncated && report.externalFunctionsStubbed.length === 0 && !report.randomnessDetected;
-  const status = report.runtimeErrors.length
-    ? "❌ **Runtime failures found.**"
-    : complete
-      ? "✅ **Choice traversal completed within the configured limits.**"
-      : "⚠️ **Results have coverage limitations; see below.**";
+  const assertionViolations = report.assertionResults.filter((result) => result.status === "violated");
+  const status = report.runtimeErrors.length && assertionViolations.length
+    ? "❌ **Runtime and story-rule failures found.**"
+    : report.runtimeErrors.length
+      ? "❌ **Runtime failures found.**"
+      : assertionViolations.length
+        ? "❌ **Story assertion failures found.**"
+        : complete
+          ? "✅ **Choice traversal completed within the configured limits.**"
+          : "⚠️ **Results have coverage limitations; see below.**";
   const lines = [
     "# inkcheck report",
     "",
@@ -657,6 +682,7 @@ function renderMarkdown(
     `| Exhaustive | ${report.exhaustive ? "yes" : "no"} |`,
     `| Distinct terminal states | ${report.endingsFound.length} |`,
     `| Runtime errors | ${report.runtimeErrors.length} |`,
+    `| Assertion violations | ${assertionViolations.length} |`,
     `| Unvisited knots | ${report.unvisitedKnots.length} |`,
   ];
   if (report.runtimeErrors.length) {
@@ -664,6 +690,15 @@ function renderMarkdown(
     for (const error of report.runtimeErrors) {
       lines.push(
         `- ${escapeCell(error.message)} — path: ${error.path.join(" → ") || "linear"}${error.foundBy ? ` — found by \`${error.foundBy}\`` : ""}`
+      );
+    }
+  }
+  if (assertionViolations.length) {
+    lines.push("", "## Story assertion violations", "");
+    for (const result of assertionViolations) {
+      const violation = result.violations[0];
+      lines.push(
+        `- \`${result.id}\`${result.description ? ` — ${escapeCell(result.description)}` : ""}; observed \`${escapeCell(JSON.stringify(violation.observedValues))}\`; path: ${violation.path.join(" → ") || "linear"}`
       );
     }
   }
