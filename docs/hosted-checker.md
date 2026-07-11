@@ -99,9 +99,9 @@ docker compose exec -T inkcheck node dist/usage-report.js --days 30
 | Request body | 5 MiB |
 | Files | 200 |
 | Individual file | 2.5 MiB |
-| Maximum choice depth | 1,000 |
+| Maximum choice depth | 100 (real stories rarely exceed a few dozen choices deep; a single deep-loop trail at the old 1,000 could burn the whole state budget. Raise per deployment for unusually deep stories.) |
 | Maximum states | 1,000,000 (default and cap; larger jobs up to 100M states belong on the local CLI) |
-| Check timeout | 450 seconds (the checker passes `--max-time` ~10 s under this, so a slow run stops cleanly and returns a partial report; the hard kill is only a backstop for a wedged process) |
+| Check timeout | 300 seconds (the checker passes `--max-time` ~15% under this — at least 30 s of margin — so a slow run stops cleanly and returns a partial report; the hard kill is only a backstop for a wedged process) |
 | Concurrent checks | 1 |
 | Checks per client | 10 per hour |
 | Checks across the service | 60 per hour |

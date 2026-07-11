@@ -35,6 +35,15 @@ export class SubmissionError extends Error {
 export const LIMIT_HIT_MESSAGE =
   "Our bad — your story is so detailed and long that it hit our current hosted limit. Please file an issue and we’ll raise it.";
 
+// A wall-clock timeout is not a size limit: the story may be perfectly
+// ordinary but need more exploration time than the hosted budget allows. The
+// graceful --max-time stop normally returns a partial report before this hard
+// deadline fires, so this message is only for a genuinely wedged run that had
+// to be killed with no report to show. It must not blame the story's size or
+// promise that raising a limit will help.
+export const TIME_LIMIT_MESSAGE =
+  "This check ran out of time before it could return a report. The story likely needs more exploration than the hosted time budget allows — try running inkcheck locally, where you can give it a larger time and state budget.";
+
 function limitHit(message = LIMIT_HIT_MESSAGE, status = 413): SubmissionError {
   return new SubmissionError(message, status, "limit_hit");
 }

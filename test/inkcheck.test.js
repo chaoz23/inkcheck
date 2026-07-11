@@ -1131,6 +1131,31 @@ test("hosted runner returns truncated exploration as a useful partial report", a
   );
 });
 
+test("hosted runner returns a partial report when the time budget is hit, not a limit error", async () => {
+  // Regression for #71: a run that hits the wall-clock budget must hand back
+  // the partial report the engine already computed (truncatedBy.time), not the
+  // misleading "story too detailed" limit error with nothing to show. A tight
+  // hosted timeout with a large state budget forces the time budget to bind.
+  const source = require("node:fs").readFileSync(EARLY_CHOICE_GRID, "utf8");
+  const config = { ...webConfigFromEnv(), timeoutMs: 2_000 };
+  const submission = validateSubmission(
+    {
+      root: "story.ink",
+      files: { "story.ink": source },
+      authorized: true,
+      privacyAcknowledged: true,
+      maxDepth: 30,
+      maxStates: 1_000_000,
+    },
+    config
+  );
+  const result = await runSubmission(submission, config);
+  assert.strictEqual(result.report.compile.success, true);
+  assert.strictEqual(result.report.explore.truncatedBy.time, true, "time was the binding limit");
+  assert.strictEqual(result.report.explore.truncatedBy.maxStates, false);
+  assert.ok(result.meta.coverageLimitHit, "partial coverage is flagged");
+});
+
 test("hosted runner returns compile failures as reports", async () => {
   const source = require("node:fs").readFileSync(BROKEN, "utf8");
   const config = webConfigFromEnv();

@@ -12,6 +12,7 @@ import {
   HostedLimits,
   HostedSubmission,
   LIMIT_HIT_MESSAGE,
+  TIME_LIMIT_MESSAGE,
   SubmissionError,
   validateSubmission,
 } from "./web-validation";
@@ -111,11 +112,11 @@ export function webConfigFromEnv(): WebConfig {
     host: process.env.HOST ?? "127.0.0.1",
     port: integerEnv("PORT", 8080, 1, 65535),
     concurrency: integerEnv("INKCHECK_WEB_CONCURRENCY", 1, 1, 4),
-    timeoutMs: integerEnv("INKCHECK_WEB_TIMEOUT_MS", 450_000, 1_000, 900_000),
+    timeoutMs: integerEnv("INKCHECK_WEB_TIMEOUT_MS", 300_000, 1_000, 900_000),
     maxBodyBytes: integerEnv("INKCHECK_WEB_MAX_BODY_BYTES", 5_242_880, 1_024, 20_971_520),
     maxFiles: integerEnv("INKCHECK_WEB_MAX_FILES", 200, 1, 500),
     maxFileBytes: integerEnv("INKCHECK_WEB_MAX_FILE_BYTES", 2_621_440, 1_024, 10_485_760),
-    maxDepth: integerEnv("INKCHECK_WEB_MAX_DEPTH", 1_000, 1, 2_000),
+    maxDepth: integerEnv("INKCHECK_WEB_MAX_DEPTH", 100, 1, 2_000),
     maxStates: integerEnv("INKCHECK_WEB_MAX_STATES", 1_000_000, 1, 1_000_000),
     maxReportBytes: integerEnv("INKCHECK_WEB_MAX_REPORT_BYTES", 83_886_080, 65_536, 209_715_200),
     rateLimit: integerEnv("INKCHECK_WEB_RATE_LIMIT", 10, 1, 1_000),
@@ -128,6 +129,21 @@ export function webConfigFromEnv(): WebConfig {
     usageFile: process.env.INKCHECK_WEB_USAGE_FILE || undefined,
     jobTtlMs: integerEnv("INKCHECK_WEB_JOB_TTL_MS", 900_000, 60_000, 3_600_000),
   };
+}
+
+/**
+ * Wall-clock seconds handed to the CLI's own `--max-time`, kept below the hard
+ * SIGKILL deadline so the CLI can stop cleanly, finish min_repro, serialize the
+ * report, and flush stdout before the kill fires. A fixed 10s margin was too
+ * tight: on a loaded host the report (which can be several MB) did not flush in
+ * time, so the hard timer fired first and the partial report the engine had
+ * already computed was discarded with a misleading "story too detailed" error
+ * (#71). Reserve 15% of the budget, and never less than 30s.
+ */
+export function gracefulTimeoutSeconds(timeoutMs: number): number {
+  const totalSeconds = timeoutMs / 1000;
+  const margin = Math.max(30, totalSeconds * 0.15);
+  return Math.max(1, Math.floor(totalSeconds - margin));
 }
 
 function stopProcessTree(child: ChildProcess): void {
@@ -191,7 +207,7 @@ export async function runSubmission(
     // Give the CLI a wall-clock budget a bit under the hard SIGKILL deadline so
     // it stops cleanly and prints a partial report (truncatedBy.time) before the
     // backstop kill fires; the kill only ever triggers for a genuinely wedged run.
-    const gracefulSeconds = Math.max(1, Math.ceil(config.timeoutMs / 1000) - 10);
+    const gracefulSeconds = gracefulTimeoutSeconds(config.timeoutMs);
     const args = [
       "--max-old-space-size=768",
       cli,
@@ -274,8 +290,11 @@ export async function runSubmission(
         }
       });
       const timer = setTimeout(() => {
+        // The CLI's own --max-time should have stopped it and flushed a partial
+        // report well before this. Reaching here means a genuinely wedged run:
+        // kill it and say so honestly, without blaming the story's size.
         stopProcessTree(child);
-        finish(new SubmissionError(LIMIT_HIT_MESSAGE, 504, "limit_hit"));
+        finish(new SubmissionError(TIME_LIMIT_MESSAGE, 504, "limit_hit"));
       }, config.timeoutMs);
       timer.unref();
       const cancel = () => {
