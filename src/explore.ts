@@ -1,6 +1,12 @@
 import { createHash } from "crypto";
 import { Story } from "inkjs";
 import { KnotInfo } from "./inklecate";
+import {
+  rarityWeight,
+  variableChanges,
+  variableStateKey,
+  variableTransitionKey,
+} from "./search-benchmark";
 
 export interface PlaytestStep {
   text: string;
@@ -19,11 +25,17 @@ export interface PlaytestResult {
   runtimeWarnings: string[];
   /** EXTERNAL functions replaced with zero during this playtest. */
   externalFunctionsStubbed: string[];
+  /** Whether an indexed witness still follows the same shape. */
+  replayStatus: "completed" | "runtime_error" | "path_changed";
 }
 
 export interface EndingReport {
   /** Choice-text trail that led here, e.g. ["Pick the lock", "Go north"]. */
   path: string[];
+  /** Zero-based choice indices matching `path`, suitable for exact replay. */
+  choiceIndices: number[];
+  /** Transition count when this finding was first observed. */
+  firstDiscoveredAtState: number;
   finalText: string;
   variables: Record<string, unknown>;
   /** Search pass that found this ending, e.g. "dfs:last" or "random:seed=1". */
@@ -33,6 +45,8 @@ export interface EndingReport {
 export interface RuntimeErrorReport {
   message: string;
   path: string[];
+  choiceIndices: number[];
+  firstDiscoveredAtState: number;
   sourceLocation?: { file: string; line: number; approximate: boolean };
   /** Search pass that found this error, e.g. "dfs:last" or "random:seed=1". */
   foundBy?: string;
@@ -189,9 +203,11 @@ export function playtest(
 ): PlaytestResult {
   const s = makeStory(storyJson, externals);
   const steps: PlaytestStep[] = [];
+  let pathChanged = false;
   let step = continueMaximally(s);
   for (const idx of choices) {
     if (idx < 0 || idx >= s.story.currentChoices.length) {
+      pathChanged = true;
       s.errors.push(
         `Choice index ${idx} out of range (${s.story.currentChoices.length} available) after: "${step.text.trim().slice(-80)}"`
       );
@@ -218,12 +234,14 @@ export function playtest(
     runtimeErrors: s.errors,
     runtimeWarnings: s.warnings,
     externalFunctionsStubbed: [...externals],
+    replayStatus: pathChanged ? "path_changed" : s.errors.length > 0 ? "runtime_error" : "completed",
   };
 }
 
 interface Frame {
   stateJson: string;
   path: string[];
+  choiceIndices: number[];
   depth: number;
 }
 
@@ -327,6 +345,8 @@ export interface ExploreOptions {
    * a partial report at a deadline instead of being hard-killed mid-run.
    */
   timeGuard?: () => boolean;
+  /** Internal selector for the experimental variable-aware shared frontier. */
+  sharedVariableAware?: boolean;
 }
 
 export const DEFAULT_RANDOM_SEED = 1;
@@ -409,6 +429,18 @@ export interface PassTelemetry {
   peakFrontier?: number;
   /** Beam only: levels where reachable children were pruned at the width cap. */
   prunes?: number;
+  /** Shared search only: globally unique states inserted. */
+  uniqueStates?: number;
+  /** Shared search only: largest number of discovered states awaiting expansion. */
+  peakPendingStates?: number;
+  /** Shared search only: largest serialized-byte total awaiting expansion. */
+  peakPendingBytes?: number;
+  /** Shared search only: distinct variable snapshots observed. */
+  variableStatesObserved?: number;
+  /** Shared search only: distinct variable changes observed. */
+  variableTransitionsObserved?: number;
+  /** Shared search only: variable changes observed exactly once. */
+  rareVariableTransitions?: number;
 }
 
 /**
@@ -541,7 +573,7 @@ function createSearchEngine(
   // Root: continue the fresh story to the first choice point.
   const rootStep = continueMaximally(s);
   s.errors.forEach((e) =>
-    runtimeErrors.set(e, { message: e, path: [], sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
+    runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
@@ -550,6 +582,8 @@ function createSearchEngine(
     // Linear story (or immediate end).
     endings.set(rootStep.text, {
       path: [],
+      choiceIndices: [],
+      firstDiscoveredAtState: 0,
       finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
       variables: extractVariables(s.story),
       foundBy,
@@ -559,7 +593,7 @@ function createSearchEngine(
 
   const rootState = s.story.state.ToJson();
   seenStates.add(stateKey(rootState, stateSensitivity));
-  const frames: Frame[] = [{ stateJson: rootState, path: [], depth: 0 }];
+  const frames: Frame[] = [{ stateJson: rootState, path: [], choiceIndices: [], depth: 0 }];
   let head = 0; // BFS read pointer (avoids O(n) shifts)
   // Pause state: the frame currently being expanded and its choice cursor.
   let current: { frame: Frame; order: number[]; cursor: number } | null = null;
@@ -581,6 +615,8 @@ function createSearchEngine(
         runtimeErrors.set(String(e), {
           message: `State restore failed: ${e instanceof Error ? e.message : e}`,
           path: frame.path,
+          choiceIndices: frame.choiceIndices,
+          firstDiscoveredAtState: statesExplored,
           foundBy,
         });
         continue;
@@ -604,6 +640,7 @@ function createSearchEngine(
     const choice = s.story.currentChoices[i] as { text?: string; sourcePath?: string } | undefined;
     const choiceText = choice?.text ?? `#${i}`;
     const path = [...frame.path, choiceText];
+    const choiceIndices = [...frame.choiceIndices, i];
     const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
     try {
       s.story.ChooseChoiceIndex(i);
@@ -612,6 +649,8 @@ function createSearchEngine(
       runtimeErrors.set(msg, {
         message: msg,
         path,
+        choiceIndices,
+        firstDiscoveredAtState: statesExplored,
         sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
         foundBy,
       });
@@ -626,6 +665,8 @@ function createSearchEngine(
         runtimeErrors.set(msg, {
           message: msg,
           path,
+          choiceIndices,
+          firstDiscoveredAtState: statesExplored,
           sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
           foundBy,
         });
@@ -640,7 +681,7 @@ function createSearchEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
       if (!endings.has(key)) {
-        endings.set(key, { path, finalText, variables: extractVariables(s.story), foundBy });
+        endings.set(key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: extractVariables(s.story), foundBy });
         noteDiscoveryProgress();
       }
       return true;
@@ -657,7 +698,7 @@ function createSearchEngine(
       return true; // identical state: subtree already covered
     }
     seenStates.add(key);
-    frames.push({ stateJson: nextState, path, depth: frame.depth + 1 });
+    frames.push({ stateJson: nextState, path, choiceIndices, depth: frame.depth + 1 });
     return true;
   };
 
@@ -775,6 +816,604 @@ export function explore(
   return runEngineToBudget(engine, maxStates, opts);
 }
 
+interface SharedNode {
+  stateJson?: string;
+  variables?: Record<string, unknown>;
+  parent: number | null;
+  choiceText?: string;
+  choiceIndex?: number;
+  depth: number;
+}
+
+interface SharedHeapItem {
+  id: number;
+  score: number;
+  order: number;
+}
+
+class SharedMaxHeap {
+  private readonly items: SharedHeapItem[] = [];
+
+  private higher(a: SharedHeapItem, b: SharedHeapItem): boolean {
+    return a.score > b.score || (a.score === b.score && a.order < b.order);
+  }
+
+  push(item: SharedHeapItem): void {
+    const items = this.items;
+    items.push(item);
+    let index = items.length - 1;
+    while (index > 0) {
+      const parent = (index - 1) >> 1;
+      if (this.higher(items[parent], item)) break;
+      items[index] = items[parent];
+      index = parent;
+    }
+    items[index] = item;
+  }
+
+  pop(): SharedHeapItem | undefined {
+    const items = this.items;
+    if (items.length === 0) return undefined;
+    const first = items[0];
+    const last = items.pop()!;
+    if (items.length > 0) {
+      let index = 0;
+      while (true) {
+        let child = index * 2 + 1;
+        if (child >= items.length) break;
+        if (child + 1 < items.length && this.higher(items[child + 1], items[child])) {
+          child++;
+        }
+        if (this.higher(last, items[child])) break;
+        items[index] = items[child];
+        index = child;
+      }
+      items[index] = last;
+    }
+    return first;
+  }
+}
+
+/**
+ * Experimental shared-state search. Several deterministic frontier views
+ * select from one global state table, so a state referenced by multiple
+ * policies is still expanded only once. The engine is systematic when its
+ * frontier drains without a depth/resource cut, but remains opt-in while the
+ * benchmark corpus establishes where it complements the default portfolio.
+ */
+function createSharedEngine(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[],
+  opts: ExploreOptions
+): PassEngine {
+  const maxDepth = opts.maxDepth ?? 30;
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
+    throw new RangeError("maxDepth must be an integer from 1 to 1000");
+  }
+  const seed = opts.seed ?? DEFAULT_RANDOM_SEED;
+  if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff) {
+    throw new RangeError("seed must be an integer from 0 to 4294967295");
+  }
+  const variableAware = opts.sharedVariableAware ?? false;
+  const foundBy = variableAware
+    ? `shared:variable-aware-v1:seed=${seed}`
+    : `shared:deep-novelty-v1:seed=${seed}`;
+  const stateSensitivity = {
+    turns: opts.preserveTurnState ?? true,
+    randomness: opts.preserveRandomState ?? true,
+  };
+
+  const endings = new Map<string, EndingReport>();
+  const runtimeErrors = new Map<string, RuntimeErrorReport>();
+  const runtimeWarnings = new Set<string>();
+  const visitedKnots = new Set<string>();
+  const seenStates = new Set<string>();
+  const seenChoiceSets = new Set<string>();
+  const variableStateCounts = new Map<string, number>();
+  const variableTransitionCounts = new Map<string, number>();
+  const nonFunctionKnots = knots.filter((k) => !k.isFunction);
+  const nodes: SharedNode[] = [];
+  const expanded: boolean[] = [];
+  const deep: number[] = [];
+  const random: number[] = [];
+  const novelty = new SharedMaxHeap();
+  const variablePriority = new SharedMaxHeap();
+  const rng = mulberry32(seed);
+  const policies: Array<"novelty" | "deep" | "variable" | "random"> = variableAware
+    ? ["novelty", "deep", "deep", "random", "novelty", "deep", "variable", "random"]
+    : ["novelty", "deep", "deep", "random"];
+  let policyCursor = 0;
+  let insertionOrder = 0;
+  let pendingStates = 0;
+  let pendingBytes = 0;
+  let peakPendingStates = 0;
+  let peakPendingBytes = 0;
+  let statesExplored = 0;
+  let totalGranted = 0;
+  let dedupeHits = 0;
+  let maxDepthReached = 0;
+  let deepestStateDiscovered = 0;
+  let lastDiscoveryAtState: number | null = null;
+  let findingWatermark = 0;
+  let truncated = false;
+  const truncatedBy: TruncationCauses = {
+    maxDepth: false,
+    maxStates: false,
+    beamWidth: false,
+    memory: false,
+    time: false,
+  };
+  let finished = false;
+  let memoryStopped = false;
+  let timeStopped = false;
+  const memoryGuard = opts.memoryGuard;
+  const timeGuard = opts.timeGuard;
+
+  const noteDiscoveryProgress = () => {
+    const total = endings.size + runtimeErrors.size + visitedKnots.size;
+    if (total > findingWatermark) {
+      findingWatermark = total;
+      lastDiscoveryAtState = statesExplored;
+    }
+  };
+
+  const recordKnotCoverage = (session: StorySession): number => {
+    let added = 0;
+    for (const knot of nonFunctionKnots) {
+      if (visitedKnots.has(knot.name)) continue;
+      try {
+        if (session.story.state.VisitCountAtPathString(knot.name) > 0) {
+          visitedKnots.add(knot.name);
+          added++;
+        }
+      } catch {
+        /* path not addressable */
+      }
+    }
+    return added;
+  };
+
+  const witnessFor = (
+    nodeId: number,
+    extraChoice?: { text: string; index: number }
+  ): { path: string[]; choiceIndices: number[] } => {
+    const path: string[] = [];
+    const choiceIndices: number[] = [];
+    let id: number | null = nodeId;
+    while (id !== null) {
+      const node: SharedNode = nodes[id];
+      if (node.choiceText !== undefined) {
+        path.push(node.choiceText);
+        choiceIndices.push(node.choiceIndex!);
+      }
+      id = node.parent;
+    }
+    path.reverse();
+    choiceIndices.reverse();
+    if (extraChoice !== undefined) {
+      path.push(extraChoice.text);
+      choiceIndices.push(extraChoice.index);
+    }
+    return { path, choiceIndices };
+  };
+
+  const valid = (id: number | undefined): id is number =>
+    id !== undefined && !expanded[id] && nodes[id]?.stateJson !== undefined;
+
+  const addNode = (
+    stateJson: string,
+    variables: Record<string, unknown>,
+    parent: number | null,
+    choiceText: string | undefined,
+    choiceIndex: number | undefined,
+    depth: number,
+    noveltyScore: number,
+    variableScore = 0
+  ): void => {
+    const id = nodes.length;
+    nodes.push({ stateJson, variables, parent, choiceText, choiceIndex, depth });
+    expanded.push(false);
+    deep.push(id);
+    random.push(id);
+    novelty.push({
+      id,
+      score: noveltyScore * 1_000_000 + depth,
+      order: insertionOrder++,
+    });
+    if (variableAware) {
+      variablePriority.push({
+        id,
+        score: variableScore * 1_000_000 + noveltyScore * 1_000 + depth,
+        order: insertionOrder++,
+      });
+    }
+    pendingStates++;
+    pendingBytes += stateJson.length;
+    peakPendingStates = Math.max(peakPendingStates, pendingStates);
+    peakPendingBytes = Math.max(peakPendingBytes, pendingBytes);
+  };
+
+  const takeDeep = (): number | undefined => {
+    while (deep.length > 0) {
+      const id = deep.pop();
+      if (valid(id)) return id;
+    }
+    return undefined;
+  };
+
+  const takeNovelty = (): number | undefined => {
+    while (true) {
+      const item = novelty.pop();
+      if (!item) return undefined;
+      if (valid(item.id)) return item.id;
+    }
+  };
+
+  const takeRandom = (): number | undefined => {
+    while (random.length > 0) {
+      const index = Math.floor(rng() * random.length);
+      const id = random[index];
+      random[index] = random[random.length - 1];
+      random.pop();
+      if (valid(id)) return id;
+    }
+    return undefined;
+  };
+
+  const takeVariable = (): number | undefined => {
+    while (true) {
+      const item = variablePriority.pop();
+      if (!item) return undefined;
+      if (valid(item.id)) return item.id;
+    }
+  };
+
+  const takeNext = (): number | undefined => {
+    for (let attempt = 0; attempt < policies.length; attempt++) {
+      const policy = policies[policyCursor++ % policies.length];
+      const id = policy === "deep"
+        ? takeDeep()
+        : policy === "random"
+          ? takeRandom()
+          : policy === "variable"
+            ? takeVariable()
+            : takeNovelty();
+      if (id !== undefined) return id;
+    }
+    return takeNovelty() ?? takeVariable() ?? takeDeep() ?? takeRandom();
+  };
+
+  const session = makeStory(storyJson, externals);
+  const resetSession = () => {
+    session.errors.length = 0;
+    session.warnings.length = 0;
+  };
+
+  const rootStep = continueMaximally(session);
+  session.errors.forEach((message) =>
+    runtimeErrors.set(message, {
+      message,
+      path: [],
+      choiceIndices: [],
+      firstDiscoveredAtState: 0,
+      sourceLocation: sourceLocationForRuntimeError(message, knots),
+      foundBy,
+    })
+  );
+  session.warnings.forEach((warning) => runtimeWarnings.add(warning));
+  recordKnotCoverage(session);
+  const rootVariables = extractVariables(session.story);
+  variableStateCounts.set(variableStateKey(rootVariables), 1);
+
+  if (rootStep.choicesOffered.length === 0) {
+    if (session.errors.length === 0) {
+      const finalText = rootStep.text.trim().split(/\n/).slice(-3).join("\n");
+      endings.set(`${finalText}|${JSON.stringify(rootVariables)}`, {
+        path: [],
+        choiceIndices: [],
+        firstDiscoveredAtState: 0,
+        finalText,
+        variables: rootVariables,
+        foundBy,
+      });
+    }
+    finished = true;
+  } else {
+    const rootState = session.story.state.ToJson();
+    seenStates.add(stateKey(rootState, stateSensitivity));
+    seenChoiceSets.add(rootStep.choicesOffered.slice().sort().join("\u0001"));
+    addNode(rootState, rootVariables, null, undefined, undefined, 0, 1);
+  }
+  noteDiscoveryProgress();
+
+  interface SharedChoice {
+    index: number;
+    text: string;
+    sourcePath?: string;
+  }
+  let current: { nodeId: number; choices: SharedChoice[]; cursor: number } | null = null;
+
+  const finishCurrent = () => {
+    if (!current) return;
+    const node = nodes[current.nodeId];
+    node.stateJson = undefined;
+    node.variables = undefined;
+    current = null;
+  };
+
+  const advance = (): boolean => {
+    while (!current) {
+      const nodeId = takeNext();
+      if (nodeId === undefined) {
+        finished = true;
+        return false;
+      }
+      const node = nodes[nodeId];
+      expanded[nodeId] = true;
+      pendingStates--;
+      pendingBytes -= node.stateJson!.length;
+      resetSession();
+      try {
+        session.story.state.LoadJson(node.stateJson!);
+      } catch (error) {
+        const message = `State restore failed: ${error instanceof Error ? error.message : error}`;
+        runtimeErrors.set(message, {
+          message,
+          ...witnessFor(nodeId),
+          firstDiscoveredAtState: statesExplored,
+          foundBy,
+        });
+        node.stateJson = undefined;
+        node.variables = undefined;
+        noteDiscoveryProgress();
+        continue;
+      }
+      current = {
+        nodeId,
+        choices: session.story.currentChoices.map(
+          (choice: { text?: string; sourcePath?: string }, index: number) => ({
+            index,
+            text: choice.text ?? `#${index}`,
+            sourcePath: choice.sourcePath,
+          })
+        ),
+        cursor: 0,
+      };
+      if (current.choices.length === 0) finishCurrent();
+    }
+
+    const active = current;
+    const node = nodes[active.nodeId];
+    const choice = active.choices[active.cursor++];
+    const lastChoice = active.cursor >= active.choices.length;
+    const finishIfLast = () => {
+      if (lastChoice) finishCurrent();
+    };
+    resetSession();
+    session.story.state.LoadJson(node.stateJson!);
+    const witness = witnessFor(active.nodeId, { text: choice.text, index: choice.index });
+    const { path, choiceIndices } = witness;
+    const choiceLocation = sourceLocationForChoiceSourcePath(choice.sourcePath, knots);
+    try {
+      session.story.ChooseChoiceIndex(choice.index);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      runtimeErrors.set(message, {
+        message,
+        path,
+        choiceIndices,
+        firstDiscoveredAtState: statesExplored,
+        sourceLocation: sourceLocationForRuntimeError(message, knots) ?? choiceLocation,
+        foundBy,
+      });
+      noteDiscoveryProgress();
+      finishIfLast();
+      return true;
+    }
+
+    const step = continueMaximally(session);
+    statesExplored++;
+    maxDepthReached = Math.max(maxDepthReached, path.length);
+    session.errors.forEach((message) => {
+      if (!runtimeErrors.has(message)) {
+        runtimeErrors.set(message, {
+          message,
+          path,
+          choiceIndices,
+          firstDiscoveredAtState: statesExplored,
+          sourceLocation: sourceLocationForRuntimeError(message, knots) ?? choiceLocation,
+          foundBy,
+        });
+      }
+    });
+    session.warnings.forEach((warning) => runtimeWarnings.add(warning));
+    const newKnots = recordKnotCoverage(session);
+    const nextVariables = extractVariables(session.story);
+    const variableState = variableStateKey(nextVariables);
+    const previousVariableStateObservations = variableStateCounts.get(variableState) ?? 0;
+    const newVariableState = previousVariableStateObservations === 0;
+    variableStateCounts.set(variableState, previousVariableStateObservations + 1);
+    const changes = variableChanges(node.variables ?? {}, nextVariables);
+    let rarestTransitionWeight = 0;
+    for (const change of changes) {
+      const key = variableTransitionKey(change);
+      const previousObservations = variableTransitionCounts.get(key) ?? 0;
+      rarestTransitionWeight = Math.max(rarestTransitionWeight, rarityWeight(previousObservations));
+      variableTransitionCounts.set(key, previousObservations + 1);
+    }
+    noteDiscoveryProgress();
+
+    if (session.errors.length > 0) {
+      finishIfLast();
+      return true;
+    }
+
+    const ended = !session.story.canContinue && session.story.currentChoices.length === 0;
+    if (ended) {
+      const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
+      const key = `${finalText}|${JSON.stringify(nextVariables)}`;
+      if (!endings.has(key)) {
+        endings.set(key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: nextVariables, foundBy });
+        noteDiscoveryProgress();
+      }
+      finishIfLast();
+      return true;
+    }
+
+    if (path.length >= maxDepth) {
+      truncated = true;
+      truncatedBy.maxDepth = true;
+      finishIfLast();
+      return true;
+    }
+
+    const nextState = session.story.state.ToJson();
+    const key = stateKey(nextState, stateSensitivity);
+    if (seenStates.has(key)) {
+      dedupeHits++;
+      finishIfLast();
+      return true;
+    }
+    seenStates.add(key);
+    const choiceSet = session.story.currentChoices
+      .map((offered: { text?: string; sourcePath?: string }) => offered.sourcePath ?? offered.text ?? "")
+      .sort()
+      .join("\u0001");
+    const newChoiceSet = !seenChoiceSets.has(choiceSet);
+    seenChoiceSets.add(choiceSet);
+    let noveltyScore = newKnots * 8 + (newVariableState ? 4 : 0) + (newChoiceSet ? 2 : 0);
+    const stateRarity = 3 * rarityWeight(previousVariableStateObservations);
+    const transitionRarity = changes.length > 0 ? 3 * rarestTransitionWeight : 0;
+    const variableScore = Math.min(6, stateRarity + transitionRarity);
+    if (path.length > deepestStateDiscovered) {
+      deepestStateDiscovered = path.length;
+      noveltyScore++;
+    }
+    addNode(
+      nextState,
+      nextVariables,
+      active.nodeId,
+      choice.text,
+      choice.index,
+      path.length,
+      noveltyScore,
+      variableScore
+    );
+    finishIfLast();
+    return true;
+  };
+
+  const done = () => finished || (!current && pendingStates === 0);
+
+  const buildResult = (): ExploreResult => ({
+    statesExplored,
+    endingsFound: [...endings.values()],
+    runtimeErrors: [...runtimeErrors.values()],
+    runtimeWarnings: [...runtimeWarnings],
+    unvisitedKnots: nonFunctionKnots
+      .filter((knot) => !visitedKnots.has(knot.name))
+      .map(({ name, file, line }) => ({ name, file, line })),
+    visitedKnots: [...visitedKnots],
+    externalFunctionsStubbed: [...externals],
+    randomnessDetected: opts.randomnessDetected ?? false,
+    truncated,
+    truncatedBy,
+    exhaustive: done() && !truncated,
+    limits: { maxDepth, maxStates: totalGranted, seed },
+  });
+
+  return {
+    label: foundBy,
+    systematic: true,
+    run(grant: number): number {
+      totalGranted += grant;
+      const start = statesExplored;
+      let sinceGuard = 0;
+      while (statesExplored - start < grant) {
+        if ((memoryGuard || timeGuard) && ++sinceGuard >= 512) {
+          sinceGuard = 0;
+          if (memoryGuard && !memoryGuard()) {
+            memoryStopped = true;
+            break;
+          }
+          if (timeGuard && !timeGuard()) {
+            timeStopped = true;
+            break;
+          }
+        }
+        if (!advance()) break;
+      }
+      return statesExplored - start;
+    },
+    done,
+    exhaustive: () => done() && !truncated,
+    stoppedForMemory: () => memoryStopped,
+    stoppedForTime: () => timeStopped,
+    snapshot: buildResult,
+    finalize(): ExploreResult {
+      if (memoryStopped) {
+        truncated = true;
+        truncatedBy.memory = true;
+      } else if (timeStopped) {
+        truncated = true;
+        truncatedBy.time = true;
+      } else if (!done()) {
+        truncated = true;
+        truncatedBy.maxStates = true;
+      }
+      return buildResult();
+    },
+    telemetry(): PassTelemetry {
+      return {
+        pass: foundBy,
+        systematic: true,
+        statesExplored,
+        granted: totalGranted,
+        endingsFound: endings.size,
+        runtimeErrorsFound: runtimeErrors.size,
+        knotsVisited: visitedKnots.size,
+        newEndings: endings.size,
+        newKnots: visitedKnots.size,
+        newRuntimeErrors: runtimeErrors.size,
+        dedupeHits,
+        maxDepthReached,
+        lastDiscoveryAtState,
+        truncatedBy: { ...truncatedBy },
+        exhaustive: done() && !truncated,
+        uniqueStates: seenStates.size,
+        peakPendingStates,
+        peakPendingBytes,
+        variableStatesObserved: variableStateCounts.size,
+        variableTransitionsObserved: variableTransitionCounts.size,
+        rareVariableTransitions: [...variableTransitionCounts.values()].filter((count) => count === 1).length,
+      };
+    },
+  };
+}
+
+export function exploreShared(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {}
+): ExploreResult {
+  const maxStates = opts.maxStates ?? 100_000;
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 100_000_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 100000000");
+  }
+  return runEngineToBudget(createSharedEngine(storyJson, knots, externals, opts), maxStates, opts);
+}
+
+export function exploreSharedVariableAware(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {}
+): ExploreResult {
+  return exploreShared(storyJson, knots, externals, { ...opts, sharedVariableAware: true });
+}
+
 /** Deterministic PRNG (mulberry32) so random exploration stays reproducible in CI. */
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -846,7 +1485,7 @@ function createRandomEngine(
 
   const rootStep = continueMaximally(s);
   s.errors.forEach((e) =>
-    runtimeErrors.set(e, { message: e, path: [], sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
+    runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
@@ -857,6 +1496,8 @@ function createRandomEngine(
   if (linear && s.errors.length === 0) {
     endings.set(rootStep.text, {
       path: [],
+      choiceIndices: [],
+      firstDiscoveredAtState: 0,
       finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
       variables: extractVariables(s.story),
       foundBy,
@@ -868,6 +1509,7 @@ function createRandomEngine(
   // Pause state: the walk in progress. The pooled story instance holds the
   // live mid-walk position between grants; only this engine touches it.
   let walkPath: string[] | null = null;
+  let walkChoiceIndices: number[] | null = null;
 
   /** Take one transition of the current (or a fresh) walk. */
   const advance = (): void => {
@@ -875,10 +1517,12 @@ function createRandomEngine(
       resetSession();
       s.story.state.LoadJson(rootState);
       walkPath = [];
+      walkChoiceIndices = [];
     }
     const numChoices = s.story.currentChoices.length;
     if (numChoices === 0) {
       walkPath = null;
+      walkChoiceIndices = null;
       return;
     }
     const i = Math.floor(rng() * numChoices);
@@ -886,6 +1530,7 @@ function createRandomEngine(
     const choiceText = choice?.text ?? `#${i}`;
     const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
     walkPath.push(choiceText);
+    walkChoiceIndices!.push(i);
     // Count the transition attempt up front so failing walks still consume
     // budget and the sampling loop always terminates.
     statesExplored++;
@@ -895,16 +1540,17 @@ function createRandomEngine(
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (!runtimeErrors.has(msg)) {
-        runtimeErrors.set(msg, { message: msg, path: [...walkPath], sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+        runtimeErrors.set(msg, { message: msg, path: [...walkPath], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
       }
       noteDiscoveryProgress();
       walkPath = null;
+      walkChoiceIndices = null;
       return;
     }
     const step = continueMaximally(s);
     s.errors.forEach((msg) => {
       if (!runtimeErrors.has(msg)) {
-        runtimeErrors.set(msg, { message: msg, path: [...walkPath!], sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+        runtimeErrors.set(msg, { message: msg, path: [...walkPath!], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
       }
     });
     s.warnings.forEach((w) => runtimeWarnings.add(w));
@@ -912,6 +1558,7 @@ function createRandomEngine(
     noteDiscoveryProgress();
     if (s.errors.length > 0) {
       walkPath = null;
+      walkChoiceIndices = null;
       return;
     }
     const ended = !s.story.canContinue && s.story.currentChoices.length === 0;
@@ -919,16 +1566,18 @@ function createRandomEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
       if (!endings.has(key)) {
-        endings.set(key, { path: [...walkPath], finalText, variables: extractVariables(s.story), foundBy });
+        endings.set(key, { path: [...walkPath], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, finalText, variables: extractVariables(s.story), foundBy });
         noteDiscoveryProgress();
       }
       walkPath = null;
+      walkChoiceIndices = null;
       return;
     }
     if (walkPath.length >= maxDepth) {
       truncated = true;
       truncatedBy.maxDepth = true;
       walkPath = null;
+      walkChoiceIndices = null;
       return;
     }
     resetSession();
@@ -1124,7 +1773,7 @@ function createBeamEngine(
 
   const rootStep = continueMaximally(s);
   s.errors.forEach((e) =>
-    runtimeErrors.set(e, { message: e, path: [], sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
+    runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
@@ -1132,6 +1781,7 @@ function createBeamEngine(
   interface BeamFrame {
     stateJson: string;
     path: string[];
+    choiceIndices: number[];
   }
   interface BeamChild {
     frame: BeamFrame;
@@ -1152,6 +1802,8 @@ function createBeamEngine(
     if (s.errors.length === 0) {
       endings.set(rootStep.text, {
         path: [],
+        choiceIndices: [],
+        firstDiscoveredAtState: 0,
         finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
         variables: extractVariables(s.story),
         foundBy,
@@ -1163,7 +1815,7 @@ function createBeamEngine(
     seenStates.add(stateKey(rootState, stateSensitivity));
     seenVarSignatures.add(JSON.stringify(extractVariables(s.story)));
     seenChoiceSets.add(rootStep.choicesOffered.slice().sort().join(""));
-    frontier = [{ stateJson: rootState, path: [] }];
+    frontier = [{ stateJson: rootState, path: [], choiceIndices: [] }];
     peakFrontier = 1;
   }
   noteDiscoveryProgress();
@@ -1237,13 +1889,14 @@ function createBeamEngine(
     const choice = s.story.currentChoices[i] as { text?: string; sourcePath?: string } | undefined;
     const choiceText = choice?.text ?? `#${i}`;
     const path = [...frame.path, choiceText];
+    const choiceIndices = [...frame.choiceIndices, i];
     const choiceLocation = sourceLocationForChoiceSourcePath(choice?.sourcePath, knots);
     try {
       s.story.ChooseChoiceIndex(i);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (!runtimeErrors.has(msg)) {
-        runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+        runtimeErrors.set(msg, { message: msg, path, choiceIndices, firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
       }
       noteDiscoveryProgress();
       return true;
@@ -1254,7 +1907,7 @@ function createBeamEngine(
     const knotsBefore = visitedKnots.size;
     s.errors.forEach((msg) => {
       if (!runtimeErrors.has(msg)) {
-        runtimeErrors.set(msg, { message: msg, path, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
+        runtimeErrors.set(msg, { message: msg, path, choiceIndices, firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
       }
     });
     s.warnings.forEach((w) => runtimeWarnings.add(w));
@@ -1268,7 +1921,7 @@ function createBeamEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(extractVariables(s.story));
       if (!endings.has(key)) {
-        endings.set(key, { path, finalText, variables: extractVariables(s.story), foundBy });
+        endings.set(key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: extractVariables(s.story), foundBy });
         noteDiscoveryProgress();
       }
       return true;
@@ -1300,7 +1953,7 @@ function createBeamEngine(
       score += 2;
       seenChoiceSets.add(choiceSet);
     }
-    children.push({ frame: { stateJson: nextState, path }, score, varSig });
+    children.push({ frame: { stateJson: nextState, path, choiceIndices }, score, varSig });
     return true;
   };
 
@@ -1518,6 +2171,13 @@ export function explorePortfolio(
   const seenEndings = new Set<string>();
   const seenKnots = new Set<string>();
   const seenErrors = new Set<string>();
+  // Live progress reports portfolio-wide cumulative discoveries, not a single
+  // pass's snapshot. Per-pass snapshots are each correct but not comparable
+  // across the interleaved rounds, so a naive relay makes the counts bounce
+  // (endings/errors drop, unvisited knots climb) as passes alternate. The
+  // dedup sets above are monotonic by construction, so we drive progress from
+  // them: endings/errors only grow, and unvisited knots only shrink.
+  const totalNonFunctionKnots = knots.filter((k) => !k.isFunction).length;
   const marginalTotals = engines.map(() => ({ endings: 0, knots: 0, errors: 0 }));
   let currentWeights = [...engineWeights];
   let remaining = maxStates;
@@ -1550,8 +2210,14 @@ export function explorePortfolio(
       const consumed = grants[a] > 0 ? engine.run(grants[a]) : 0;
       remaining -= consumed;
       const snapshot = engine.snapshot();
-      opts.onProgress?.(progressFromSnapshot(engine.label, maxStates - remaining, snapshot));
       const marginal = countMarginalFindings(snapshot, seenEndings, seenKnots, seenErrors);
+      opts.onProgress?.({
+        pass: engine.label,
+        statesExplored: maxStates - remaining,
+        endingsFound: seenEndings.size,
+        runtimeErrorsFound: seenErrors.size,
+        unvisitedKnots: totalNonFunctionKnots - seenKnots.size,
+      });
       marginalTotals[i].endings += marginal.newEndings;
       marginalTotals[i].knots += marginal.newKnots;
       marginalTotals[i].errors += marginal.newRuntimeErrors;
@@ -1641,6 +2307,8 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
     const match = other.runtimeErrors.find((e) => e.message === err.message);
     if (match && match.path.length < err.path.length) {
       err.path = match.path;
+      err.choiceIndices = match.choiceIndices;
+      err.firstDiscoveredAtState = match.firstDiscoveredAtState;
       err.foundBy = match.foundBy;
     }
   }
@@ -1649,6 +2317,8 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
     const match = otherEndings.get(endingKey(end));
     if (match && match.path.length < end.path.length) {
       end.path = match.path;
+      end.choiceIndices = match.choiceIndices;
+      end.firstDiscoveredAtState = match.firstDiscoveredAtState;
       end.foundBy = match.foundBy;
     }
   }

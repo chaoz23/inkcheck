@@ -42,6 +42,8 @@
     "web",
     "docs/inkjam-qa-guide.md",
     "docs/hosted-checker.md",
+    "docs/agent-discovery.md",
+    "docs/report-schema-v1.md",
     "CHANGELOG.md",
     "llms.txt",
     "server.json",

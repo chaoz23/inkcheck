@@ -17,6 +17,8 @@ const { buildHumanFindings } = require("../dist/human-report");
 const {
   explore,
   explorePortfolio,
+  exploreShared,
+  exploreSharedVariableAware,
   exploreRandom,
   exploreBeam,
   classifyUnvisitedKnots,
@@ -27,6 +29,11 @@ const {
 const { recommendNextRun } = require("../dist/advice");
 const { runSubmission, webConfigFromEnv } = require("../dist/web");
 const { SubmissionError, validateSubmission } = require("../dist/web-validation");
+const {
+  capabilities,
+  inspectProject,
+  PROJECT_INSPECTION_SCHEMA_VERSION,
+} = require("../dist/discovery");
 
 const MANOR = path.join(__dirname, "..", "examples", "manor.ink");
 const BROKEN = path.join(__dirname, "..", "examples", "broken.ink");
@@ -43,6 +50,9 @@ const DEEP_CHAIN = path.join(__dirname, "..", "examples", "deep-chain.ink");
 const EXTERNAL_STORY = path.join(__dirname, "..", "examples", "external-story.ink");
 const CLI = path.join(__dirname, "..", "dist", "cli.js");
 const ROOT = path.join(__dirname, "..");
+const SEARCH_FIXTURES = path.join(__dirname, "fixtures", "search");
+const INSPECT_PROJECT = path.join(__dirname, "fixtures", "inspect", "project.ink");
+const DUPLICATE_CHOICE_TEXT = path.join(__dirname, "fixtures", "duplicate-choice-text.ink");
 
 test("parseIssue extracts severity, file, line, message", () => {
   const i = parseIssue("ERROR: 'story.ink' line 42: Divert target not found: '-> nowhere'");
@@ -87,6 +97,291 @@ test("compile succeeds and returns story JSON for a valid story", async () => {
   assert.ok(result.storyJson.length > 100);
 });
 
+test("capabilities explicitly reports supported and unavailable features", () => {
+  const value = capabilities();
+  assert.strictEqual(value.schemaVersion, 1);
+  assert.strictEqual(value.inkcheckVersion, "0.4.1");
+  assert.deepStrictEqual(value.searchModes, ["portfolio", "shared", "shared-variable"]);
+  assert.strictEqual(value.limits.maxStates, 100_000_000);
+  assert.strictEqual(value.features.projectInspection, true);
+  assert.strictEqual(value.schemas.report, 1);
+  assert.strictEqual(value.features.indexedWitnesses, true);
+  assert.strictEqual(value.features.assertions, false);
+  assert.strictEqual(value.features.goals, false);
+  assert.strictEqual(value.features.resumableSearch, false);
+});
+
+test("project inspection follows includes and returns a bounded deterministic map", () => {
+  const first = inspectProject(INSPECT_PROJECT);
+  const second = inspectProject(INSPECT_PROJECT);
+  assert.deepStrictEqual(second, first);
+  assert.strictEqual(first.schemaVersion, PROJECT_INSPECTION_SCHEMA_VERSION);
+  assert.strictEqual(first.entrypoint, "project.ink");
+  assert.deepStrictEqual(first.includes, ["chapters/market.ink"]);
+  assert.strictEqual(first.semantics.usesTurns, true);
+  assert.strictEqual(first.semantics.usesRandomness, true);
+  assert.deepStrictEqual(first.externals, ["award_badge"]);
+  assert.ok(first.knots.some((knot) => knot.name === "market" && knot.file === "chapters/market.ink"));
+  const gold = first.variables.find((item) => item.name === "gold");
+  assert.deepStrictEqual(gold.initialValue, 10);
+  assert.ok(gold.readCount >= 1);
+  assert.ok(gold.writeCount >= 1);
+  assert.strictEqual(first.recommendedNextOperation, "compile_story");
+});
+
+test("project inspection rejects missing and outside-root includes", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-inspect-"));
+  try {
+    fs.writeFileSync(path.join(tmp, "missing.ink"), "INCLUDE nope.ink\n");
+    assert.throws(() => inspectProject(path.join(tmp, "missing.ink")), /Included Ink file not found/);
+    fs.writeFileSync(path.join(tmp, "outside.ink"), "-> END\n");
+    const child = path.join(tmp, "child");
+    fs.mkdirSync(child);
+    fs.writeFileSync(path.join(child, "project.ink"), "INCLUDE ../outside.ink\n");
+    assert.throws(() => inspectProject(path.join(child, "project.ink")), /Unsafe INCLUDE/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("project inspection caps large variable inventories explicitly", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-inspect-large-"));
+  try {
+    const file = path.join(tmp, "large.ink");
+    fs.writeFileSync(
+      file,
+      Array.from({ length: 205 }, (_, index) => `VAR value_${index} = ${index}`).join("\n") +
+        "\n-> END\n"
+    );
+    const result = inspectProject(file);
+    assert.strictEqual(result.variables.length, 200);
+    assert.strictEqual(result.truncation.variables, true);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("CLI capabilities and inspect provide concise human and JSON output", () => {
+  const caps = spawnSync(process.execPath, [CLI, "capabilities", "--json"], { encoding: "utf8" });
+  assert.strictEqual(caps.status, 0, caps.stderr);
+  assert.strictEqual(JSON.parse(caps.stdout).features.projectInspection, true);
+
+  const inspected = spawnSync(process.execPath, [CLI, "inspect", INSPECT_PROJECT, "--json"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(inspected.status, 0, inspected.stderr);
+  assert.strictEqual(JSON.parse(inspected.stdout).entrypoint, "project.ink");
+
+  const human = spawnSync(process.execPath, [CLI, "inspect", INSPECT_PROJECT], { encoding: "utf8" });
+  assert.strictEqual(human.status, 0, human.stderr);
+  assert.match(human.stdout, /Next: compile the story before exploring it/);
+});
+
+test("indexed witnesses disambiguate duplicate choice text and replay exactly", async () => {
+  const compiled = await compile(DUPLICATE_CHOICE_TEXT);
+  const result = explore(compiled.storyJson, scanKnots(DUPLICATE_CHOICE_TEXT), [], {
+    maxStates: 20,
+    preserveTurnState: false,
+    preserveRandomState: false,
+  });
+  assert.strictEqual(result.endingsFound.length, 1);
+  assert.strictEqual(result.runtimeErrors.length, 1);
+  assert.deepStrictEqual(result.endingsFound[0].path, ["Continue"]);
+  assert.deepStrictEqual(result.runtimeErrors[0].path, ["Continue"]);
+  assert.notDeepStrictEqual(
+    result.endingsFound[0].choiceIndices,
+    result.runtimeErrors[0].choiceIndices
+  );
+  const replay = playtest(compiled.storyJson, result.runtimeErrors[0].choiceIndices);
+  assert.strictEqual(replay.replayStatus, "runtime_error");
+  assert.match(replay.runtimeErrors.join("\n"), /ran out of content/);
+  const changed = playtest(compiled.storyJson, [99]);
+  assert.strictEqual(changed.replayStatus, "path_changed");
+});
+
+test("every exploration engine preserves aligned indexed witnesses", async () => {
+  const compiled = await compile(DUPLICATE_CHOICE_TEXT);
+  const knots = scanKnots(DUPLICATE_CHOICE_TEXT);
+  const options = {
+    maxStates: 100,
+    seed: 3,
+    preserveTurnState: false,
+    preserveRandomState: false,
+  };
+  for (const run of [
+    () => explore(compiled.storyJson, knots, [], options),
+    () => exploreRandom(compiled.storyJson, knots, [], options),
+    () => exploreBeam(compiled.storyJson, knots, [], options),
+    () => exploreShared(compiled.storyJson, knots, [], options),
+    () => exploreSharedVariableAware(compiled.storyJson, knots, [], options),
+    () => explorePortfolio(compiled.storyJson, knots, [], options),
+  ]) {
+    const result = run();
+    const findings = [...result.endingsFound, ...result.runtimeErrors];
+    assert.ok(findings.length > 0);
+    for (const finding of findings) {
+      assert.strictEqual(finding.choiceIndices.length, finding.path.length);
+      assert.ok(finding.choiceIndices.every((index) => Number.isInteger(index) && index >= 0));
+      assert.ok(Number.isInteger(finding.firstDiscoveredAtState));
+    }
+  }
+});
+
+test("versioned JSON reports have stable identities and exact replay instructions", () => {
+  const run = (extra = []) => spawnSync(
+    process.execPath,
+    [CLI, CONTENT_EXHAUSTION, "--max-states", "100", "--json", ...extra],
+    { encoding: "utf8" }
+  );
+  const first = JSON.parse(run().stdout);
+  const second = JSON.parse(run().stdout);
+  assert.strictEqual(first.schemaVersion, 1);
+  assert.strictEqual(first.inkcheckVersion, "0.4.1");
+  assert.strictEqual(first.storyFingerprint.value, second.storyFingerprint.value);
+  assert.strictEqual(first.explore.runtimeErrors[0].id, second.explore.runtimeErrors[0].id);
+  assert.strictEqual(first.explore.runtimeErrors[0].kind, "runtime.content_exhaustion");
+  assert.deepStrictEqual(
+    first.explore.runtimeErrors[0].replay.choices,
+    first.explore.runtimeErrors[0].choiceIndices
+  );
+  assert.strictEqual(first.explore.runtimeErrors[0].replay.tool, "playtest_story");
+  assert.strictEqual(first.effectiveConfiguration.search, "portfolio");
+
+  const depthLimited = spawnSync(
+    process.execPath,
+    [CLI, DEEP_CHAIN, "--max-depth", "1", "--max-states", "100", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(JSON.parse(depthLimited.stdout).bindingLimit, "maxDepth");
+
+  const broken = spawnSync(process.execPath, [CLI, BROKEN, "--json"], { encoding: "utf8" });
+  const compileFailure = JSON.parse(broken.stdout);
+  assert.strictEqual(compileFailure.schemaVersion, 1);
+  assert.ok(compileFailure.compile.issues.every((issue) => issue.id && issue.kind));
+});
+
+test("shared search exhausts a finite variable-state lock with bounded telemetry", async () => {
+  const file = path.join(SEARCH_FIXTURES, "combination-lock.ink");
+  const compiled = await compile(file);
+  const result = exploreShared(compiled.storyJson, scanKnots(file), [], {
+    maxDepth: 20,
+    maxStates: 1_000,
+    seed: 7,
+  });
+  assert.strictEqual(result.exhaustive, true);
+  assert.strictEqual(result.truncated, false);
+  assert.strictEqual(result.endingsFound.length, 27);
+  assert.match(result.endingsFound[0].foundBy, /^shared:/);
+  const telemetry = result.passes[0];
+  assert.ok(telemetry.uniqueStates > 0);
+  assert.ok(telemetry.peakPendingStates > 0);
+  assert.ok(telemetry.peakPendingBytes > 0);
+  assert.ok(telemetry.variableStatesObserved > 0);
+  assert.ok(telemetry.variableTransitionsObserved > 0);
+  assert.ok(telemetry.rareVariableTransitions > 0);
+});
+
+test("shared search finds the deceptive plateau failure reproducibly", async () => {
+  const file = path.join(SEARCH_FIXTURES, "deceptive-plateau.ink");
+  const compiled = await compile(file);
+  const options = {
+    maxDepth: 20,
+    maxStates: 500,
+    seed: 19,
+    preserveTurnState: false,
+    preserveRandomState: false,
+  };
+  const first = exploreShared(compiled.storyJson, scanKnots(file), [], options);
+  const second = exploreShared(compiled.storyJson, scanKnots(file), [], options);
+  const withoutByteEstimate = (result) => {
+    const copy = structuredClone(result);
+    delete copy.passes[0].peakPendingBytes;
+    return copy;
+  };
+  assert.deepStrictEqual(withoutByteEstimate(second), withoutByteEstimate(first));
+  assert.strictEqual(first.runtimeErrors.length, 1);
+  assert.ok(first.runtimeErrors[0].path.length > 0);
+  assert.match(first.runtimeErrors[0].foundBy, /^shared:/);
+});
+
+test("shared search reports state, memory, and time limits honestly", async () => {
+  const file = path.join(SEARCH_FIXTURES, "storylet-machine.ink");
+  const compiled = await compile(file);
+  const knots = scanKnots(file);
+  const budget = exploreShared(compiled.storyJson, knots, [], { maxStates: 10 });
+  assert.strictEqual(budget.truncatedBy.maxStates, true);
+  assert.strictEqual(budget.exhaustive, false);
+
+  const memory = exploreShared(compiled.storyJson, knots, [], {
+    maxStates: 10_000,
+    memoryGuard: () => false,
+  });
+  assert.strictEqual(memory.truncatedBy.memory, true);
+  assert.strictEqual(memory.truncatedBy.maxStates, false);
+
+  const time = exploreShared(compiled.storyJson, knots, [], {
+    maxStates: 10_000,
+    timeGuard: () => false,
+  });
+  assert.strictEqual(time.truncatedBy.time, true);
+  assert.strictEqual(time.truncatedBy.maxStates, false);
+});
+
+test("variable-aware shared search prioritizes uncommon storylet states reproducibly", async () => {
+  const file = path.join(SEARCH_FIXTURES, "storylet-machine.ink");
+  const compiled = await compile(file);
+  const knots = scanKnots(file);
+  const options = {
+    maxDepth: 100,
+    maxStates: 100,
+    seed: 7,
+    preserveTurnState: false,
+    preserveRandomState: false,
+  };
+  const baseline = exploreShared(compiled.storyJson, knots, [], options);
+  const first = exploreSharedVariableAware(compiled.storyJson, knots, [], options);
+  const second = exploreSharedVariableAware(compiled.storyJson, knots, [], options);
+  assert.ok(first.endingsFound.length > baseline.endingsFound.length);
+  assert.deepStrictEqual(
+    first.endingsFound.map((ending) => [ending.path, ending.finalText, ending.variables]),
+    second.endingsFound.map((ending) => [ending.path, ending.finalText, ending.variables])
+  );
+  assert.match(first.passes[0].pass, /^shared:variable-aware-v1:/);
+});
+
+test("CLI shared search is opt-in and validates its mode", () => {
+  const normal = spawnSync(
+    process.execPath,
+    [CLI, MANOR, "--max-states", "1000", "--no-min-repro", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.ok(normal.status === 0 || normal.status === 1, normal.stderr);
+  assert.doesNotMatch(JSON.parse(normal.stdout).explore.passes[0].pass, /^shared:/);
+
+  const shared = spawnSync(
+    process.execPath,
+    [CLI, MANOR, "--search=shared", "--max-states", "1000", "--no-min-repro", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.ok(shared.status === 0 || shared.status === 1, shared.stderr);
+  const report = JSON.parse(shared.stdout);
+  assert.match(report.explore.passes[0].pass, /^shared:/);
+
+  const variable = spawnSync(
+    process.execPath,
+    [CLI, MANOR, "--search=shared-variable", "--max-states", "1000", "--no-min-repro", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.ok(variable.status === 0 || variable.status === 1, variable.stderr);
+  assert.match(JSON.parse(variable.stdout).explore.passes[0].pass, /^shared:variable-aware-v1:/);
+
+  const invalid = spawnSync(process.execPath, [CLI, MANOR, "--search", "nope"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(invalid.status, 2);
+  assert.match(invalid.stderr, /--search must be portfolio, shared, or shared-variable/);
+});
+
 test("explore finds endings, runtime errors with repro, and unvisited knots", async () => {
   const compiled = await compile(MANOR);
   const report = explore(compiled.storyJson, scanKnots(MANOR));
@@ -101,6 +396,49 @@ test("explore finds endings, runtime errors with repro, and unvisited knots", as
     ["treasure_vault"]
   );
   assert.strictEqual(report.truncated, false);
+});
+
+test("portfolio progress counts move monotonically across interleaved passes", async () => {
+  // A branchy story with a budget below its reachable space, so no pass proves
+  // exhaustion early and the scheduler round-robins every pass — the exact
+  // condition under which per-pass snapshot counts used to bounce.
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  const externals = scanExternals(EARLY_CHOICE_GRID);
+  const events = [];
+  // progressIntervalMs: 0 emits on every chunk, so the interleaving of passes
+  // is fully exercised.
+  const report = explorePortfolio(compiled.storyJson, knots, externals, {
+    maxStates: 400,
+    progressIntervalMs: 0,
+    onProgress: (p) => events.push(p),
+  });
+  assert.ok(events.length > 5, "expected many interleaved progress events");
+  assert.ok(
+    new Set(events.map((e) => e.pass)).size > 1,
+    "expected more than one pass to report, or interleaving is untested"
+  );
+  for (let i = 1; i < events.length; i++) {
+    const prev = events[i - 1];
+    const cur = events[i];
+    assert.ok(
+      cur.endingsFound >= prev.endingsFound,
+      `endings must not decrease: ${prev.endingsFound} -> ${cur.endingsFound}`
+    );
+    assert.ok(
+      cur.runtimeErrorsFound >= prev.runtimeErrorsFound,
+      `runtime errors must not decrease: ${prev.runtimeErrorsFound} -> ${cur.runtimeErrorsFound}`
+    );
+    assert.ok(
+      cur.unvisitedKnots <= prev.unvisitedKnots,
+      `unvisited knots must not increase: ${prev.unvisitedKnots} -> ${cur.unvisitedKnots}`
+    );
+  }
+  // The live counts converge to the final portfolio report.
+  const last = events.at(-1);
+  assert.strictEqual(last.endingsFound, report.endingsFound.length);
+  assert.strictEqual(last.runtimeErrorsFound, report.runtimeErrors.length);
+  assert.strictEqual(last.unvisitedKnots, report.unvisitedKnots.length);
 });
 
 test("BFS strategy reaches the same endings", async () => {
@@ -1193,6 +1531,8 @@ test("release version stays synchronized across package and manifests", () => {
     "dist",
     "web",
     "docs/hosted-checker.md",
+    "docs/agent-discovery.md",
+    "docs/report-schema-v1.md",
     "docs/inkjam-qa-guide.md",
     "CHANGELOG.md",
     "llms.txt",
