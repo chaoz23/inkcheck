@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { parseDocument } from "yaml";
+import { AssertionDefinition, parseAssertionDefinitions } from "./assertions";
 
 export const CONFIG_SCHEMA_VERSION = 1;
 export const DEFAULT_CONFIG_FILE = "inkcheck.yml";
@@ -20,6 +21,7 @@ export interface InkcheckProjectConfig {
   schemaVersion: 1;
   entrypoint: string;
   ci?: InkcheckCiConfig;
+  assertions?: AssertionDefinition[];
 }
 
 export interface LoadedProjectConfig {
@@ -70,7 +72,7 @@ export function parseProjectConfig(source: string): InkcheckProjectConfig {
   if (!record(value)) throw new ConfigValidationError(["root: expected a mapping"]);
 
   const issues: string[] = [];
-  unknownKeys(value, ["schemaVersion", "entrypoint", "ci"], "root", issues);
+  unknownKeys(value, ["schemaVersion", "entrypoint", "ci", "assertions"], "root", issues);
   if (value.schemaVersion !== CONFIG_SCHEMA_VERSION) {
     issues.push(`schemaVersion: expected ${CONFIG_SCHEMA_VERSION}`);
   }
@@ -118,12 +120,14 @@ export function parseProjectConfig(source: string): InkcheckProjectConfig {
       }
     }
   }
+  const assertions = parseAssertionDefinitions(value.assertions, "assertions", issues);
 
   if (issues.length) throw new ConfigValidationError(issues);
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     entrypoint: (value.entrypoint as string).split("\\").join("/"),
     ...(ci ? { ci } : {}),
+    ...(assertions ? { assertions } : {}),
   };
 }
 
