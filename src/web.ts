@@ -73,6 +73,19 @@ export type SubmissionRunner = (
   options?: SubmissionRunOptions
 ) => Promise<HostedCheckResponse>;
 
+async function removeJobDirectory(jobDir: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await fs.promises.rm(jobDir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt >= 50 || !["EBUSY", "ENOTEMPTY", "EPERM"].includes(code ?? "")) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+}
+
 function integerEnv(name: string, fallback: number, minimum: number, maximum: number): number {
   const raw = process.env[name];
   if (raw === undefined) return fallback;
@@ -329,10 +342,9 @@ export async function runSubmission(
     };
   } finally {
     // Windows can briefly retain a child process handle after `close`, making
-    // immediate recursive deletion fail with EBUSY/EPERM. Node's bounded
-    // retry keeps the no-retention guarantee without turning a completed
-    // report into a flaky hosted failure.
-    fs.rmSync(jobDir, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
+    // immediate recursive deletion fail with EBUSY/EPERM. A bounded explicit
+    // retry keeps the no-retention guarantee across Node and OS versions.
+    await removeJobDirectory(jobDir);
   }
 }
 
