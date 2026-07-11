@@ -130,6 +130,8 @@ Four tools for AI agents working on ink stories:
 
 | Tool | What it does |
 | --- | --- |
+| `inkcheck_capabilities` | Versioned schemas, limits, search modes, and explicit feature availability |
+| `inspect_story` | Source-only project map: includes, shape, semantics, externals, knots, and variables |
 | `compile_story` | Structured compile issues (severity, file, line) |
 | `story_stats` | Word/knot/choice counts + full knot list with locations |
 | `playtest_story` | Play one scripted choice path headlessly; returns transcript, tags, variables, errors |
@@ -156,9 +158,13 @@ The intended loop for an agent editing a story: edit `.ink` → `compile_story` 
 ## CLI
 
 ```
+inkcheck capabilities [--json]
+inkcheck inspect <story.ink> [--json]
 inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--search=portfolio|shared|shared-variable] [--auto] [--profile] [--next] [--no-min-repro] [--strict] [--progress=auto|human|ndjson|off] [--human|--json|--markdown]
 inkcheck mcp    # start the MCP server on stdio
 ```
+
+`inkcheck capabilities --json` lets agents check schema versions, limits, search modes, and explicit supported or unavailable features before relying on them. `inkcheck inspect story.ink --json` performs deterministic source-only discovery without compiling or exploring: it follows project-local includes and returns a bounded map of story shape, semantics, externals, knots/functions, and variable declarations/reads/writes. See the [agent discovery contract](docs/agent-discovery.md).
 
 `--max-depth` accepts 1–1,000 and `--max-states` accepts 1–100,000,000, with a **default budget of 10,000,000**. These hard ceilings prevent malformed automation inputs from accidentally disabling the exploration bounds. The default is deliberately ambitious because three things make a big budget safe rather than reckless: a fully-explorable story early-exits the moment a systematic pass proves it exhaustive (so small stories still finish in a handful of states), the memory guard stops cleanly before an out-of-memory crash, and progress reporting lets you watch and interrupt a long run. A large, non-exhaustive story will therefore *use* that budget — see [Performance and memory](#performance-and-memory) before running one in CI, and pin a smaller `--max-states` there if a bounded runtime matters more than depth of coverage.
 

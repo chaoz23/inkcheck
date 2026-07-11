@@ -18,6 +18,14 @@
     "machineOutput": "--json",
     "flags": [
       {
+        "flag": "capabilities [--json]",
+        "description": "Report versioned schemas, limits, search modes, and explicit supported/unavailable features without requiring a story."
+      },
+      {
+        "flag": "inspect <story.ink> [--json]",
+        "description": "Return a deterministic bounded source-only project map without compiling or exploring."
+      },
+      {
         "flag": "--json",
         "description": "Emit the full report as a single JSON object on stdout. Use this for programmatic consumption."
       },
@@ -80,6 +88,8 @@
       "2": "Usage error — no story file given or bad arguments."
     },
     "jsonSchema": {
+      "capabilities": "{ schemaVersion, inkcheckVersion, schemas: {report, config, projectInspection}, limits, searchModes, features: {projectInspection, indexedWitnesses, assertions, goals, resumableSearch} }",
+      "inspection": "{ schemaVersion, inkcheckVersion, entrypoint, includes, shape, semantics, externals, knots, variables, truncation, recommendedNextOperation }",
       "compile": "{ success: bool, issues: [{severity, file, line, message}], errors: int, warnings: int, todos: int }",
       "stats": "{ words, knots, stitches, functions, choices, gathers, diverts }",
       "explore": "{ statesExplored: int, endingsFound: [{path: string[], finalText, variables, foundBy?}], runtimeErrors: [{message, path, sourceLocation?, foundBy?}], unvisitedKnots: [{name, file, line, inboundDiverts?, staticOrphanCandidate?}], externalFunctionsStubbed: string[], randomnessDetected: bool, truncated: bool, truncatedBy: {maxDepth: bool, maxStates: bool, beamWidth: bool, memory: bool, time: bool}, exhaustive: bool, limits: {maxDepth, maxStates, seed?}, schedule?: [{round: int, entries: [{pass, granted, consumed, newEndings, newKnots, newRuntimeErrors}]}], passes?: [{pass, systematic, statesExplored, granted, endingsFound, runtimeErrorsFound, knotsVisited, newEndings, newKnots, newRuntimeErrors, dedupeHits, maxDepthReached, lastDiscoveryAtState, truncatedBy, exhaustive, peakFrontier?, prunes?, uniqueStates?, peakPendingStates?, peakPendingBytes?, variableStatesObserved?, variableTransitionsObserved?, rareVariableTransitions?}] }",
@@ -108,6 +118,14 @@
       }
     },
     "tools": [
+      {
+        "name": "inkcheck_capabilities",
+        "description": "Versioned schemas, limits, search modes, and explicit feature availability."
+      },
+      {
+        "name": "inspect_story",
+        "description": "Bounded source-only project map; does not compile or explore."
+      },
       {
         "name": "compile_story",
         "description": "Structured compile issues (severity, file, line)."

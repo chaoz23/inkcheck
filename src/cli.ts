@@ -32,12 +32,20 @@ import {
   unvisitedKnotHint,
 } from "./human-report";
 import { HumanProgressRenderer } from "./terminal-progress";
+import {
+  capabilities,
+  inspectProject,
+  renderCapabilitiesHuman,
+  renderInspectionHuman,
+} from "./discovery";
 
 function usage(message?: string): never {
   if (message) console.error(`inkcheck: ${message}\n`);
   console.error(`inkcheck — CI for ink stories
 
 Usage: inkcheck <story.ink> [options]
+       inkcheck capabilities [--json]
+       inkcheck inspect <story.ink> [--json]
        inkcheck mcp              Start the MCP server (stdio)
 
 Options:
@@ -66,6 +74,16 @@ async function main() {
     require("./server");
     return;
   }
+  if (args[0] === "capabilities") {
+    if (args.some((arg, index) => index > 0 && arg !== "--json")) {
+      usage("capabilities accepts only --json");
+    }
+    const value = capabilities();
+    console.log(args.includes("--json") ? JSON.stringify(value, null, 2) : renderCapabilitiesHuman(value));
+    return;
+  }
+  const inspectMode = args[0] === "inspect";
+  if (inspectMode) args.shift();
   let file: string | undefined;
   let maxDepth: number | undefined;
   let maxStates: number | undefined;
@@ -80,6 +98,7 @@ async function main() {
   let auto = false;
   let followNext = false;
   let progressMode: "auto" | "human" | "ndjson" | "off" = process.stderr.isTTY ? "auto" : "off";
+  let progressSpecified = false;
   let maxMemoryMb: number | undefined;
   let maxTimeSec: number | undefined;
   const boundedInt = (flag: string, raw: string | undefined, max: number): number => {
@@ -112,6 +131,7 @@ async function main() {
     else if (arg === "--markdown") asMarkdown = true;
     else if (arg === "--no-min-repro") minRepro = false;
     else if (arg.startsWith("--progress=")) {
+      progressSpecified = true;
       const mode = arg.slice("--progress=".length);
       if (!["auto", "human", "ndjson", "off"].includes(mode)) {
         usage("--progress must be auto, human, ndjson, or off");
@@ -126,6 +146,22 @@ async function main() {
   if (!file) usage("missing story file");
   if ([asJson, asMarkdown, asHuman].filter(Boolean).length > 1) {
     usage("--json, --markdown, and --human cannot be used together");
+  }
+
+  if (inspectMode) {
+    if (asMarkdown || asHuman || profileOnly || auto || followNext || strict || !minRepro ||
+        maxDepth !== undefined || maxStates !== undefined || seed !== undefined ||
+        maxMemoryMb !== undefined || maxTimeSec !== undefined || search !== "portfolio" ||
+        progressSpecified) {
+      usage("inspect accepts a story path and optional --json only");
+    }
+    try {
+      const value = inspectProject(file);
+      console.log(asJson ? JSON.stringify(value, null, 2) : renderInspectionHuman(value));
+      return;
+    } catch (error) {
+      usage(error instanceof Error ? error.message : String(error));
+    }
   }
 
   if (profileOnly) {

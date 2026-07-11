@@ -7,6 +7,7 @@ import { compile, stats, scanKnots, scanExternals, scanInboundDiverts, scanShape
 import { classifyUnvisitedKnots, playtest, explore, explorePortfolio, exploreShared, exploreSharedVariableAware, mergeMinRepro } from "./explore";
 import { recommendNextRun } from "./advice";
 import { VERSION } from "./version";
+import { capabilities, inspectProject } from "./discovery";
 
 const server = new McpServer({ name: "inkcheck", version: VERSION });
 
@@ -17,6 +18,34 @@ function json(result: unknown) {
 function err(message: string) {
   return { content: [{ type: "text" as const, text: message }], isError: true };
 }
+
+server.registerTool(
+  "inkcheck_capabilities",
+  {
+    description:
+      "Return Inkcheck's versioned schemas, limits, search modes, and explicit supported/unsupported feature flags. Call this before relying on optional functionality.",
+    inputSchema: {},
+  },
+  async () => json(capabilities())
+);
+
+server.registerTool(
+  "inspect_story",
+  {
+    description:
+      "Inspect an Ink project from source without compiling or exploring it. Returns a bounded project map with includes, shape, semantics, externals, knots, variables, and the recommended next operation.",
+    inputSchema: {
+      file: z.string().describe("Path to the root .ink file"),
+    },
+  },
+  async ({ file }) => {
+    try {
+      return json(inspectProject(file));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
 
 server.registerTool(
   "compile_story",
