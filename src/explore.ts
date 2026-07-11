@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { Story } from "inkjs";
 import { KnotInfo } from "./inklecate";
+import { variableChanges, variableStateKey, variableTransitionKey } from "./search-benchmark";
 
 export interface PlaytestStep {
   text: string;
@@ -409,6 +410,18 @@ export interface PassTelemetry {
   peakFrontier?: number;
   /** Beam only: levels where reachable children were pruned at the width cap. */
   prunes?: number;
+  /** Shared search only: globally unique states inserted. */
+  uniqueStates?: number;
+  /** Shared search only: largest number of discovered states awaiting expansion. */
+  peakPendingStates?: number;
+  /** Shared search only: largest serialized-byte total awaiting expansion. */
+  peakPendingBytes?: number;
+  /** Shared search only: distinct variable snapshots observed. */
+  variableStatesObserved?: number;
+  /** Shared search only: distinct variable changes observed. */
+  variableTransitionsObserved?: number;
+  /** Shared search only: variable changes observed exactly once. */
+  rareVariableTransitions?: number;
 }
 
 /**
@@ -773,6 +786,523 @@ export function explore(
   }
   const engine = createSearchEngine(storyJson, knots, externals, opts);
   return runEngineToBudget(engine, maxStates, opts);
+}
+
+interface SharedNode {
+  stateJson?: string;
+  variables?: Record<string, unknown>;
+  parent: number | null;
+  choiceText?: string;
+  depth: number;
+}
+
+interface SharedHeapItem {
+  id: number;
+  score: number;
+  order: number;
+}
+
+class SharedMaxHeap {
+  private readonly items: SharedHeapItem[] = [];
+
+  private higher(a: SharedHeapItem, b: SharedHeapItem): boolean {
+    return a.score > b.score || (a.score === b.score && a.order < b.order);
+  }
+
+  push(item: SharedHeapItem): void {
+    const items = this.items;
+    items.push(item);
+    let index = items.length - 1;
+    while (index > 0) {
+      const parent = (index - 1) >> 1;
+      if (this.higher(items[parent], item)) break;
+      items[index] = items[parent];
+      index = parent;
+    }
+    items[index] = item;
+  }
+
+  pop(): SharedHeapItem | undefined {
+    const items = this.items;
+    if (items.length === 0) return undefined;
+    const first = items[0];
+    const last = items.pop()!;
+    if (items.length > 0) {
+      let index = 0;
+      while (true) {
+        let child = index * 2 + 1;
+        if (child >= items.length) break;
+        if (child + 1 < items.length && this.higher(items[child + 1], items[child])) {
+          child++;
+        }
+        if (this.higher(last, items[child])) break;
+        items[index] = items[child];
+        index = child;
+      }
+      items[index] = last;
+    }
+    return first;
+  }
+}
+
+/**
+ * Experimental shared-state search. Several deterministic frontier views
+ * select from one global state table, so a state referenced by multiple
+ * policies is still expanded only once. The engine is systematic when its
+ * frontier drains without a depth/resource cut, but remains opt-in while the
+ * benchmark corpus establishes where it complements the default portfolio.
+ */
+function createSharedEngine(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[],
+  opts: ExploreOptions
+): PassEngine {
+  const maxDepth = opts.maxDepth ?? 30;
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
+    throw new RangeError("maxDepth must be an integer from 1 to 1000");
+  }
+  const seed = opts.seed ?? DEFAULT_RANDOM_SEED;
+  if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff) {
+    throw new RangeError("seed must be an integer from 0 to 4294967295");
+  }
+  const foundBy = `shared:deep-novelty-v1:seed=${seed}`;
+  const stateSensitivity = {
+    turns: opts.preserveTurnState ?? true,
+    randomness: opts.preserveRandomState ?? true,
+  };
+
+  const endings = new Map<string, EndingReport>();
+  const runtimeErrors = new Map<string, RuntimeErrorReport>();
+  const runtimeWarnings = new Set<string>();
+  const visitedKnots = new Set<string>();
+  const seenStates = new Set<string>();
+  const seenChoiceSets = new Set<string>();
+  const seenVariableStates = new Set<string>();
+  const variableTransitionCounts = new Map<string, number>();
+  const nonFunctionKnots = knots.filter((k) => !k.isFunction);
+  const nodes: SharedNode[] = [];
+  const expanded: boolean[] = [];
+  const deep: number[] = [];
+  const random: number[] = [];
+  const novelty = new SharedMaxHeap();
+  const rng = mulberry32(seed);
+  const policies = ["novelty", "deep", "deep", "random"] as const;
+  let policyCursor = 0;
+  let insertionOrder = 0;
+  let pendingStates = 0;
+  let pendingBytes = 0;
+  let peakPendingStates = 0;
+  let peakPendingBytes = 0;
+  let statesExplored = 0;
+  let totalGranted = 0;
+  let dedupeHits = 0;
+  let maxDepthReached = 0;
+  let deepestStateDiscovered = 0;
+  let lastDiscoveryAtState: number | null = null;
+  let findingWatermark = 0;
+  let truncated = false;
+  const truncatedBy: TruncationCauses = {
+    maxDepth: false,
+    maxStates: false,
+    beamWidth: false,
+    memory: false,
+    time: false,
+  };
+  let finished = false;
+  let memoryStopped = false;
+  let timeStopped = false;
+  const memoryGuard = opts.memoryGuard;
+  const timeGuard = opts.timeGuard;
+
+  const noteDiscoveryProgress = () => {
+    const total = endings.size + runtimeErrors.size + visitedKnots.size;
+    if (total > findingWatermark) {
+      findingWatermark = total;
+      lastDiscoveryAtState = statesExplored;
+    }
+  };
+
+  const recordKnotCoverage = (session: StorySession): number => {
+    let added = 0;
+    for (const knot of nonFunctionKnots) {
+      if (visitedKnots.has(knot.name)) continue;
+      try {
+        if (session.story.state.VisitCountAtPathString(knot.name) > 0) {
+          visitedKnots.add(knot.name);
+          added++;
+        }
+      } catch {
+        /* path not addressable */
+      }
+    }
+    return added;
+  };
+
+  const pathFor = (nodeId: number, extraChoice?: string): string[] => {
+    const path: string[] = [];
+    let id: number | null = nodeId;
+    while (id !== null) {
+      const node: SharedNode = nodes[id];
+      if (node.choiceText !== undefined) path.push(node.choiceText);
+      id = node.parent;
+    }
+    path.reverse();
+    if (extraChoice !== undefined) path.push(extraChoice);
+    return path;
+  };
+
+  const valid = (id: number | undefined): id is number =>
+    id !== undefined && !expanded[id] && nodes[id]?.stateJson !== undefined;
+
+  const addNode = (
+    stateJson: string,
+    variables: Record<string, unknown>,
+    parent: number | null,
+    choiceText: string | undefined,
+    depth: number,
+    noveltyScore: number
+  ): void => {
+    const id = nodes.length;
+    nodes.push({ stateJson, variables, parent, choiceText, depth });
+    expanded.push(false);
+    deep.push(id);
+    random.push(id);
+    novelty.push({
+      id,
+      score: noveltyScore * 1_000_000 + depth,
+      order: insertionOrder++,
+    });
+    pendingStates++;
+    pendingBytes += stateJson.length;
+    peakPendingStates = Math.max(peakPendingStates, pendingStates);
+    peakPendingBytes = Math.max(peakPendingBytes, pendingBytes);
+  };
+
+  const takeDeep = (): number | undefined => {
+    while (deep.length > 0) {
+      const id = deep.pop();
+      if (valid(id)) return id;
+    }
+    return undefined;
+  };
+
+  const takeNovelty = (): number | undefined => {
+    while (true) {
+      const item = novelty.pop();
+      if (!item) return undefined;
+      if (valid(item.id)) return item.id;
+    }
+  };
+
+  const takeRandom = (): number | undefined => {
+    while (random.length > 0) {
+      const index = Math.floor(rng() * random.length);
+      const id = random[index];
+      random[index] = random[random.length - 1];
+      random.pop();
+      if (valid(id)) return id;
+    }
+    return undefined;
+  };
+
+  const takeNext = (): number | undefined => {
+    for (let attempt = 0; attempt < policies.length; attempt++) {
+      const policy = policies[policyCursor++ % policies.length];
+      const id = policy === "deep" ? takeDeep() : policy === "random" ? takeRandom() : takeNovelty();
+      if (id !== undefined) return id;
+    }
+    return takeNovelty() ?? takeDeep() ?? takeRandom();
+  };
+
+  const session = makeStory(storyJson, externals);
+  const resetSession = () => {
+    session.errors.length = 0;
+    session.warnings.length = 0;
+  };
+
+  const rootStep = continueMaximally(session);
+  session.errors.forEach((message) =>
+    runtimeErrors.set(message, {
+      message,
+      path: [],
+      sourceLocation: sourceLocationForRuntimeError(message, knots),
+      foundBy,
+    })
+  );
+  session.warnings.forEach((warning) => runtimeWarnings.add(warning));
+  recordKnotCoverage(session);
+  const rootVariables = extractVariables(session.story);
+  seenVariableStates.add(variableStateKey(rootVariables));
+
+  if (rootStep.choicesOffered.length === 0) {
+    if (session.errors.length === 0) {
+      const finalText = rootStep.text.trim().split(/\n/).slice(-3).join("\n");
+      endings.set(`${finalText}|${JSON.stringify(rootVariables)}`, {
+        path: [],
+        finalText,
+        variables: rootVariables,
+        foundBy,
+      });
+    }
+    finished = true;
+  } else {
+    const rootState = session.story.state.ToJson();
+    seenStates.add(stateKey(rootState, stateSensitivity));
+    seenChoiceSets.add(rootStep.choicesOffered.slice().sort().join("\u0001"));
+    addNode(rootState, rootVariables, null, undefined, 0, 1);
+  }
+  noteDiscoveryProgress();
+
+  interface SharedChoice {
+    index: number;
+    text: string;
+    sourcePath?: string;
+  }
+  let current: { nodeId: number; choices: SharedChoice[]; cursor: number } | null = null;
+
+  const finishCurrent = () => {
+    if (!current) return;
+    const node = nodes[current.nodeId];
+    node.stateJson = undefined;
+    node.variables = undefined;
+    current = null;
+  };
+
+  const advance = (): boolean => {
+    while (!current) {
+      const nodeId = takeNext();
+      if (nodeId === undefined) {
+        finished = true;
+        return false;
+      }
+      const node = nodes[nodeId];
+      expanded[nodeId] = true;
+      pendingStates--;
+      pendingBytes -= node.stateJson!.length;
+      resetSession();
+      try {
+        session.story.state.LoadJson(node.stateJson!);
+      } catch (error) {
+        const message = `State restore failed: ${error instanceof Error ? error.message : error}`;
+        runtimeErrors.set(message, { message, path: pathFor(nodeId), foundBy });
+        node.stateJson = undefined;
+        node.variables = undefined;
+        noteDiscoveryProgress();
+        continue;
+      }
+      current = {
+        nodeId,
+        choices: session.story.currentChoices.map(
+          (choice: { text?: string; sourcePath?: string }, index: number) => ({
+            index,
+            text: choice.text ?? `#${index}`,
+            sourcePath: choice.sourcePath,
+          })
+        ),
+        cursor: 0,
+      };
+      if (current.choices.length === 0) finishCurrent();
+    }
+
+    const active = current;
+    const node = nodes[active.nodeId];
+    const choice = active.choices[active.cursor++];
+    const lastChoice = active.cursor >= active.choices.length;
+    const finishIfLast = () => {
+      if (lastChoice) finishCurrent();
+    };
+    resetSession();
+    session.story.state.LoadJson(node.stateJson!);
+    const path = pathFor(active.nodeId, choice.text);
+    const choiceLocation = sourceLocationForChoiceSourcePath(choice.sourcePath, knots);
+    try {
+      session.story.ChooseChoiceIndex(choice.index);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      runtimeErrors.set(message, {
+        message,
+        path,
+        sourceLocation: sourceLocationForRuntimeError(message, knots) ?? choiceLocation,
+        foundBy,
+      });
+      noteDiscoveryProgress();
+      finishIfLast();
+      return true;
+    }
+
+    const step = continueMaximally(session);
+    statesExplored++;
+    maxDepthReached = Math.max(maxDepthReached, path.length);
+    session.errors.forEach((message) => {
+      if (!runtimeErrors.has(message)) {
+        runtimeErrors.set(message, {
+          message,
+          path,
+          sourceLocation: sourceLocationForRuntimeError(message, knots) ?? choiceLocation,
+          foundBy,
+        });
+      }
+    });
+    session.warnings.forEach((warning) => runtimeWarnings.add(warning));
+    const newKnots = recordKnotCoverage(session);
+    const nextVariables = extractVariables(session.story);
+    const variableState = variableStateKey(nextVariables);
+    const newVariableState = !seenVariableStates.has(variableState);
+    seenVariableStates.add(variableState);
+    for (const change of variableChanges(node.variables ?? {}, nextVariables)) {
+      const key = variableTransitionKey(change);
+      variableTransitionCounts.set(key, (variableTransitionCounts.get(key) ?? 0) + 1);
+    }
+    noteDiscoveryProgress();
+
+    if (session.errors.length > 0) {
+      finishIfLast();
+      return true;
+    }
+
+    const ended = !session.story.canContinue && session.story.currentChoices.length === 0;
+    if (ended) {
+      const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
+      const key = `${finalText}|${JSON.stringify(nextVariables)}`;
+      if (!endings.has(key)) {
+        endings.set(key, { path, finalText, variables: nextVariables, foundBy });
+        noteDiscoveryProgress();
+      }
+      finishIfLast();
+      return true;
+    }
+
+    if (path.length >= maxDepth) {
+      truncated = true;
+      truncatedBy.maxDepth = true;
+      finishIfLast();
+      return true;
+    }
+
+    const nextState = session.story.state.ToJson();
+    const key = stateKey(nextState, stateSensitivity);
+    if (seenStates.has(key)) {
+      dedupeHits++;
+      finishIfLast();
+      return true;
+    }
+    seenStates.add(key);
+    const choiceSet = session.story.currentChoices
+      .map((offered: { text?: string; sourcePath?: string }) => offered.sourcePath ?? offered.text ?? "")
+      .sort()
+      .join("\u0001");
+    const newChoiceSet = !seenChoiceSets.has(choiceSet);
+    seenChoiceSets.add(choiceSet);
+    let noveltyScore = newKnots * 8 + (newVariableState ? 4 : 0) + (newChoiceSet ? 2 : 0);
+    if (path.length > deepestStateDiscovered) {
+      deepestStateDiscovered = path.length;
+      noveltyScore++;
+    }
+    addNode(nextState, nextVariables, active.nodeId, choice.text, path.length, noveltyScore);
+    finishIfLast();
+    return true;
+  };
+
+  const done = () => finished || (!current && pendingStates === 0);
+
+  const buildResult = (): ExploreResult => ({
+    statesExplored,
+    endingsFound: [...endings.values()],
+    runtimeErrors: [...runtimeErrors.values()],
+    runtimeWarnings: [...runtimeWarnings],
+    unvisitedKnots: nonFunctionKnots
+      .filter((knot) => !visitedKnots.has(knot.name))
+      .map(({ name, file, line }) => ({ name, file, line })),
+    visitedKnots: [...visitedKnots],
+    externalFunctionsStubbed: [...externals],
+    randomnessDetected: opts.randomnessDetected ?? false,
+    truncated,
+    truncatedBy,
+    exhaustive: done() && !truncated,
+    limits: { maxDepth, maxStates: totalGranted, seed },
+  });
+
+  return {
+    label: foundBy,
+    systematic: true,
+    run(grant: number): number {
+      totalGranted += grant;
+      const start = statesExplored;
+      let sinceGuard = 0;
+      while (statesExplored - start < grant) {
+        if ((memoryGuard || timeGuard) && ++sinceGuard >= 512) {
+          sinceGuard = 0;
+          if (memoryGuard && !memoryGuard()) {
+            memoryStopped = true;
+            break;
+          }
+          if (timeGuard && !timeGuard()) {
+            timeStopped = true;
+            break;
+          }
+        }
+        if (!advance()) break;
+      }
+      return statesExplored - start;
+    },
+    done,
+    exhaustive: () => done() && !truncated,
+    stoppedForMemory: () => memoryStopped,
+    stoppedForTime: () => timeStopped,
+    snapshot: buildResult,
+    finalize(): ExploreResult {
+      if (memoryStopped) {
+        truncated = true;
+        truncatedBy.memory = true;
+      } else if (timeStopped) {
+        truncated = true;
+        truncatedBy.time = true;
+      } else if (!done()) {
+        truncated = true;
+        truncatedBy.maxStates = true;
+      }
+      return buildResult();
+    },
+    telemetry(): PassTelemetry {
+      return {
+        pass: foundBy,
+        systematic: true,
+        statesExplored,
+        granted: totalGranted,
+        endingsFound: endings.size,
+        runtimeErrorsFound: runtimeErrors.size,
+        knotsVisited: visitedKnots.size,
+        newEndings: endings.size,
+        newKnots: visitedKnots.size,
+        newRuntimeErrors: runtimeErrors.size,
+        dedupeHits,
+        maxDepthReached,
+        lastDiscoveryAtState,
+        truncatedBy: { ...truncatedBy },
+        exhaustive: done() && !truncated,
+        uniqueStates: seenStates.size,
+        peakPendingStates,
+        peakPendingBytes,
+        variableStatesObserved: seenVariableStates.size,
+        variableTransitionsObserved: variableTransitionCounts.size,
+        rareVariableTransitions: [...variableTransitionCounts.values()].filter((count) => count === 1).length,
+      };
+    },
+  };
+}
+
+export function exploreShared(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {}
+): ExploreResult {
+  const maxStates = opts.maxStates ?? 100_000;
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 100_000_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 100000000");
+  }
+  return runEngineToBudget(createSharedEngine(storyJson, knots, externals, opts), maxStates, opts);
 }
 
 /** Deterministic PRNG (mulberry32) so random exploration stays reproducible in CI. */

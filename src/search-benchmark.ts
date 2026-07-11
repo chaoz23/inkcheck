@@ -1,4 +1,4 @@
-import {
+import type {
   EndingReport,
   ExploreResult,
   PassTelemetry,
