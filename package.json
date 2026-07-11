@@ -26,6 +26,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "inkjs": "^2.4.0",
+    "yaml": "^2.8.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -43,6 +44,7 @@
     "docs/inkjam-qa-guide.md",
     "docs/hosted-checker.md",
     "docs/agent-discovery.md",
+    "docs/config-schema-v1.json",
     "docs/report-schema-v1.md",
     "CHANGELOG.md",
     "llms.txt",

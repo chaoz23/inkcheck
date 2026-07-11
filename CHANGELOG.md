@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add strict project configuration schema v1: `inkcheck.yml` can commit a project-relative entrypoint and bounded CI defaults, `inkcheck validate-config [path] [--json]` reports actionable path-specific errors, explicit CLI flags win, and unknown keys fail rather than pretending future assertions/goals are active. The JSON Schema is packaged and `capabilities` now advertises config schema v1.
+
 ## 0.5.0 — 2026-07-11
 
 - Report portfolio-wide cumulative counts in live progress (#55). The portfolio scheduler emitted each progress event from the just-run pass's snapshot, so the endings/errors/unvisited-knots counts a consumer showed as a running total bounced up and down as passes interleaved. Progress now comes from the scheduler's portfolio-wide dedup sets, which are monotonic by construction: endings and runtime errors only rise, unvisited knots only fall, within a run. Fixes the hosted web progress indicator and the CLI `--progress=human`/`ndjson` output together.

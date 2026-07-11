@@ -26,6 +26,10 @@
         "description": "Return a deterministic bounded source-only project map without compiling or exploring."
       },
       {
+        "flag": "validate-config [inkcheck.yml] [--json]",
+        "description": "Validate project configuration schema v1 and resolve its project-local entrypoint."
+      },
+      {
         "flag": "--json",
         "description": "Emit the full report as a single JSON object on stdout. Use this for programmatic consumption."
       },
@@ -43,7 +47,7 @@
       },
       {
         "flag": "--max-depth <n>",
-        "description": "Max choices deep to explore, from 1 to 1000. Default 30."
+        "description": "Max choices deep to explore, from 1 to 1000. Default 100."
       },
       {
         "flag": "--max-states <n>",

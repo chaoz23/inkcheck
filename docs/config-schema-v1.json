@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/chaoz23/inkcheck/blob/main/docs/config-schema-v1.json",
+  "title": "Inkcheck project configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "entrypoint"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "entrypoint": { "type": "string", "pattern": "^[^/\\\\](?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).*\\.ink$" },
+    "ci": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxDepth": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "maxStates": { "type": "integer", "minimum": 1, "maximum": 100000000 },
+        "seed": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "search": { "enum": ["portfolio", "shared", "shared-variable"] },
+        "maxMemoryMb": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "maxTimeSec": { "type": "integer", "minimum": 1, "maximum": 86400 },
+        "strict": { "type": "boolean" },
+        "minRepro": { "type": "boolean" }
+      }
+    }
+  }
+}
