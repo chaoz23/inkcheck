@@ -30,6 +30,14 @@
         "description": "Validate project configuration schema v1 and resolve its project-local entrypoint."
       },
       {
+        "flag": "init [directory] [--entrypoint story.ink] [--json]",
+        "description": "Create an idempotent minimal inkcheck.yml without overwriting existing project files."
+      },
+      {
+        "flag": "agent-kit --format codex [directory] [--entrypoint story.ink] [--json]",
+        "description": "Scaffold config, pinned CI, artifact ignore rules, and compact version-matched Codex instructions after a no-overwrite preflight."
+      },
+      {
         "flag": "--json",
         "description": "Emit the full report as a single JSON object on stdout. Use this for programmatic consumption."
       },
