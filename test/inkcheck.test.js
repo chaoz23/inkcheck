@@ -36,6 +36,12 @@ const {
 } = require("../dist/discovery");
 const { CONFIG_SCHEMA_VERSION, parseProjectConfig, loadProjectConfig } = require("../dist/config");
 const { initProject, createAgentKit } = require("../dist/scaffold");
+const {
+  evaluateCondition,
+  observedValues,
+  parseAssertionDefinitions,
+  validateAssertions,
+} = require("../dist/assertions");
 
 const MANOR = path.join(__dirname, "..", "examples", "manor.ink");
 const BROKEN = path.join(__dirname, "..", "examples", "broken.ink");
@@ -152,6 +158,103 @@ test("config rejects unknown keys, unsafe entrypoints, and invalid bounds", () =
     () => parseProjectConfig("schemaVersion: 2\nentrypoint: story.ink\nentrypoint: other.ink\n"),
     /Map keys must be unique/
   );
+});
+
+test("assertion grammar supports typed comparisons and all/any/not without expressions", () => {
+  const issues = [];
+  const rules = parseAssertionDefinitions(
+    [
+      {
+        id: "resource_bounds",
+        description: "Gold stays in its authored range",
+        when: "always",
+        condition: {
+          all: [
+            { left: { variable: "gold" }, operator: ">=", right: { literal: 0 } },
+            {
+              any: [
+                { left: { variable: "gold" }, operator: "<=", right: { variable: "max_gold" } },
+                { not: { left: { variable: "debug" }, operator: "==", right: { literal: false } } },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+    "assertions",
+    issues
+  );
+  assert.deepStrictEqual(issues, []);
+  assert.strictEqual(validateAssertions(rules, { gold: 5, max_gold: 10, debug: false }, ["start"]).length, 0);
+  assert.strictEqual(evaluateCondition(rules[0].condition, { gold: 5, max_gold: 10, debug: false }), true);
+  assert.strictEqual(evaluateCondition(rules[0].condition, { gold: -1, max_gold: 10, debug: true }), false);
+  assert.deepStrictEqual(observedValues(rules[0].condition, { gold: -1, max_gold: 10, debug: true }), {
+    gold: -1,
+    max_gold: 10,
+    debug: true,
+  });
+});
+
+test("assertion validation rejects unknown variables, knots, type errors, and executable-looking keys", () => {
+  const source = `
+schemaVersion: 1
+entrypoint: story.ink
+assertions:
+  - id: unsafe_rule
+    when:
+      knot: missing_knot
+    condition:
+      left:
+        variable: gold
+        expression: process.exit()
+      operator: ">="
+      right:
+        variable: missing_variable
+`;
+  assert.throws(() => parseProjectConfig(source), /condition\.left\.expression: unknown key/);
+
+  const issues = [];
+  const rules = parseAssertionDefinitions(
+    [
+      {
+        id: "bad_types",
+        when: { knot: "missing_knot" },
+        condition: { left: { variable: "gold" }, operator: ">", right: { literal: "zero" } },
+      },
+      {
+        id: "unknown_var",
+        when: "terminal",
+        condition: { left: { variable: "missing" }, operator: "==", right: { literal: true } },
+      },
+    ],
+    "assertions",
+    issues
+  );
+  assert.deepStrictEqual(issues, []);
+  assert.deepStrictEqual(validateAssertions(rules, { gold: 1 }, ["start"]), [
+    "assertions.bad_types.when.knot: unknown knot missing_knot",
+    "assertions.bad_types: cannot compare number with string",
+    "assertions.unknown_var: unknown variable missing",
+  ]);
+});
+
+test("assertion config rejects duplicate IDs and malformed compound conditions", () => {
+  const issues = [];
+  parseAssertionDefinitions(
+    [
+      { id: "same", when: "always", condition: { all: [] } },
+      {
+        id: "same",
+        when: "terminal",
+        condition: { left: { literal: 1 }, operator: "eval", right: { literal: 2 } },
+      },
+    ],
+    "assertions",
+    issues
+  );
+  assert.ok(issues.some((issue) => /non-empty list/.test(issue)));
+  assert.ok(issues.some((issue) => /duplicate assertion id/.test(issue)));
+  assert.ok(issues.some((issue) => /expected ==, !=, <, <=, >, >=/.test(issue)));
 });
 
 test("config loader resolves a project-local entrypoint and reports missing files", () => {
