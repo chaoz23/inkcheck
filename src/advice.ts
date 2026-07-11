@@ -92,6 +92,20 @@ export function recommendNextRun(
     };
   }
 
+  // Same reasoning for a time-bound run: raising the state budget only makes
+  // a fixed time budget run out sooner, so do not deepen or broaden here.
+  if (report.truncatedBy.time) {
+    return {
+      recommendation: "investigate",
+      stop: true,
+      flags: sameFlags,
+      rationale:
+        "truncatedBy.time is true: exploration stopped at its time budget with work remaining, so a larger state budget would just run out of time sooner.",
+      expectedGain:
+        "none from a larger run at these settings — raise --max-time, or run the story on the local CLI where there is no wall-clock limit",
+    };
+  }
+
   const passes = report.passes ?? [];
   const systematicLate = passes.some((p) => p.systematic && discoveredLate(p));
   const randomPass = passes.find((p) => p.pass.startsWith("random:"));

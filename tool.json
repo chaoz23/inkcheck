@@ -50,6 +50,10 @@
         "description": "Stop exploration cleanly before heap use exceeds <mb> and return a partial report (truncatedBy.memory), instead of crashing on an uncatchable V8 out-of-memory. Default: 85% of the V8 heap limit (honors --max-old-space-size)."
       },
       {
+        "flag": "--max-time <s>",
+        "description": "Stop exploration cleanly after <s> seconds and return a partial report (truncatedBy.time), instead of running to the state budget. Default: no time limit. Useful for CI or hosted runs that need a bounded wall clock but still want the findings so far."
+      },
+      {
         "flag": "--profile",
         "description": "Print a static story-shape profile (variables, choice density, longest divert path) plus the depth limit and pass weights inkcheck would choose, without exploring. Combine with --json for machine-readable output."
       },
@@ -74,7 +78,7 @@
     "jsonSchema": {
       "compile": "{ success: bool, issues: [{severity, file, line, message}], errors: int, warnings: int, todos: int }",
       "stats": "{ words, knots, stitches, functions, choices, gathers, diverts }",
-      "explore": "{ statesExplored: int, endingsFound: [{path: string[], finalText, variables, foundBy?}], runtimeErrors: [{message, path, sourceLocation?, foundBy?}], unvisitedKnots: [{name, file, line, inboundDiverts?, staticOrphanCandidate?}], externalFunctionsStubbed: string[], randomnessDetected: bool, truncated: bool, truncatedBy: {maxDepth: bool, maxStates: bool, beamWidth: bool, memory: bool}, exhaustive: bool, limits: {maxDepth, maxStates, seed?}, schedule?: [{round: int, entries: [{pass, granted, consumed, newEndings, newKnots, newRuntimeErrors}]}], passes?: [{pass, systematic, statesExplored, granted, endingsFound, runtimeErrorsFound, knotsVisited, newEndings, newKnots, newRuntimeErrors, dedupeHits, maxDepthReached, lastDiscoveryAtState, truncatedBy, exhaustive, peakFrontier?, prunes?}] }",
+      "explore": "{ statesExplored: int, endingsFound: [{path: string[], finalText, variables, foundBy?}], runtimeErrors: [{message, path, sourceLocation?, foundBy?}], unvisitedKnots: [{name, file, line, inboundDiverts?, staticOrphanCandidate?}], externalFunctionsStubbed: string[], randomnessDetected: bool, truncated: bool, truncatedBy: {maxDepth: bool, maxStates: bool, beamWidth: bool, memory: bool, time: bool}, exhaustive: bool, limits: {maxDepth, maxStates, seed?}, schedule?: [{round: int, entries: [{pass, granted, consumed, newEndings, newKnots, newRuntimeErrors}]}], passes?: [{pass, systematic, statesExplored, granted, endingsFound, runtimeErrorsFound, knotsVisited, newEndings, newKnots, newRuntimeErrors, dedupeHits, maxDepthReached, lastDiscoveryAtState, truncatedBy, exhaustive, peakFrontier?, prunes?}] }",
       "profile": "(with --auto or --profile --json) { knots, functions, variables, varAssignments, earlyAssignmentShare, choiceLines, hasCycles, longestKnotPath, choiceDepthEstimate, suggested: {maxDepth, weights: {last, first, insideOut, beam, random}, rationale: string[]} }",
       "nextRun": "{ recommendation: 'stop'|'deepen'|'broaden'|'reseed'|'investigate', stop: bool, flags: {maxDepth, maxStates, seed?}, rationale: string, expectedGain: string } — deterministic function of the report; loop on it: rerun with flags until stop is true",
       "runs": "(with --next) [{run: int, flags, statesExplored, endings, runtimeErrors, visitedKnots, recommendation}]"

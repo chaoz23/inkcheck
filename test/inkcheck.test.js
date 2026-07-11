@@ -609,6 +609,83 @@ test("--max-memory produces a partial report instead of crashing", () => {
   assert.match(text.stdout, /stopped early at \d+ states to stay under the memory guard/);
 });
 
+// The time guard mirrors the memory guard: a wall-clock budget stops the run
+// cleanly and returns a partial report (truncatedBy.time) instead of the run
+// being hard-killed.
+test("time guard stops each engine early and reports truncatedBy.time", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  // A predicate that trips after a couple of checks (~1,024 states) stands in
+  // for a real deadline — deterministic, instant, and early enough that the
+  // beam does not exhaust the small fixture before the guard fires.
+  const mkGuard = () => {
+    let n = 0;
+    return () => n++ < 2;
+  };
+  for (const run of [
+    () => explore(compiled.storyJson, knots, [], { maxStates: 1_000_000, timeGuard: mkGuard() }),
+    () => exploreRandom(compiled.storyJson, knots, [], { maxStates: 1_000_000, timeGuard: mkGuard() }),
+    () => exploreBeam(compiled.storyJson, knots, [], { maxStates: 1_000_000, timeGuard: mkGuard() }),
+  ]) {
+    const r = run();
+    assert.ok(r.statesExplored < 50_000, `expected early stop, got ${r.statesExplored}`);
+    assert.strictEqual(r.truncatedBy.time, true);
+    assert.strictEqual(r.truncatedBy.maxStates, false);
+    assert.strictEqual(r.truncated, true);
+  }
+});
+
+test("portfolio time stop keeps partial results, blames only time, and advises investigate", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  let n = 0;
+  const report = explorePortfolio(compiled.storyJson, knots, [], {
+    maxStates: 1_000_000,
+    timeGuard: () => n++ < 14,
+  });
+  assert.strictEqual(report.truncatedBy.time, true);
+  assert.strictEqual(report.truncatedBy.maxStates, false, "time, not budget, was the cause");
+  assert.ok(report.statesExplored < 50_000);
+  assert.ok(report.endingsFound.length > 0, "partial results retained");
+  const advice = recommendNextRun(report);
+  assert.strictEqual(advice.recommendation, "investigate");
+  assert.match(advice.rationale, /time/);
+});
+
+test("memory guard takes precedence over the time guard when both trip", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  let m = 0;
+  let t = 0;
+  const report = explore(compiled.storyJson, knots, [], {
+    maxStates: 1_000_000,
+    memoryGuard: () => m++ < 5,
+    timeGuard: () => t++ < 100,
+  });
+  assert.strictEqual(report.truncatedBy.memory, true);
+  assert.strictEqual(report.truncatedBy.time, false);
+});
+
+test("--max-time produces a partial report instead of running to the budget", () => {
+  const proc = spawnSync(
+    process.execPath,
+    [CLI, EARLY_CHOICE_GRID, "--max-states", "100000000", "--max-time", "1", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(proc.status, 0);
+  const report = JSON.parse(proc.stdout);
+  assert.strictEqual(report.explore.truncatedBy.time, true);
+  assert.ok(report.explore.statesExplored < 100_000_000);
+  assert.strictEqual(report.nextRun.recommendation, "investigate");
+
+  const text = spawnSync(
+    process.execPath,
+    [CLI, EARLY_CHOICE_GRID, "--max-states", "100000000", "--max-time", "1"],
+    { encoding: "utf8" }
+  );
+  assert.match(text.stdout, /stopped early at \d+ states after the 1s time budget/);
+});
+
 test("an exhaustive systematic pass clears sampling-slice truncation", async () => {
   const compiled = await compile(MANOR);
   const knots = scanKnots(MANOR);
@@ -622,6 +699,7 @@ test("an exhaustive systematic pass clears sampling-slice truncation", async () 
     maxStates: false,
     beamWidth: false,
     memory: false,
+    time: false,
   });
 
   const gridCompiled = await compile(EARLY_CHOICE_GRID);
