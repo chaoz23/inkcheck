@@ -45,6 +45,7 @@ import {
   renderInspectionHuman,
 } from "./discovery";
 import { findDefaultProjectConfig, loadProjectConfig } from "./config";
+import { createAgentKit, initProject, renderScaffoldResult } from "./scaffold";
 
 function usage(message?: string): never {
   if (message) console.error(`inkcheck: ${message}\n`);
@@ -54,6 +55,8 @@ Usage: inkcheck <story.ink> [options]
        inkcheck capabilities [--json]
        inkcheck inspect <story.ink> [--json]
        inkcheck validate-config [inkcheck.yml] [--json]
+       inkcheck init [directory] [--entrypoint story.ink] [--json]
+       inkcheck agent-kit --format codex [directory] [--entrypoint story.ink] [--json]
        inkcheck mcp              Start the MCP server (stdio)
 
 Options:
@@ -109,6 +112,38 @@ async function main() {
           ? JSON.stringify(result, null, 2)
           : `Valid Inkcheck config v${result.schemaVersion}: ${result.configFile}\nEntrypoint: ${result.entrypoint}`
       );
+      return;
+    } catch (error) {
+      usage(error instanceof Error ? error.message : String(error));
+    }
+  }
+  if (args[0] === "init" || args[0] === "agent-kit") {
+    const command = args.shift() as "init" | "agent-kit";
+    let directory = ".";
+    let directorySpecified = false;
+    let entrypoint: string | undefined;
+    let format: string | undefined;
+    let json = false;
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index];
+      if (arg === "--json") json = true;
+      else if (arg === "--entrypoint") entrypoint = args[++index];
+      else if (arg === "--format") format = args[++index];
+      else if (arg.startsWith("--")) usage(`${command}: unknown option: ${arg}`);
+      else if (directorySpecified) usage(`${command}: unexpected extra argument: ${arg}`);
+      else {
+        directory = arg;
+        directorySpecified = true;
+      }
+    }
+    if (entrypoint === undefined && args.includes("--entrypoint")) usage(`${command}: --entrypoint requires a path`);
+    if (command === "agent-kit" && format !== "codex") usage("agent-kit requires --format codex");
+    if (command === "init" && format !== undefined) usage("init does not accept --format");
+    try {
+      const result = command === "init"
+        ? initProject(directory, entrypoint)
+        : createAgentKit(directory, format, entrypoint);
+      console.log(json ? JSON.stringify(result, null, 2) : renderScaffoldResult(result));
       return;
     } catch (error) {
       usage(error instanceof Error ? error.message : String(error));
