@@ -332,7 +332,7 @@ export async function runSubmission(
     // immediate recursive deletion fail with EBUSY/EPERM. Node's bounded
     // retry keeps the no-retention guarantee without turning a completed
     // report into a flaky hosted failure.
-    fs.rmSync(jobDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    fs.rmSync(jobDir, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
   }
 }
 
