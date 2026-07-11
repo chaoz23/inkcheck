@@ -7,7 +7,12 @@ import { compile, stats, scanKnots, scanExternals, scanInboundDiverts, scanShape
 import { classifyUnvisitedKnots, playtest, explore, explorePortfolio, exploreShared, exploreSharedVariableAware, mergeMinRepro } from "./explore";
 import { recommendNextRun } from "./advice";
 import { VERSION } from "./version";
-import { capabilities, inspectProject } from "./discovery";
+import { capabilities, inspectProject, REPORT_SCHEMA_VERSION } from "./discovery";
+import {
+  buildCompileFailureEnvelope,
+  buildReportEnvelope,
+  enrichCompile,
+} from "./report-contract";
 
 const server = new McpServer({ name: "inkcheck", version: VERSION });
 
@@ -59,7 +64,11 @@ server.registerTool(
   async ({ file }) => {
     const result = await compile(file);
     const { storyJson, ...rest } = result;
-    return json(rest);
+    return json({
+      schemaVersion: REPORT_SCHEMA_VERSION,
+      inkcheckVersion: VERSION,
+      compile: enrichCompile(rest),
+    });
   }
 );
 
@@ -123,11 +132,23 @@ server.registerTool(
   },
   async ({ file, maxDepth, maxStates, seed, minRepro, search }) => {
     const compiled = await compile(file);
+    const { storyJson: _compiledStoryJson, ...compileReport } = compiled;
+    const configuration = {
+      search: search ?? "portfolio" as const,
+      minRepro: minRepro !== false,
+      strict: false,
+      maxMemoryMb: null,
+      maxTimeSec: null,
+    };
     if (!compiled.success || !compiled.storyJson) {
-      return err(
-        "Compilation failed — fix these before exploring:\n" +
-          compiled.issues.map((i) => i.raw).join("\n")
-      );
+      return {
+        ...json(buildCompileFailureEnvelope(
+          compileReport,
+          file,
+          configuration
+        )),
+        isError: true,
+      };
     }
     const knots = scanKnots(file);
     const externals = scanExternals(file);
@@ -168,7 +189,13 @@ server.registerTool(
     }
     classifyUnvisitedKnots(result, scanInboundDiverts(file));
     const nextRun = recommendNextRun(result, scanShapeProfile(file));
-    return json({ compileIssues: compiled.issues, ...result, nextRun });
+    return json(buildReportEnvelope({
+      compile: compileReport,
+      explore: result,
+      nextRun,
+      storyJson: compiled.storyJson,
+      configuration,
+    }));
   }
 );
 

@@ -18,6 +18,7 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 
 - Discover installed schemas/features: `npx -y inkcheck capabilities --json`
 - Inspect a project without compiling/exploring: `npx -y inkcheck inspect story/main.ink --json`
+- Machine reports: schema v1 with stable finding IDs, normalized kinds, story fingerprint, effective configuration, binding limit, and indexed replay witnesses
 - CLI: `npx -y inkcheck <story.ink>`
 - CLI machine output: `npx -y inkcheck <story.ink> --json`
 - Human fix list: `npx -y inkcheck <story.ink> --human`
@@ -50,7 +51,7 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 
 - compile_story — structured compile issues (severity, file, line)
 - story_stats — word/knot/choice counts + full knot list with locations
-- playtest_story — play one scripted choice path headlessly; transcript, tags, variables, errors
+- playtest_story — play one indexed choice path headlessly; transcript, tags, variables, errors, and replay status (`completed`, `runtime_error`, or `path_changed`)
 - explore_story — bounded systematic walk: terminal states, error repro paths, knot coverage, and explicit limitations
 
 ## Intended agent loop

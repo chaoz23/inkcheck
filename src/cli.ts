@@ -33,6 +33,11 @@ import {
 } from "./human-report";
 import { HumanProgressRenderer } from "./terminal-progress";
 import {
+  buildCompileFailureEnvelope,
+  buildReportEnvelope,
+  EffectiveReportConfiguration,
+} from "./report-contract";
+import {
   capabilities,
   inspectProject,
   renderCapabilitiesHuman,
@@ -183,6 +188,13 @@ async function main() {
   if (autoDepth !== undefined) maxDepth = autoDepth;
 
   const totalMaxStates = maxStates ?? 10_000_000;
+  const reportConfiguration: EffectiveReportConfiguration = {
+    search,
+    minRepro,
+    strict,
+    maxMemoryMb: maxMemoryMb ?? null,
+    maxTimeSec: maxTimeSec ?? null,
+  };
   const startedAt = Date.now();
   let sequence = 0;
   let statesExplored = 0;
@@ -217,12 +229,23 @@ async function main() {
   emitProgress("run_start");
   emitProgress("phase_start", { phase: "compile" });
   const compiled = await compile(file);
+  const { storyJson: _compiledStoryJson, ...compileReport } = compiled;
   emitProgress("phase_end", { phase: "compile" });
 
   if (!compiled.success) {
     emitProgress("phase_start", { phase: "report" });
     if (asJson) {
-      console.log(JSON.stringify({ compile: { ...compiled, storyJson: undefined } }, null, 2));
+      console.log(
+        JSON.stringify(
+          buildCompileFailureEnvelope(
+            compileReport,
+            file,
+            reportConfiguration
+          ),
+          null,
+          2
+        )
+      );
     } else if (asMarkdown) {
       console.log(renderCompileFailureMarkdown(compiled));
     } else if (asHuman) {
@@ -365,14 +388,16 @@ async function main() {
     }
   }
 
-  const outputReport = {
-    compile: { ...compiled, storyJson: undefined },
+  const outputReport = buildReportEnvelope({
+    compile: compileReport,
     stats: st,
     ...(profile ? { profile } : {}),
     explore: report,
     nextRun: advice,
     ...(followNext ? { runs } : {}),
-  };
+    storyJson: compiled.storyJson!,
+    configuration: reportConfiguration,
+  });
   emitProgress("phase_start", { phase: "report" });
   if (asJson) {
     console.log(
