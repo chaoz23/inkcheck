@@ -1137,7 +1137,11 @@ test("hosted runner returns a partial report when the time budget is hit, not a 
   // misleading "story too detailed" limit error with nothing to show. A tight
   // hosted timeout with a large state budget forces the time budget to bind.
   const source = require("node:fs").readFileSync(EARLY_CHOICE_GRID, "utf8");
-  const config = { ...webConfigFromEnv(), timeoutMs: 2_000 };
+  // The CLI's own --max-time (floored to 1s here) binds first and returns a
+  // partial report; the server's hard timeout must stay comfortably above the
+  // CLI's spawn+explore+serialize time so it doesn't win the race on a slow CI
+  // runner (a 2s hard cap flaked on Windows). 20s leaves ample headroom.
+  const config = { ...webConfigFromEnv(), timeoutMs: 20_000 };
   const submission = validateSubmission(
     {
       root: "story.ink",
