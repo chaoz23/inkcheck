@@ -1,0 +1,41 @@
+name: Publish to npm
+
+# Publishes the package to npm when a GitHub Release is published (tag vX.Y.Z),
+# or on manual dispatch. Authentication is npm Trusted Publishing (OIDC): the
+# job mints a short-lived identity token from GitHub and npm verifies it against
+# the trusted publisher configured on the package — so there is no long-lived
+# NPM_TOKEN secret to manage or leak, and provenance is attached automatically.
+#
+# One-time setup on npmjs.com (package owner): inkcheck > Settings >
+# "Trusted Publisher" > GitHub Actions, with:
+#   Organization/user: chaoz23
+#   Repository:        inkcheck
+#   Workflow filename: publish.yml
+#   Environment:       (leave blank unless you add one below)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required for Trusted Publishing (OIDC) + provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      # Trusted Publishing needs npm >= 11.5.1; Node 22 ships an older npm.
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      # No NODE_AUTH_TOKEN: npm exchanges the OIDC token for a short-lived
+      # publish credential via the configured trusted publisher.
+      - run: npm publish

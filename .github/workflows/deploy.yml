@@ -1,0 +1,59 @@
+name: Deploy hosted checker
+
+# Redeploys the hosted checker on the droplet by pulling main and rebuilding
+# the container. Runs on manual dispatch, or after a Release is published.
+#
+# Auth is a dedicated SSH deploy key (no passwords). One-time setup by the
+# droplet/repo owner:
+#   1. Generate a keypair:  ssh-keygen -t ed25519 -f deploy_key -N "" -C inkcheck-deploy
+#   2. On the droplet:      append deploy_key.pub to /root/.ssh/authorized_keys
+#   3. In repo Settings > Secrets and variables > Actions, add:
+#        DROPLET_SSH_KEY  = contents of the private deploy_key
+#        DROPLET_HOST     = 64.23.172.250   (droplet IP or hostname)
+#        DROPLET_USER     = root
+#      (optional) variable APP_DIR if the checkout is not at /root/inkcheck.
+#
+# The repo is public, so the droplet pulls over HTTPS with no git credentials.
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      APP_DIR: ${{ vars.APP_DIR || '/root/inkcheck' }}
+    steps:
+      - name: Redeploy over SSH
+        env:
+          SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DROPLET_HOST }}
+          SSH_USER: ${{ secrets.DROPLET_USER }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_KEY:-}" ] || [ -z "${SSH_HOST:-}" ] || [ -z "${SSH_USER:-}" ]; then
+            echo "::error::Missing DROPLET_SSH_KEY / DROPLET_HOST / DROPLET_USER secrets. See the setup notes at the top of this workflow."
+            exit 1
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Trust-on-first-use for the host key; pin via a DROPLET_KNOWN_HOSTS
+          # secret instead if you want strict verification.
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "$SSH_USER@$SSH_HOST" \
+            "set -euo pipefail; \
+             cd '$APP_DIR'; \
+             echo '--- before:' \$(git rev-parse --short HEAD); \
+             git pull --ff-only; \
+             echo '--- after:'  \$(git rev-parse --short HEAD); \
+             docker compose up -d --build; \
+             docker image prune -f; \
+             docker compose ps"
