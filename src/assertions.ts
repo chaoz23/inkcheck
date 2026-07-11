@@ -88,7 +88,7 @@ function operand(value: unknown, at: string, issues: string[]): AssertionOperand
   return { literal: value.literal as AssertionLiteral };
 }
 
-function condition(value: unknown, at: string, issues: string[], depth = 0): AssertionCondition | undefined {
+export function parseCondition(value: unknown, at: string, issues: string[], depth = 0): AssertionCondition | undefined {
   if (depth > 20) {
     issues.push(`${at}: condition nesting exceeds 20 levels`);
     return undefined;
@@ -119,14 +119,14 @@ function condition(value: unknown, at: string, issues: string[], depth = 0): Ass
   const form = forms[0] as "all" | "any" | "not";
   keys(value, [form], at, issues);
   if (form === "not") {
-    const nested = condition(value.not, `${at}.not`, issues, depth + 1);
+    const nested = parseCondition(value.not, `${at}.not`, issues, depth + 1);
     return nested ? { not: nested } : undefined;
   }
   if (!Array.isArray(value[form]) || value[form].length === 0) {
     issues.push(`${at}.${form}: expected a non-empty list`);
     return undefined;
   }
-  const nested = value[form].map((item, index) => condition(item, `${at}.${form}[${index}]`, issues, depth + 1));
+  const nested = value[form].map((item, index) => parseCondition(item, `${at}.${form}[${index}]`, issues, depth + 1));
   return nested.every(Boolean) ? { [form]: nested as AssertionCondition[] } as AssertionCondition : undefined;
 }
 
@@ -164,7 +164,7 @@ export function parseAssertionDefinitions(
       keys(item.when, ["knot"], `${here}.when`, issues);
       when = { knot: item.when.knot };
     } else issues.push(`${here}.when: expected always, terminal, or { knot: name }`);
-    const parsedCondition = condition(item.condition, `${here}.condition`, issues);
+    const parsedCondition = parseCondition(item.condition, `${here}.condition`, issues);
     if (when && parsedCondition) {
       definitions.push({
         id: item.id,

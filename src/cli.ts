@@ -20,11 +20,10 @@ import {
   UnvisitedKnotReport,
   classifyUnvisitedKnots,
   explore,
-  explorePortfolio,
-  exploreShared,
-  exploreSharedVariableAware,
+  exploreWithGoals,
   mergeMinRepro,
   validateAssertionsForStory,
+  validateGoalsForStory,
 } from "./explore";
 import { NextRunAdvice, recommendNextRun } from "./advice";
 import {
@@ -280,6 +279,8 @@ async function main() {
     strict,
     maxMemoryMb: maxMemoryMb ?? null,
     maxTimeSec: maxTimeSec ?? null,
+    ...(projectConfig?.config.assertions?.length ? { assertions: projectConfig.config.assertions } : {}),
+    ...(projectConfig?.config.goals?.length ? { goals: projectConfig.config.goals } : {}),
   };
   const startedAt = Date.now();
   let sequence = 0;
@@ -353,8 +354,10 @@ async function main() {
   const st = await stats(file);
   const inboundDiverts = scanInboundDiverts(file);
   const configuredAssertions = projectConfig?.config.assertions ?? [];
+  const configuredGoals = projectConfig?.config.goals ?? [];
   try {
     validateAssertionsForStory(compiled.storyJson!, knots, externals, configuredAssertions);
+    validateGoalsForStory(compiled.storyJson!, knots, externals, configuredGoals);
   } catch (error) {
     usage(error instanceof Error ? error.message : String(error));
   }
@@ -385,12 +388,7 @@ async function main() {
     // states already spent in earlier runs.
     const statesBase = statesExplored;
     emitProgress("phase_start", { phase: "explore" });
-    const searchStory = search === "shared-variable"
-      ? exploreSharedVariableAware
-      : search === "shared"
-        ? exploreShared
-        : explorePortfolio;
-    let checked = searchStory(compiled.storyJson!, knots, externals, {
+    let checked = exploreWithGoals(compiled.storyJson!, knots, externals, {
       maxDepth: bounds.maxDepth,
       maxStates: Math.max(1, portfolioStates),
       seed: bounds.seed,
@@ -401,6 +399,7 @@ async function main() {
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
       assertions: configuredAssertions,
+      goals: configuredGoals,
       onProgress: (progress) => {
         statesExplored = statesBase + progress.statesExplored;
         emitProgress("progress", {
@@ -410,7 +409,7 @@ async function main() {
           unvisitedKnots: progress.unvisitedKnots,
         });
       },
-    });
+    }, search);
     statesExplored = statesBase + checked.statesExplored;
     emitProgress("phase_end", { phase: "explore" });
     if (reproStates > 0) {
@@ -550,6 +549,14 @@ async function main() {
         );
       }
     }
+    if (report.goalResults?.length) {
+      console.log(`◎ ${report.goalResults.filter((goal) => goal.status === "reached").length}/${report.goalResults.length} search goal(s) reached:`);
+      for (const goal of report.goalResults) {
+        console.log(
+          `    ${goal.id}: ${goal.status}${goal.witness ? `\n      repro: [${goal.witness.path.join(" → ") || "linear"}]` : goal.closestObserved ? `\n      closest observed: ${JSON.stringify(goal.closestObserved.observedValues)}` : ""}`
+        );
+      }
+    }
     if (report.unvisitedKnots.length) {
       console.log(
         `⚠ ${report.unvisitedKnots.length} knot(s) never visited on any explored path — unreached is not necessarily unreachable:`
@@ -683,6 +690,7 @@ function renderMarkdown(
     `| Distinct terminal states | ${report.endingsFound.length} |`,
     `| Runtime errors | ${report.runtimeErrors.length} |`,
     `| Assertion violations | ${assertionViolations.length} |`,
+    ...(report.goalResults?.length ? [`| Search goals reached | ${report.goalResults.filter((goal) => goal.status === "reached").length}/${report.goalResults.length} |`] : []),
     `| Unvisited knots | ${report.unvisitedKnots.length} |`,
   ];
   if (report.runtimeErrors.length) {
@@ -700,6 +708,12 @@ function renderMarkdown(
       lines.push(
         `- \`${result.id}\`${result.description ? ` — ${escapeCell(result.description)}` : ""}; observed \`${escapeCell(JSON.stringify(violation.observedValues))}\`; path: ${violation.path.join(" → ") || "linear"}`
       );
+    }
+  }
+  if (report.goalResults?.length) {
+    lines.push("", "## Search goals", "");
+    for (const goal of report.goalResults) {
+      lines.push(`- \`${goal.id}\`: **${goal.status}**${goal.witness ? ` — path: ${goal.witness.path.join(" → ") || "linear"}` : goal.closestObserved ? ` — closest observed: \`${escapeCell(JSON.stringify(goal.closestObserved.observedValues))}\`` : ""}`);
     }
   }
   if (report.unvisitedKnots.length) {

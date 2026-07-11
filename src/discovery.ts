@@ -48,7 +48,7 @@ export function capabilities(): InkcheckCapabilities {
       projectInspection: true,
       indexedWitnesses: true,
       assertions: true,
-      goals: false,
+      goals: true,
       resumableSearch: false,
     },
   };

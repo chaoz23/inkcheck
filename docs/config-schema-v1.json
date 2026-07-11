@@ -65,6 +65,19 @@
           "condition": { "$ref": "#/$defs/condition" }
         }
       }
+    },
+    "goals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "condition"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$" },
+          "description": { "type": "string", "maxLength": 240 },
+          "condition": { "$ref": "#/$defs/condition" }
+        }
+      }
     }
   }
 }

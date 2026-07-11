@@ -13,6 +13,7 @@ import {
   AssertionTracker,
   validateAssertions,
 } from "./assertions";
+import { GoalDefinition, GoalResult, GoalTracker, validateGoals } from "./goals";
 
 export interface PlaytestStep {
   text: string;
@@ -87,6 +88,15 @@ export interface ExploreResult {
   endingsFound: EndingReport[];
   runtimeErrors: RuntimeErrorReport[];
   assertionResults: AssertionResult[];
+  /** Optional author/agent search targets; absent for ordinary runs. */
+  goalResults?: GoalResult[];
+  /** Configured and consumed allocation when explicit goals steer part of a run. */
+  goalBudget?: {
+    generalGranted: number;
+    generalConsumed: number;
+    directedGranted: number;
+    directedConsumed: number;
+  };
   runtimeWarnings: string[];
   /** Authored knots never visited on any explored path (functions excluded). */
   unvisitedKnots: UnvisitedKnotReport[];
@@ -217,6 +227,22 @@ export function validateAssertionsForStory(
     knots.filter((knot) => !knot.isFunction).map((knot) => knot.name)
   );
   if (issues.length) throw new RangeError(`Invalid assertions:\n${issues.map((issue) => `- ${issue}`).join("\n")}`);
+}
+
+export function validateGoalsForStory(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[],
+  goals: GoalDefinition[]
+): void {
+  const session = makeStory(storyJson, externals);
+  continueMaximally(session);
+  const issues = validateGoals(
+    goals,
+    extractVariables(session.story),
+    knots.filter((knot) => !knot.isFunction).map((knot) => knot.name)
+  );
+  if (issues.length) throw new RangeError(`Invalid goals:\n${issues.map((issue) => `- ${issue}`).join("\n")}`);
 }
 
 interface StorySession {
@@ -424,6 +450,10 @@ export interface ExploreOptions {
   sharedVariableAware?: boolean;
   /** Prevalidated non-executable project assertions evaluated on visited states. */
   assertions?: AssertionDefinition[];
+  /** Prevalidated goal conditions used only by an explicitly bounded goal slice. */
+  goals?: GoalDefinition[];
+  /** Internal selector for the deterministic goal-proximity shared frontier. */
+  sharedGoalAware?: boolean;
 }
 
 export const DEFAULT_RANDOM_SEED = 1;
@@ -998,7 +1028,10 @@ function createSharedEngine(
     throw new RangeError("seed must be an integer from 0 to 4294967295");
   }
   const variableAware = opts.sharedVariableAware ?? false;
-  const foundBy = variableAware
+  const goalAware = opts.sharedGoalAware ?? false;
+  const foundBy = goalAware
+    ? `shared:goal-directed-v1:seed=${seed}`
+    : variableAware
     ? `shared:variable-aware-v1:seed=${seed}`
     : `shared:deep-novelty-v1:seed=${seed}`;
   const stateSensitivity = {
@@ -1021,8 +1054,11 @@ function createSharedEngine(
   const random: number[] = [];
   const novelty = new SharedMaxHeap();
   const variablePriority = new SharedMaxHeap();
+  const goalPriority = new SharedMaxHeap();
   const rng = mulberry32(seed);
-  const policies: Array<"novelty" | "deep" | "variable" | "random"> = variableAware
+  const policies: Array<"novelty" | "deep" | "variable" | "goal" | "random"> = goalAware
+    ? ["novelty", "deep", "goal", "random", "novelty", "deep", "goal", "random"]
+    : variableAware
     ? ["novelty", "deep", "deep", "random", "novelty", "deep", "variable", "random"]
     : ["novelty", "deep", "deep", "random"];
   let policyCursor = 0;
@@ -1111,7 +1147,8 @@ function createSharedEngine(
     choiceIndex: number | undefined,
     depth: number,
     noveltyScore: number,
-    variableScore = 0
+    variableScore = 0,
+    goalScore = 0
   ): void => {
     const id = nodes.length;
     nodes.push({ stateJson, variables, parent, choiceText, choiceIndex, depth });
@@ -1129,6 +1166,9 @@ function createSharedEngine(
         score: variableScore * 1_000_000 + noveltyScore * 1_000 + depth,
         order: insertionOrder++,
       });
+    }
+    if (goalAware) {
+      goalPriority.push({ id, score: goalScore * 1_000 + noveltyScore, order: insertionOrder++ });
     }
     pendingStates++;
     pendingBytes += stateJson.length;
@@ -1171,6 +1211,14 @@ function createSharedEngine(
     }
   };
 
+  const takeGoal = (): number | undefined => {
+    while (true) {
+      const item = goalPriority.pop();
+      if (!item) return undefined;
+      if (valid(item.id)) return item.id;
+    }
+  };
+
   const takeNext = (): number | undefined => {
     for (let attempt = 0; attempt < policies.length; attempt++) {
       const policy = policies[policyCursor++ % policies.length];
@@ -1178,12 +1226,14 @@ function createSharedEngine(
         ? takeDeep()
         : policy === "random"
           ? takeRandom()
+          : policy === "goal"
+            ? takeGoal()
           : policy === "variable"
             ? takeVariable()
             : takeNovelty();
       if (id !== undefined) return id;
     }
-    return takeNovelty() ?? takeVariable() ?? takeDeep() ?? takeRandom();
+    return takeGoal() ?? takeNovelty() ?? takeVariable() ?? takeDeep() ?? takeRandom();
   };
 
   const session = makeStory(storyJson, externals);
@@ -1194,6 +1244,7 @@ function createSharedEngine(
 
   const rootStep = continueMaximally(session);
   const assertions = assertionTracker(session.story, knots, opts.assertions, foundBy);
+  const goals = new GoalTracker(opts.goals ?? [], foundBy);
   session.errors.forEach((message) =>
     runtimeErrors.set(message, {
       message,
@@ -1215,6 +1266,7 @@ function createSharedEngine(
     choiceIndices: [],
     state: 0,
   });
+  goals.observe({ variables: rootVariables, path: [], choiceIndices: [], state: 0 });
   variableStateCounts.set(variableStateKey(rootVariables), 1);
 
   if (rootStep.choicesOffered.length === 0) {
@@ -1234,7 +1286,7 @@ function createSharedEngine(
     const rootState = session.story.state.ToJson();
     seenStates.add(stateKey(rootState, stateSensitivity));
     seenChoiceSets.add(rootStep.choicesOffered.slice().sort().join("\u0001"));
-    addNode(rootState, rootVariables, null, undefined, undefined, 0, 1);
+    addNode(rootState, rootVariables, null, undefined, undefined, 0, 1, 0, goals.priority(rootVariables));
   }
   noteDiscoveryProgress();
 
@@ -1370,6 +1422,7 @@ function createSharedEngine(
       choiceIndices,
       state: statesExplored,
     });
+    goals.observe({ variables: nextVariables, path, choiceIndices, state: statesExplored });
     if (ended) {
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = `${finalText}|${JSON.stringify(nextVariables)}`;
@@ -1418,7 +1471,8 @@ function createSharedEngine(
       choice.index,
       path.length,
       noveltyScore,
-      variableScore
+      variableScore,
+      goals.priority(nextVariables)
     );
     finishIfLast();
     return true;
@@ -1433,6 +1487,7 @@ function createSharedEngine(
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
     assertionResults: assertions.results(exhaustive),
+    ...(opts.goals?.length ? { goalResults: goals.results(exhaustive) } : {}),
     runtimeWarnings: [...runtimeWarnings],
     unvisitedKnots: nonFunctionKnots
       .filter((knot) => !visitedKnots.has(knot.name))
@@ -1536,6 +1591,62 @@ export function exploreSharedVariableAware(
   opts: ExploreOptions = {}
 ): ExploreResult {
   return exploreShared(storyJson, knots, externals, { ...opts, sharedVariableAware: true });
+}
+
+/**
+ * Preserve most work for ordinary exploration while giving configured goals a
+ * deterministic, bounded proximity frontier. This is opt-in: no goals means
+ * callers use their selected engine directly and retain existing behavior.
+ */
+export function exploreWithGoals(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[],
+  opts: ExploreOptions,
+  baseline: "portfolio" | "shared" | "shared-variable" = "portfolio"
+): ExploreResult {
+  const maxStates = opts.maxStates ?? 100_000;
+  if (!opts.goals?.length || maxStates < 2) {
+    const search = baseline === "shared-variable"
+      ? exploreSharedVariableAware
+      : baseline === "shared"
+        ? exploreShared
+        : explorePortfolio;
+    return search(storyJson, knots, externals, opts);
+  }
+  const goalStates = Math.max(1, Math.floor(maxStates * 0.25));
+  const generalStates = maxStates - goalStates;
+  const baseOptions = { ...opts, maxStates: generalStates, goals: undefined };
+  const general = baseline === "shared-variable"
+    ? exploreSharedVariableAware(storyJson, knots, externals, baseOptions)
+    : baseline === "shared"
+      ? exploreShared(storyJson, knots, externals, baseOptions)
+      : explorePortfolio(storyJson, knots, externals, baseOptions);
+  const directed = exploreShared(storyJson, knots, externals, {
+    ...opts,
+    maxStates: goalStates,
+    sharedVariableAware: false,
+    sharedGoalAware: true,
+  });
+  const generalConsumed = general.statesExplored;
+  const directedConsumed = directed.statesExplored;
+  const directedExhaustive = directed.exhaustive;
+  const merged = mergeExploreResults(general, directed);
+  for (const result of merged.goalResults ?? []) {
+    result.status = result.witness
+      ? "reached"
+      : directedExhaustive
+        ? "proven_unreachable"
+        : "not_reached_within_limits";
+  }
+  merged.limits.maxStates = maxStates;
+  merged.goalBudget = {
+    generalGranted: generalStates,
+    generalConsumed,
+    directedGranted: goalStates,
+    directedConsumed,
+  };
+  return merged;
 }
 
 /** Deterministic PRNG (mulberry32) so random exploration stays reproducible in CI. */
@@ -2516,6 +2627,22 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
     }
     if (existing.violations.length) existing.status = "violated";
   }
+  const goalsById = new Map((main.goalResults ?? []).map((result) => [result.id, result]));
+  for (const result of other.goalResults ?? []) {
+    const existing = goalsById.get(result.id);
+    if (!existing) {
+      (main.goalResults ??= []).push(result);
+      goalsById.set(result.id, result);
+      continue;
+    }
+    existing.statesEvaluated += result.statesEvaluated;
+    if (result.witness && (!existing.witness || result.witness.path.length < existing.witness.path.length)) {
+      existing.witness = result.witness;
+    }
+    if (result.closestObserved && (!existing.closestObserved || result.closestObserved.distance < existing.closestObserved.distance)) {
+      existing.closestObserved = result.closestObserved;
+    }
+  }
   main.runtimeWarnings = [...new Set([...main.runtimeWarnings, ...other.runtimeWarnings])];
   const visited = new Set([...main.visitedKnots, ...other.visitedKnots]);
   main.visitedKnots = [...visited];
@@ -2543,6 +2670,13 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
       : main.exhaustive
         ? "exhaustively_verified"
         : "not_observed";
+  }
+  for (const result of main.goalResults ?? []) {
+    result.status = result.witness
+      ? "reached"
+      : main.exhaustive
+        ? "proven_unreachable"
+        : "not_reached_within_limits";
   }
   main.externalFunctionsStubbed = [...new Set([...main.externalFunctionsStubbed, ...other.externalFunctionsStubbed])];
   main.randomnessDetected ||= other.randomnessDetected;

@@ -6,6 +6,9 @@ import type { NextRunAdvice } from "./advice";
 import { REPORT_SCHEMA_VERSION } from "./discovery";
 import { VERSION } from "./version";
 import type { AssertionResult, AssertionViolation } from "./assertions";
+import type { AssertionDefinition } from "./assertions";
+import type { GoalDefinition } from "./goals";
+import type { GoalResult } from "./goals";
 
 export type FindingKind =
   | "compile.missing_divert"
@@ -18,6 +21,7 @@ export type FindingKind =
   | "runtime.state_restore_failure"
   | "runtime.error"
   | "assertion.violation"
+  | "goal.reached"
   | "ending.reached";
 
 function canonical(value: unknown): string {
@@ -103,6 +107,22 @@ function enrichAssertionResult(result: AssertionResult) {
   return { ...result, violations: result.violations.map(enrichAssertionViolation) };
 }
 
+function enrichGoalResult(result: GoalResult) {
+  if (!result.witness) return result;
+  const kind = "goal.reached" as const;
+  return {
+    ...result,
+    witness: {
+      ...result.witness,
+      id: stableId(kind, { goalId: result.id, choiceIndices: result.witness.choiceIndices }),
+      kind,
+      replay: { operation: "playtest_story" as const, choices: result.witness.choiceIndices },
+      suggestedAction: "inspect_goal_witness" as const,
+      documentation: "inkcheck://findings/goal.reached",
+    },
+  };
+}
+
 export function bindingLimit(explore: ExploreResult): string | null {
   if (!explore.truncated) return null;
   if (explore.truncatedBy.memory) return "memory";
@@ -119,6 +139,8 @@ export interface EffectiveReportConfiguration {
   strict: boolean;
   maxMemoryMb: number | null;
   maxTimeSec: number | null;
+  assertions?: AssertionDefinition[];
+  goals?: GoalDefinition[];
 }
 
 function compileKind(issue: CompileResult["issues"][number]): FindingKind {
@@ -186,6 +208,7 @@ export function buildReportEnvelope(input: ReportInput) {
     endingsFound: input.explore.endingsFound.map(enrichEnding),
     runtimeErrors: input.explore.runtimeErrors.map(enrichRuntimeError),
     assertionResults: input.explore.assertionResults.map(enrichAssertionResult),
+    ...(input.explore.goalResults ? { goalResults: input.explore.goalResults.map(enrichGoalResult) } : {}),
   };
   return {
     schemaVersion: REPORT_SCHEMA_VERSION,
