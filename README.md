@@ -45,9 +45,19 @@ ci:
   seed: 1
   search: portfolio
   strict: true
+assertions:
+  - id: gold_nonnegative
+    description: Gold never goes negative
+    when: always
+    condition:
+      left: { variable: gold }
+      operator: ">="
+      right: { literal: 0 }
 ```
 
-Run `inkcheck validate-config` to check it. From that directory, `inkcheck` uses the configured entrypoint and defaults; explicit CLI flags still win. Unknown keys fail validation so future assertions, goals, external behavior, and edit-policy fields cannot appear supported before their implementations exist. The published contract is [config schema v1](docs/config-schema-v1.json).
+Run `inkcheck validate-config` to check it. From that directory, `inkcheck` uses the configured entrypoint and defaults; explicit CLI flags still win. Unknown keys fail validation so future goals, external behavior, and edit-policy fields cannot appear supported before their implementations exist. The published contract is [config schema v1](docs/config-schema-v1.json).
+
+Assertions are typed data, never JavaScript or arbitrary Ink expressions. Operands are variables or scalar literals; comparisons use `==`, `!=`, `<`, `<=`, `>`, or `>=`, and conditions can compose with `all`, `any`, and `not`. Rules run always, at terminal states, or when entering a named knot. Unknown variables/knots and invalid cross-type comparisons fail before exploration spends its state budget. A violation always fails CI and includes the observed values plus an exact indexed replay witness. A bounded clean run means only “no violation observed”; only an exhaustive run reports the rule as exhaustively verified.
 
 For a new project containing one `.ink` file, `inkcheck init` creates this config. Multi-file projects must name the root with `--entrypoint`. `inkcheck agent-kit --format codex` adds the config when needed, a pinned GitHub Actions example, `.inkcheck/` artifact ignore rules, and compact version-matched agent instructions. Both commands are idempotent and preflight every target; they refuse the whole operation rather than overwrite or partially modify existing authored files.
 

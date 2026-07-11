@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { compile, stats, scanKnots, scanExternals, scanInboundDiverts, scanShapeProfile, scanStorySemantics, DEFAULT_MAX_DEPTH } from "./inklecate";
-import { classifyUnvisitedKnots, playtest, explore, explorePortfolio, exploreShared, exploreSharedVariableAware, mergeMinRepro } from "./explore";
+import { classifyUnvisitedKnots, playtest, explore, explorePortfolio, exploreShared, exploreSharedVariableAware, mergeMinRepro, validateAssertionsForStory } from "./explore";
 import { recommendNextRun } from "./advice";
 import { VERSION } from "./version";
 import { capabilities, inspectProject, REPORT_SCHEMA_VERSION } from "./discovery";
@@ -13,6 +13,7 @@ import {
   buildReportEnvelope,
   enrichCompile,
 } from "./report-contract";
+import { parseAssertionDefinitions } from "./assertions";
 
 const server = new McpServer({ name: "inkcheck", version: VERSION });
 
@@ -128,9 +129,14 @@ server.registerTool(
         .describe("Reserve a small breadth-first slice to shorten repro paths (default true)"),
       search: z.enum(["portfolio", "shared", "shared-variable"]).optional()
         .describe("Search engine: portfolio (default), shared, or variable-aware shared"),
+      assertions: z.array(z.unknown()).optional()
+        .describe("Safe typed assertion definitions using comparisons plus all, any, and not"),
     },
   },
-  async ({ file, maxDepth, maxStates, seed, minRepro, search }) => {
+  async ({ file, maxDepth, maxStates, seed, minRepro, search, assertions: assertionInput }) => {
+    const assertionIssues: string[] = [];
+    const assertions = parseAssertionDefinitions(assertionInput, "assertions", assertionIssues) ?? [];
+    if (assertionIssues.length) return err(`Invalid assertions:\n${assertionIssues.map((issue) => `- ${issue}`).join("\n")}`);
     const compiled = await compile(file);
     const { storyJson: _compiledStoryJson, ...compileReport } = compiled;
     const configuration = {
@@ -153,6 +159,11 @@ server.registerTool(
     const knots = scanKnots(file);
     const externals = scanExternals(file);
     const semantics = scanStorySemantics(file);
+    try {
+      validateAssertionsForStory(compiled.storyJson, knots, externals, assertions);
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
     const totalMaxStates = maxStates ?? 10_000_000;
     const reproStates = minRepro !== false && totalMaxStates > 1 ? Math.max(1, Math.floor(totalMaxStates * 0.1)) : 0;
     const portfolioStates = totalMaxStates - reproStates;
@@ -168,6 +179,7 @@ server.registerTool(
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
+      assertions,
     };
     const searchStory = search === "shared-variable"
       ? exploreSharedVariableAware
@@ -184,6 +196,7 @@ server.registerTool(
         preserveTurnState: semantics.usesTurns,
         preserveRandomState: semantics.usesRandomness,
         randomnessDetected: semantics.usesRandomness,
+        assertions,
       });
       result = mergeMinRepro(result, bfs);
     }

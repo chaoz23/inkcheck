@@ -25,6 +25,7 @@ const {
   playtest,
   mergeMinRepro,
   stateKey,
+  validateAssertionsForStory,
 } = require("../dist/explore");
 const { recommendNextRun } = require("../dist/advice");
 const { runSubmission, webConfigFromEnv } = require("../dist/web");
@@ -61,6 +62,41 @@ const ROOT = path.join(__dirname, "..");
 const SEARCH_FIXTURES = path.join(__dirname, "fixtures", "search");
 const INSPECT_PROJECT = path.join(__dirname, "fixtures", "inspect", "project.ink");
 const DUPLICATE_CHOICE_TEXT = path.join(__dirname, "fixtures", "duplicate-choice-text.ink");
+const ASSERTION_STORY = path.join(__dirname, "fixtures", "assertions.ink");
+
+const ASSERTION_RULES = [
+  {
+    id: "gold_nonnegative",
+    description: "Gold never goes negative",
+    when: "always",
+    condition: { left: { variable: "gold" }, operator: ">=", right: { literal: 0 } },
+  },
+  {
+    id: "health_bounded",
+    when: "always",
+    condition: { left: { variable: "health" }, operator: "<=", right: { variable: "max_health" } },
+  },
+  {
+    id: "resources_valid",
+    when: "always",
+    condition: {
+      all: [
+        { left: { variable: "gold" }, operator: ">=", right: { literal: 0 } },
+        { left: { variable: "health" }, operator: "<=", right: { variable: "max_health" } },
+      ],
+    },
+  },
+  {
+    id: "ready_at_end",
+    when: "terminal",
+    condition: { left: { variable: "ready" }, operator: "==", right: { literal: true } },
+  },
+  {
+    id: "key_at_gate",
+    when: { knot: "locked_gate" },
+    condition: { left: { variable: "key" }, operator: "==", right: { literal: true } },
+  },
+];
 
 test("parseIssue extracts severity, file, line, message", () => {
   const i = parseIssue("ERROR: 'story.ink' line 42: Divert target not found: '-> nowhere'");
@@ -116,7 +152,7 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.schemas.config, CONFIG_SCHEMA_VERSION);
   assert.strictEqual(value.limits.defaultMaxDepth, 100);
   assert.strictEqual(value.features.indexedWitnesses, true);
-  assert.strictEqual(value.features.assertions, false);
+  assert.strictEqual(value.features.assertions, true);
   assert.strictEqual(value.features.goals, false);
   assert.strictEqual(value.features.resumableSearch, false);
 });
@@ -255,6 +291,86 @@ test("assertion config rejects duplicate IDs and malformed compound conditions",
   assert.ok(issues.some((issue) => /non-empty list/.test(issue)));
   assert.ok(issues.some((issue) => /duplicate assertion id/.test(issue)));
   assert.ok(issues.some((issue) => /expected ==, !=, <, <=, >, >=/.test(issue)));
+});
+
+test("every exploration engine evaluates the same assertions on visited states", async () => {
+  const compiled = await compile(ASSERTION_STORY);
+  const knots = scanKnots(ASSERTION_STORY);
+  validateAssertionsForStory(compiled.storyJson, knots, [], ASSERTION_RULES);
+  const engines = [
+    ["dfs", (options) => explore(compiled.storyJson, knots, [], options)],
+    ["shared", (options) => exploreShared(compiled.storyJson, knots, [], options)],
+    ["random", (options) => exploreRandom(compiled.storyJson, knots, [], options)],
+    ["beam", (options) => exploreBeam(compiled.storyJson, knots, [], options)],
+  ];
+  for (const [name, run] of engines) {
+    const result = run({ maxDepth: 10, maxStates: 2_000, seed: 7, assertions: ASSERTION_RULES });
+    const violated = result.assertionResults.filter((item) => item.status === "violated");
+    assert.deepStrictEqual(
+      violated.map((item) => item.id).sort(),
+      ASSERTION_RULES.map((item) => item.id).sort(),
+      `${name} assertion IDs`
+    );
+    for (const item of violated) {
+      assert.strictEqual(item.violations.length, 1, `${name} deduplicates ${item.id}`);
+      assert.strictEqual(item.violations[0].path.length, item.violations[0].choiceIndices.length);
+      assert.ok(item.violations[0].firstDiscoveredAtState >= 1);
+      assert.ok(item.violations[0].foundBy);
+      if (item.id === "key_at_gate") {
+        assert.strictEqual(item.violations[0].sourceLocation.approximate, false);
+        assert.ok(item.violations[0].sourceLocation.line > 0);
+      }
+    }
+  }
+});
+
+test("assertion status distinguishes bounded non-observation from exhaustive verification", async () => {
+  const compiled = await compile(CLEAN_BRANCH);
+  const knots = scanKnots(CLEAN_BRANCH);
+  const rules = [{
+    id: "safe",
+    when: "always",
+    condition: { left: { literal: 1 }, operator: "==", right: { literal: 1 } },
+  }];
+  const bounded = exploreRandom(compiled.storyJson, knots, [], { maxStates: 1, assertions: rules });
+  assert.strictEqual(bounded.assertionResults[0].status, "not_observed");
+  const exhaustive = explore(compiled.storyJson, knots, [], { maxStates: 100, assertions: rules });
+  assert.strictEqual(exhaustive.exhaustive, true);
+  assert.strictEqual(exhaustive.assertionResults[0].status, "exhaustively_verified");
+});
+
+test("CLI assertions fail CI and emit stable replayable counterexamples", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-assertions-cli-"));
+  try {
+    fs.copyFileSync(ASSERTION_STORY, path.join(tmp, "story.ink"));
+    const config = require("yaml").stringify({
+      schemaVersion: 1,
+      entrypoint: "story.ink",
+      ci: { maxDepth: 10, maxStates: 500 },
+      assertions: ASSERTION_RULES,
+    });
+    fs.writeFileSync(path.join(tmp, "inkcheck.yml"), config);
+    const checked = spawnSync(process.execPath, [CLI, "--json"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(checked.status, 1, checked.stderr);
+    const report = JSON.parse(checked.stdout);
+    const violation = report.explore.assertionResults
+      .find((item) => item.id === "gold_nonnegative").violations[0];
+    assert.match(violation.id, /^assertion\.violation:/);
+    assert.strictEqual(violation.kind, "assertion.violation");
+    assert.deepStrictEqual(violation.replay.choices, violation.choiceIndices);
+    assert.strictEqual(violation.observedValues.gold, -1);
+    const repeated = spawnSync(process.execPath, [CLI, "--json"], { cwd: tmp, encoding: "utf8" });
+    const repeatedViolation = JSON.parse(repeated.stdout).explore.assertionResults
+      .find((item) => item.id === "gold_nonnegative").violations[0];
+    assert.strictEqual(repeatedViolation.id, violation.id);
+
+    const human = spawnSync(process.execPath, [CLI, "--human"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(human.status, 1);
+    assert.match(human.stdout, /Story assertion/);
+    assert.match(human.stdout, /Gold never goes negative/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("config loader resolves a project-local entrypoint and reports missing files", () => {

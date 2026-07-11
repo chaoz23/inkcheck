@@ -17,6 +17,7 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 ## Install / run
 
 - Discover installed schemas/features: `npx -y inkcheck capabilities --json`
+- Put approved mechanical story invariants in `inkcheck.yml` assertions; violations include stable IDs and exact indexed replay witnesses. A bounded non-finding is not proof, while `exhaustively_verified` is.
 - Inspect a project without compiling/exploring: `npx -y inkcheck inspect story/main.ink --json`
 - Machine reports: schema v1 with stable finding IDs, normalized kinds, story fingerprint, effective configuration, binding limit, and indexed replay witnesses
 - CLI: `npx -y inkcheck <story.ink>`
