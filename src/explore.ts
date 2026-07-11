@@ -1,7 +1,12 @@
 import { createHash } from "crypto";
 import { Story } from "inkjs";
 import { KnotInfo } from "./inklecate";
-import { variableChanges, variableStateKey, variableTransitionKey } from "./search-benchmark";
+import {
+  rarityWeight,
+  variableChanges,
+  variableStateKey,
+  variableTransitionKey,
+} from "./search-benchmark";
 
 export interface PlaytestStep {
   text: string;
@@ -328,6 +333,8 @@ export interface ExploreOptions {
    * a partial report at a deadline instead of being hard-killed mid-run.
    */
   timeGuard?: () => boolean;
+  /** Internal selector for the experimental variable-aware shared frontier. */
+  sharedVariableAware?: boolean;
 }
 
 export const DEFAULT_RANDOM_SEED = 1;
@@ -866,7 +873,10 @@ function createSharedEngine(
   if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff) {
     throw new RangeError("seed must be an integer from 0 to 4294967295");
   }
-  const foundBy = `shared:deep-novelty-v1:seed=${seed}`;
+  const variableAware = opts.sharedVariableAware ?? false;
+  const foundBy = variableAware
+    ? `shared:variable-aware-v1:seed=${seed}`
+    : `shared:deep-novelty-v1:seed=${seed}`;
   const stateSensitivity = {
     turns: opts.preserveTurnState ?? true,
     randomness: opts.preserveRandomState ?? true,
@@ -878,7 +888,7 @@ function createSharedEngine(
   const visitedKnots = new Set<string>();
   const seenStates = new Set<string>();
   const seenChoiceSets = new Set<string>();
-  const seenVariableStates = new Set<string>();
+  const variableStateCounts = new Map<string, number>();
   const variableTransitionCounts = new Map<string, number>();
   const nonFunctionKnots = knots.filter((k) => !k.isFunction);
   const nodes: SharedNode[] = [];
@@ -886,8 +896,11 @@ function createSharedEngine(
   const deep: number[] = [];
   const random: number[] = [];
   const novelty = new SharedMaxHeap();
+  const variablePriority = new SharedMaxHeap();
   const rng = mulberry32(seed);
-  const policies = ["novelty", "deep", "deep", "random"] as const;
+  const policies: Array<"novelty" | "deep" | "variable" | "random"> = variableAware
+    ? ["novelty", "deep", "deep", "random", "novelty", "deep", "variable", "random"]
+    : ["novelty", "deep", "deep", "random"];
   let policyCursor = 0;
   let insertionOrder = 0;
   let pendingStates = 0;
@@ -961,7 +974,8 @@ function createSharedEngine(
     parent: number | null,
     choiceText: string | undefined,
     depth: number,
-    noveltyScore: number
+    noveltyScore: number,
+    variableScore = 0
   ): void => {
     const id = nodes.length;
     nodes.push({ stateJson, variables, parent, choiceText, depth });
@@ -973,6 +987,13 @@ function createSharedEngine(
       score: noveltyScore * 1_000_000 + depth,
       order: insertionOrder++,
     });
+    if (variableAware) {
+      variablePriority.push({
+        id,
+        score: variableScore * 1_000_000 + noveltyScore * 1_000 + depth,
+        order: insertionOrder++,
+      });
+    }
     pendingStates++;
     pendingBytes += stateJson.length;
     peakPendingStates = Math.max(peakPendingStates, pendingStates);
@@ -1006,13 +1027,27 @@ function createSharedEngine(
     return undefined;
   };
 
+  const takeVariable = (): number | undefined => {
+    while (true) {
+      const item = variablePriority.pop();
+      if (!item) return undefined;
+      if (valid(item.id)) return item.id;
+    }
+  };
+
   const takeNext = (): number | undefined => {
     for (let attempt = 0; attempt < policies.length; attempt++) {
       const policy = policies[policyCursor++ % policies.length];
-      const id = policy === "deep" ? takeDeep() : policy === "random" ? takeRandom() : takeNovelty();
+      const id = policy === "deep"
+        ? takeDeep()
+        : policy === "random"
+          ? takeRandom()
+          : policy === "variable"
+            ? takeVariable()
+            : takeNovelty();
       if (id !== undefined) return id;
     }
-    return takeNovelty() ?? takeDeep() ?? takeRandom();
+    return takeNovelty() ?? takeVariable() ?? takeDeep() ?? takeRandom();
   };
 
   const session = makeStory(storyJson, externals);
@@ -1033,7 +1068,7 @@ function createSharedEngine(
   session.warnings.forEach((warning) => runtimeWarnings.add(warning));
   recordKnotCoverage(session);
   const rootVariables = extractVariables(session.story);
-  seenVariableStates.add(variableStateKey(rootVariables));
+  variableStateCounts.set(variableStateKey(rootVariables), 1);
 
   if (rootStep.choicesOffered.length === 0) {
     if (session.errors.length === 0) {
@@ -1148,11 +1183,16 @@ function createSharedEngine(
     const newKnots = recordKnotCoverage(session);
     const nextVariables = extractVariables(session.story);
     const variableState = variableStateKey(nextVariables);
-    const newVariableState = !seenVariableStates.has(variableState);
-    seenVariableStates.add(variableState);
-    for (const change of variableChanges(node.variables ?? {}, nextVariables)) {
+    const previousVariableStateObservations = variableStateCounts.get(variableState) ?? 0;
+    const newVariableState = previousVariableStateObservations === 0;
+    variableStateCounts.set(variableState, previousVariableStateObservations + 1);
+    const changes = variableChanges(node.variables ?? {}, nextVariables);
+    let rarestTransitionWeight = 0;
+    for (const change of changes) {
       const key = variableTransitionKey(change);
-      variableTransitionCounts.set(key, (variableTransitionCounts.get(key) ?? 0) + 1);
+      const previousObservations = variableTransitionCounts.get(key) ?? 0;
+      rarestTransitionWeight = Math.max(rarestTransitionWeight, rarityWeight(previousObservations));
+      variableTransitionCounts.set(key, previousObservations + 1);
     }
     noteDiscoveryProgress();
 
@@ -1195,11 +1235,22 @@ function createSharedEngine(
     const newChoiceSet = !seenChoiceSets.has(choiceSet);
     seenChoiceSets.add(choiceSet);
     let noveltyScore = newKnots * 8 + (newVariableState ? 4 : 0) + (newChoiceSet ? 2 : 0);
+    const stateRarity = 3 * rarityWeight(previousVariableStateObservations);
+    const transitionRarity = changes.length > 0 ? 3 * rarestTransitionWeight : 0;
+    const variableScore = Math.min(6, stateRarity + transitionRarity);
     if (path.length > deepestStateDiscovered) {
       deepestStateDiscovered = path.length;
       noveltyScore++;
     }
-    addNode(nextState, nextVariables, active.nodeId, choice.text, path.length, noveltyScore);
+    addNode(
+      nextState,
+      nextVariables,
+      active.nodeId,
+      choice.text,
+      path.length,
+      noveltyScore,
+      variableScore
+    );
     finishIfLast();
     return true;
   };
@@ -1284,7 +1335,7 @@ function createSharedEngine(
         uniqueStates: seenStates.size,
         peakPendingStates,
         peakPendingBytes,
-        variableStatesObserved: seenVariableStates.size,
+        variableStatesObserved: variableStateCounts.size,
         variableTransitionsObserved: variableTransitionCounts.size,
         rareVariableTransitions: [...variableTransitionCounts.values()].filter((count) => count === 1).length,
       };
@@ -1303,6 +1354,15 @@ export function exploreShared(
     throw new RangeError("maxStates must be an integer from 1 to 100000000");
   }
   return runEngineToBudget(createSharedEngine(storyJson, knots, externals, opts), maxStates, opts);
+}
+
+export function exploreSharedVariableAware(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {}
+): ExploreResult {
+  return exploreShared(storyJson, knots, externals, { ...opts, sharedVariableAware: true });
 }
 
 /** Deterministic PRNG (mulberry32) so random exploration stays reproducible in CI. */

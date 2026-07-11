@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { compile, stats, scanKnots, scanExternals, scanInboundDiverts, scanShapeProfile, scanStorySemantics } from "./inklecate";
-import { classifyUnvisitedKnots, playtest, explore, explorePortfolio, exploreShared, mergeMinRepro } from "./explore";
+import { classifyUnvisitedKnots, playtest, explore, explorePortfolio, exploreShared, exploreSharedVariableAware, mergeMinRepro } from "./explore";
 import { recommendNextRun } from "./advice";
 import { VERSION } from "./version";
 
@@ -88,8 +88,8 @@ server.registerTool(
         .describe("Seed for the reproducible random-sampling slice (default 1)"),
       minRepro: z.boolean().optional()
         .describe("Reserve a small breadth-first slice to shorten repro paths (default true)"),
-      search: z.enum(["portfolio", "shared"]).optional()
-        .describe("Search engine: portfolio (default) or experimental shared-state multi-frontier"),
+      search: z.enum(["portfolio", "shared", "shared-variable"]).optional()
+        .describe("Search engine: portfolio (default), shared, or variable-aware shared"),
     },
   },
   async ({ file, maxDepth, maxStates, seed, minRepro, search }) => {
@@ -119,7 +119,11 @@ server.registerTool(
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
     };
-    const searchStory = search === "shared" ? exploreShared : explorePortfolio;
+    const searchStory = search === "shared-variable"
+      ? exploreSharedVariableAware
+      : search === "shared"
+        ? exploreShared
+        : explorePortfolio;
     let result = searchStory(compiled.storyJson, knots, externals, options);
     if (reproStates > 0) {
       const bfs = explore(compiled.storyJson, knots, externals, {

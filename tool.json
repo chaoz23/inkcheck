@@ -47,7 +47,7 @@
       },
       {
         "flag": "--search <mode>",
-        "description": "Select portfolio (default) or the experimental shared-state multi-frontier engine. Shared mode expands each deduplicated state once across deep, novelty, and seeded views."
+        "description": "Select portfolio (default), shared, or shared-variable. Variable-aware mode dedicates 12.5% of shared-frontier selections to uncommon observed variable states and transitions."
       },
       {
         "flag": "--max-memory <mb>",
