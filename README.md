@@ -83,6 +83,8 @@ Within a single run, inkcheck spends its state budget across complementary searc
 
 `--search=shared-variable` is a narrower experiment that gives 12.5% of shared-frontier selections to states reached through uncommon variable snapshots or transitions. The boost is bounded and the deep, novelty, and seeded views remain active. It can help mechanically driven storylet graphs, but it is not uniformly better; the checked-in [comparison table](docs/search-experiments.md) includes both gains and regressions.
 
+The adaptive portfolio remains the general-purpose default. Experimental modes do not change its weights or behavior. Inkcheck's [search strategy policy](docs/search-strategy-policy.md) defines the benchmark breadth and regression gates required before any future default change.
+
 ### Bounded search vs random sampling
 
 Inkcheck is not a promise to visit every possible state in a non-trivial story. Branches, loops, variables, random behavior, and host-game integrations can make exhaustive coverage physically impractical. Its practical advantage over random sampling is reproducibility: given the same story and limits, inkcheck walks the choice graph systematically, returns exact choice paths for failures, reports unvisited-knot clues, and says explicitly when the run was partial.
@@ -245,6 +247,7 @@ The roadmap is focused on earning trust in bounded QA: clearer limits, better ev
 - Author-defined story assertions: deterministic project rules such as "gold never goes negative", "health never exceeds max", or "required variables are set before endings."
 - Repro persistence: remember known failing paths and make sure future runs keep checking them even as traversal strategies improve.
 - Public compatibility fixtures: consent-safe examples and synthetic edge cases for regression testing, performance comparisons, and trust-building.
+- Search promotion harness: a broad, predeclared scorecard across structural families, budgets, depths, and seeds before any experimental strategy can change the default.
 - Large-story performance controls: quick, standard, and deep check presets with clearer time/coverage tradeoffs.
 - Structural lint checks: optional checks for missing tags, inconsistent tag schemas, or project-specific metadata conventions.
 
