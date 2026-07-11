@@ -27,10 +27,12 @@ Optional fields:
 | Field | Type | When present |
 | --- | --- | --- |
 | `phase` | string | Phase events and some progress events. Known phases are `compile`, `source_scan`, `explore`, `min_repro`, and `report`. |
-| `pass` | string | Exploration progress from a named pass, such as `dfs:last`, `beam:w=64`, `random:seed=1`, or `bfs`. |
-| `endingsFound` | number | Count seen by the emitting pass or final aggregate, depending on event type. |
-| `runtimeErrorsFound` | number | Count seen by the emitting pass or final aggregate, depending on event type. |
-| `unvisitedKnots` | number | Current unvisited-knot count when available. |
+| `pass` | string | The pass whose slice produced this progress event, such as `dfs:last`, `beam:w=64`, `random:seed=1`, or `bfs`. Identifies which pass ran; the counts below are run-wide, not scoped to it. |
+| `endingsFound` | number | Distinct endings found so far across the whole run (all passes deduplicated). Non-decreasing within a run. |
+| `runtimeErrorsFound` | number | Distinct runtime errors found so far across the whole run. Non-decreasing within a run. |
+| `unvisitedKnots` | number | Knots not yet reached by any pass in this run. Non-increasing within a run. |
+
+Progress counts are cumulative over the run, not per-pass, so a consumer can render them as a live running total: endings and errors only rise, unvisited knots only fall. (`--next` starts a fresh exploration per escalation, so the counts rebuild at each escalation boundary; see Lifecycle.)
 
 Fields may be added in a future schema or minor version. Consumers should branch on `type`, use fields they understand, and ignore unknown fields.
 
