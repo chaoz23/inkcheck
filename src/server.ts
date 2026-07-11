@@ -4,9 +4,15 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { compile, stats, scanKnots, scanExternals, scanInboundDiverts, scanShapeProfile, scanStorySemantics, DEFAULT_MAX_DEPTH } from "./inklecate";
-import { classifyUnvisitedKnots, playtest, explore, explorePortfolio, mergeMinRepro } from "./explore";
+import { classifyUnvisitedKnots, playtest, explore, explorePortfolio, exploreShared, exploreSharedVariableAware, mergeMinRepro } from "./explore";
 import { recommendNextRun } from "./advice";
 import { VERSION } from "./version";
+import { capabilities, inspectProject, REPORT_SCHEMA_VERSION } from "./discovery";
+import {
+  buildCompileFailureEnvelope,
+  buildReportEnvelope,
+  enrichCompile,
+} from "./report-contract";
 
 const server = new McpServer({ name: "inkcheck", version: VERSION });
 
@@ -17,6 +23,34 @@ function json(result: unknown) {
 function err(message: string) {
   return { content: [{ type: "text" as const, text: message }], isError: true };
 }
+
+server.registerTool(
+  "inkcheck_capabilities",
+  {
+    description:
+      "Return Inkcheck's versioned schemas, limits, search modes, and explicit supported/unsupported feature flags. Call this before relying on optional functionality.",
+    inputSchema: {},
+  },
+  async () => json(capabilities())
+);
+
+server.registerTool(
+  "inspect_story",
+  {
+    description:
+      "Inspect an Ink project from source without compiling or exploring it. Returns a bounded project map with includes, shape, semantics, externals, knots, variables, and the recommended next operation.",
+    inputSchema: {
+      file: z.string().describe("Path to the root .ink file"),
+    },
+  },
+  async ({ file }) => {
+    try {
+      return json(inspectProject(file));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
 
 server.registerTool(
   "compile_story",
@@ -30,7 +64,11 @@ server.registerTool(
   async ({ file }) => {
     const result = await compile(file);
     const { storyJson, ...rest } = result;
-    return json(rest);
+    return json({
+      schemaVersion: REPORT_SCHEMA_VERSION,
+      inkcheckVersion: VERSION,
+      compile: enrichCompile(rest),
+    });
   }
 );
 
@@ -88,15 +126,29 @@ server.registerTool(
         .describe("Seed for the reproducible random-sampling slice (default 1)"),
       minRepro: z.boolean().optional()
         .describe("Reserve a small breadth-first slice to shorten repro paths (default true)"),
+      search: z.enum(["portfolio", "shared", "shared-variable"]).optional()
+        .describe("Search engine: portfolio (default), shared, or variable-aware shared"),
     },
   },
-  async ({ file, maxDepth, maxStates, seed, minRepro }) => {
+  async ({ file, maxDepth, maxStates, seed, minRepro, search }) => {
     const compiled = await compile(file);
+    const { storyJson: _compiledStoryJson, ...compileReport } = compiled;
+    const configuration = {
+      search: search ?? "portfolio" as const,
+      minRepro: minRepro !== false,
+      strict: false,
+      maxMemoryMb: null,
+      maxTimeSec: null,
+    };
     if (!compiled.success || !compiled.storyJson) {
-      return err(
-        "Compilation failed — fix these before exploring:\n" +
-          compiled.issues.map((i) => i.raw).join("\n")
-      );
+      return {
+        ...json(buildCompileFailureEnvelope(
+          compileReport,
+          file,
+          configuration
+        )),
+        isError: true,
+      };
     }
     const knots = scanKnots(file);
     const externals = scanExternals(file);
@@ -117,7 +169,12 @@ server.registerTool(
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
     };
-    let result = explorePortfolio(compiled.storyJson, knots, externals, options);
+    const searchStory = search === "shared-variable"
+      ? exploreSharedVariableAware
+      : search === "shared"
+        ? exploreShared
+        : explorePortfolio;
+    let result = searchStory(compiled.storyJson, knots, externals, options);
     if (reproStates > 0) {
       const bfs = explore(compiled.storyJson, knots, externals, {
         maxDepth,
@@ -132,7 +189,13 @@ server.registerTool(
     }
     classifyUnvisitedKnots(result, scanInboundDiverts(file));
     const nextRun = recommendNextRun(result, scanShapeProfile(file));
-    return json({ compileIssues: compiled.issues, ...result, nextRun });
+    return json(buildReportEnvelope({
+      compile: compileReport,
+      explore: result,
+      nextRun,
+      storyJson: compiled.storyJson,
+      configuration,
+    }));
   }
 );
 

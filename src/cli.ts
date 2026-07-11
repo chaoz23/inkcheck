@@ -21,6 +21,8 @@ import {
   classifyUnvisitedKnots,
   explore,
   explorePortfolio,
+  exploreShared,
+  exploreSharedVariableAware,
   mergeMinRepro,
 } from "./explore";
 import { NextRunAdvice, recommendNextRun } from "./advice";
@@ -31,18 +33,32 @@ import {
   unvisitedKnotHint,
 } from "./human-report";
 import { HumanProgressRenderer } from "./terminal-progress";
+import {
+  buildCompileFailureEnvelope,
+  buildReportEnvelope,
+  EffectiveReportConfiguration,
+} from "./report-contract";
+import {
+  capabilities,
+  inspectProject,
+  renderCapabilitiesHuman,
+  renderInspectionHuman,
+} from "./discovery";
 
 function usage(message?: string): never {
   if (message) console.error(`inkcheck: ${message}\n`);
   console.error(`inkcheck — CI for ink stories
 
 Usage: inkcheck <story.ink> [options]
+       inkcheck capabilities [--json]
+       inkcheck inspect <story.ink> [--json]
        inkcheck mcp              Start the MCP server (stdio)
 
 Options:
   --max-depth <n>    Max choices deep to explore, 1–1000 (default 100)
   --max-states <n>   Max story states to visit, 1–100000000 (default 10000000)
   --seed <n>         Seed for the random-sampling slice, 1–4294967295 (default 1)
+  --search <mode>    Search: portfolio (default), shared, or shared-variable
   --max-memory <mb>  Stop cleanly before heap use exceeds <mb> (default: 85% of the V8 heap limit)
   --max-time <s>     Stop cleanly after <s> seconds and return a partial report (default: no time limit)
   --profile          Print the story's shape profile and suggested settings, without exploring
@@ -64,10 +80,21 @@ async function main() {
     require("./server");
     return;
   }
+  if (args[0] === "capabilities") {
+    if (args.some((arg, index) => index > 0 && arg !== "--json")) {
+      usage("capabilities accepts only --json");
+    }
+    const value = capabilities();
+    console.log(args.includes("--json") ? JSON.stringify(value, null, 2) : renderCapabilitiesHuman(value));
+    return;
+  }
+  const inspectMode = args[0] === "inspect";
+  if (inspectMode) args.shift();
   let file: string | undefined;
   let maxDepth: number | undefined;
   let maxStates: number | undefined;
   let seed: number | undefined;
+  let search: "portfolio" | "shared" | "shared-variable" = "portfolio";
   let strict = false;
   let asJson = false;
   let asMarkdown = false;
@@ -77,6 +104,7 @@ async function main() {
   let auto = false;
   let followNext = false;
   let progressMode: "auto" | "human" | "ndjson" | "off" = process.stderr.isTTY ? "auto" : "off";
+  let progressSpecified = false;
   let maxMemoryMb: number | undefined;
   let maxTimeSec: number | undefined;
   const boundedInt = (flag: string, raw: string | undefined, max: number): number => {
@@ -91,6 +119,13 @@ async function main() {
     if (arg === "--max-depth") maxDepth = boundedInt(arg, args[++i], 1_000);
     else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 100_000_000);
     else if (arg === "--seed") seed = boundedInt(arg, args[++i], 4_294_967_295);
+    else if (arg === "--search" || arg.startsWith("--search=")) {
+      const mode = arg === "--search" ? args[++i] : arg.slice("--search=".length);
+      if (mode !== "portfolio" && mode !== "shared" && mode !== "shared-variable") {
+        usage("--search must be portfolio, shared, or shared-variable");
+      }
+      search = mode;
+    }
     else if (arg === "--max-memory") maxMemoryMb = boundedInt(arg, args[++i], 1_000_000);
     else if (arg === "--max-time") maxTimeSec = boundedInt(arg, args[++i], 86_400);
     else if (arg === "--profile") profileOnly = true;
@@ -102,6 +137,7 @@ async function main() {
     else if (arg === "--markdown") asMarkdown = true;
     else if (arg === "--no-min-repro") minRepro = false;
     else if (arg.startsWith("--progress=")) {
+      progressSpecified = true;
       const mode = arg.slice("--progress=".length);
       if (!["auto", "human", "ndjson", "off"].includes(mode)) {
         usage("--progress must be auto, human, ndjson, or off");
@@ -116,6 +152,22 @@ async function main() {
   if (!file) usage("missing story file");
   if ([asJson, asMarkdown, asHuman].filter(Boolean).length > 1) {
     usage("--json, --markdown, and --human cannot be used together");
+  }
+
+  if (inspectMode) {
+    if (asMarkdown || asHuman || profileOnly || auto || followNext || strict || !minRepro ||
+        maxDepth !== undefined || maxStates !== undefined || seed !== undefined ||
+        maxMemoryMb !== undefined || maxTimeSec !== undefined || search !== "portfolio" ||
+        progressSpecified) {
+      usage("inspect accepts a story path and optional --json only");
+    }
+    try {
+      const value = inspectProject(file);
+      console.log(asJson ? JSON.stringify(value, null, 2) : renderInspectionHuman(value));
+      return;
+    } catch (error) {
+      usage(error instanceof Error ? error.message : String(error));
+    }
   }
 
   if (profileOnly) {
@@ -137,6 +189,13 @@ async function main() {
   if (autoDepth !== undefined) maxDepth = autoDepth;
 
   const totalMaxStates = maxStates ?? 10_000_000;
+  const reportConfiguration: EffectiveReportConfiguration = {
+    search,
+    minRepro,
+    strict,
+    maxMemoryMb: maxMemoryMb ?? null,
+    maxTimeSec: maxTimeSec ?? null,
+  };
   const startedAt = Date.now();
   let sequence = 0;
   let statesExplored = 0;
@@ -171,12 +230,23 @@ async function main() {
   emitProgress("run_start");
   emitProgress("phase_start", { phase: "compile" });
   const compiled = await compile(file);
+  const { storyJson: _compiledStoryJson, ...compileReport } = compiled;
   emitProgress("phase_end", { phase: "compile" });
 
   if (!compiled.success) {
     emitProgress("phase_start", { phase: "report" });
     if (asJson) {
-      console.log(JSON.stringify({ compile: { ...compiled, storyJson: undefined } }, null, 2));
+      console.log(
+        JSON.stringify(
+          buildCompileFailureEnvelope(
+            compileReport,
+            file,
+            reportConfiguration
+          ),
+          null,
+          2
+        )
+      );
     } else if (asMarkdown) {
       console.log(renderCompileFailureMarkdown(compiled));
     } else if (asHuman) {
@@ -224,7 +294,12 @@ async function main() {
     // states already spent in earlier runs.
     const statesBase = statesExplored;
     emitProgress("phase_start", { phase: "explore" });
-    let checked = explorePortfolio(compiled.storyJson!, knots, externals, {
+    const searchStory = search === "shared-variable"
+      ? exploreSharedVariableAware
+      : search === "shared"
+        ? exploreShared
+        : explorePortfolio;
+    let checked = searchStory(compiled.storyJson!, knots, externals, {
       maxDepth: bounds.maxDepth,
       maxStates: Math.max(1, portfolioStates),
       seed: bounds.seed,
@@ -314,14 +389,16 @@ async function main() {
     }
   }
 
-  const outputReport = {
-    compile: { ...compiled, storyJson: undefined },
+  const outputReport = buildReportEnvelope({
+    compile: compileReport,
     stats: st,
     ...(profile ? { profile } : {}),
     explore: report,
     nextRun: advice,
     ...(followNext ? { runs } : {}),
-  };
+    storyJson: compiled.storyJson!,
+    configuration: reportConfiguration,
+  });
   emitProgress("phase_start", { phase: "report" });
   if (asJson) {
     console.log(

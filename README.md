@@ -79,6 +79,12 @@ A story does not have to be long to exceed the default budget. On inkle's publis
 
 Within a single run, inkcheck spends its state budget across complementary search passes rather than betting everything on one traversal order. The current CLI portfolio explores last-choice-first, first-choice-first, and inside-out DFS slices, adds a seeded random-sampling slice that varies early-choice prefixes the deterministic passes tend to repeat, adds a frontier-capped diversity beam that advances level-by-level like BFS while keeping one state per variable-signature lineage, then reserves a small breadth-first slice to shorten repro paths. The random slice uses a fixed default seed and the beam needs no seed at all, so runs stay reproducible in CI; every reported ending and runtime error names the pass (and seed) that found it. This often finds more endings and reachable knots at the same `--max-states` limit, but it is still bounded QA: a truncated report is useful evidence, not an exhaustive proof.
 
+`--search=shared` opts into an experimental alternative: deep, novelty-first, and seeded views draw from one deduplicated frontier and each reachable state is expanded at most once. This can spend a tight budget more efficiently when several strategies would otherwise rediscover the same state, and JSON telemetry reports unique states, peak pending states/bytes, and observed rare variable transitions. It is not the default yet: the evidence is promising on finite locks, deceptive suffixes, and storylet-like graphs, but some early-choice structures may still favor the portfolio's independent random and beam passes. The variable signals are measured for evaluation; they do not steer choices yet.
+
+`--search=shared-variable` is a narrower experiment that gives 12.5% of shared-frontier selections to states reached through uncommon variable snapshots or transitions. The boost is bounded and the deep, novelty, and seeded views remain active. It can help mechanically driven storylet graphs, but it is not uniformly better; the checked-in [comparison table](docs/search-experiments.md) includes both gains and regressions.
+
+The adaptive portfolio remains the general-purpose default. Experimental modes do not change its weights or behavior. Inkcheck's [search strategy policy](docs/search-strategy-policy.md) defines the benchmark breadth and regression gates required before any future default change.
+
 ### Bounded search vs random sampling
 
 Inkcheck is not a promise to visit every possible state in a non-trivial story. Branches, loops, variables, random behavior, and host-game integrations can make exhaustive coverage physically impractical. Its practical advantage over random sampling is reproducibility: given the same story and limits, inkcheck walks the choice graph systematically, returns exact choice paths for failures, reports unvisited-knot clues, and says explicitly when the run was partial.
@@ -124,6 +130,8 @@ Four tools for AI agents working on ink stories:
 
 | Tool | What it does |
 | --- | --- |
+| `inkcheck_capabilities` | Versioned schemas, limits, search modes, and explicit feature availability |
+| `inspect_story` | Source-only project map: includes, shape, semantics, externals, knots, and variables |
 | `compile_story` | Structured compile issues (severity, file, line) |
 | `story_stats` | Word/knot/choice counts + full knot list with locations |
 | `playtest_story` | Play one scripted choice path headlessly; returns transcript, tags, variables, errors |
@@ -150,15 +158,25 @@ The intended loop for an agent editing a story: edit `.ink` → `compile_story` 
 ## CLI
 
 ```
-inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--auto] [--profile] [--next] [--no-min-repro] [--strict] [--progress=auto|human|ndjson|off] [--human|--json|--markdown]
+inkcheck capabilities [--json]
+inkcheck inspect <story.ink> [--json]
+inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--search=portfolio|shared|shared-variable] [--auto] [--profile] [--next] [--no-min-repro] [--strict] [--progress=auto|human|ndjson|off] [--human|--json|--markdown]
 inkcheck mcp    # start the MCP server on stdio
 ```
+
+`inkcheck capabilities --json` lets agents check schema versions, limits, search modes, and explicit supported or unavailable features before relying on them. `inkcheck inspect story.ink --json` performs deterministic source-only discovery without compiling or exploring: it follows project-local includes and returns a bounded map of story shape, semantics, externals, knots/functions, and variable declarations/reads/writes. See the [agent discovery contract](docs/agent-discovery.md).
+
+JSON checks use the versioned [report schema](docs/report-schema-v1.md). Findings have stable IDs and normalized kinds; ending and runtime-error witnesses carry both human choice text and zero-based choice indices, so duplicate labels remain exactly replayable through `playtest_story`. The envelope records the Inkcheck version, compiled-story fingerprint, effective configuration, and binding limit while retaining the established `compile`, `stats`, `explore`, and `nextRun` sections.
 
 `--max-depth` accepts 1–1,000 and `--max-states` accepts 1–100,000,000, with a **default budget of 10,000,000**. These hard ceilings prevent malformed automation inputs from accidentally disabling the exploration bounds. The default is deliberately ambitious because three things make a big budget safe rather than reckless: a fully-explorable story early-exits the moment a systematic pass proves it exhaustive (so small stories still finish in a handful of states), the memory guard stops cleanly before an out-of-memory crash, and progress reporting lets you watch and interrupt a long run. A large, non-exhaustive story will therefore *use* that budget — see [Performance and memory](#performance-and-memory) before running one in CI, and pin a smaller `--max-states` there if a bounded runtime matters more than depth of coverage.
 
 `--max-states` is a total budget for the run, not a promise that one single DFS walk will spend all states. By default the CLI divides most of that budget across three complementary DFS views of the choice tree plus a seeded random-sampling slice, and keeps a small breadth-first slice for shorter failure and ending repro paths. Use `--no-min-repro` to spend that repro slice on the DFS portfolio instead when breadth-first shortening is less important than broader search.
 
 `--seed` (default 1) controls the random-sampling slice. The same seed always samples the same walks, so CI results stay reproducible; change the seed across scheduled runs to sample different early-choice combinations over time. Each finding's `foundBy` field in `--json` output names the pass that discovered it, e.g. `dfs:last` or `random:seed=1`.
+
+`--search=shared` selects the experimental shared-state multi-frontier engine; `--search=portfolio` is the unchanged default. Shared mode remains deterministic for a fixed seed and still honors depth, state, memory, time, progress, and repro-shortening controls.
+
+`--search=shared-variable` adds a small variable-rarity frontier to shared search. It prioritizes observed uncommon variable values and changes mechanically; it does not use AI, understand story meaning, or infer which values are desirable.
 
 `--max-memory <mb>` caps how much heap the run may use before it stops cleanly. A V8 heap out-of-memory abort cannot be caught after the fact, so inkcheck watches memory during exploration and — before it would crash — stops, keeps everything found so far, and reports `truncatedBy.memory` with a partial report rather than losing the run. The default cap is 85% of the V8 heap limit (which honors any `NODE_OPTIONS=--max-old-space-size` you set), so large runs on modest hardware degrade gracefully instead of dying; pass an explicit value to tighten or loosen it. On a memory stop the `nextRun` verdict is `investigate` (raise `--max-old-space-size`, lower `--max-states`, or split the story) — never `broaden`, since more budget would only hit the wall sooner.
 
@@ -211,6 +229,8 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 - **Compilation** uses `inklecate`, the canonical compiler — found via `$INKLECATE_PATH`, then `PATH`, then auto-downloaded from the pinned official ink 1.2.1 release into `~/.cache/inkcheck` on first run. Downloaded archives are verified against pinned SHA-256 hashes before extraction. Stories are compiled with `-c` so all knot visits are counted.
 - **Exploration** runs the compiled story in [inkjs](https://github.com/y-lohse/inkjs) (the official JS runtime port), reusing pooled story instances so the compiled JSON is parsed once per pass and states rewind via `LoadJson`. States are deduplicated by content hash. Turn and RNG state are preserved whenever the source uses those features; otherwise that bookkeeping is safely canonicalized so ordinary loops can converge. `INCLUDE`s are followed.
 - The CLI uses a bounded, adaptive portfolio search. Complementary passes — last-choice-first, first-choice-first, and inside-out DFS, a diversity-first beam, and seeded random walks — run interleaved in ten deterministic rounds. Initial weights (roughly 20/20/26/15/20%, or a shape profile's suggestion under `--auto`) are reallocated each round toward passes whose findings are still growing, with a guaranteed floor per pass so a discovery dry spell never defunds a pass outright. The passes are complementary: the DFS orderings systematically exhaust subtrees, the beam spreads budget across every variable-state lineage within a hard frontier cap, and the random walks re-roll every choice point so early-choice state combinations get sampled instead of repeated. Findings merge into one report, each labeled with the pass that found it, and the executed schedule appears in `--json` output.
+- Experimental `--search=shared` keeps one global state identity and exposes the pending work through deep, novelty, and seeded frontier views. A state chosen by any view is expanded once and removed lazily from the others; compact parent links preserve exact repro paths without retaining a full path on every pending state. Variable-state and variable-transition rarity are recorded as evaluation telemetry, not yet used as a search heuristic.
+- Experimental `--search=shared-variable` replaces one of every eight shared-frontier selections with a variable-rarity view. Its score combines the observed frequency of the destination variable snapshot and the rarest change on that edge; it cannot consume more than its fixed slice, so graph novelty, depth, and seeded exploration remain represented.
 - The moment any systematic pass visits every reachable state without hitting a limit, the whole portfolio stops: every further state would be redundant. A small fully-explorable story at the default 10,000,000-state budget still finishes in the handful of states it actually has — the large default costs nothing when a story is exhaustible.
 - The beam pass answers "what should a beam optimize for" concretely: survivors are selected round-robin across variable-signature groups (diversity first), ranked within each group by novelty — newly visited knots, then new variable signatures, then new offered-choice sets. It is deterministic without a seed, and it reports the run as truncated whenever it had to prune a reachable state, so a beam never silently claims complete coverage.
 - Unless skipped with `--no-min-repro`, the CLI reserves about 10% of the requested `--max-states` budget for a breadth-first repro-shortening slice. BFS reaches shared findings by shorter choice trails where possible and may contribute extra shallow findings.
@@ -235,6 +255,7 @@ The roadmap is focused on earning trust in bounded QA: clearer limits, better ev
 - Author-defined story assertions: deterministic project rules such as "gold never goes negative", "health never exceeds max", or "required variables are set before endings."
 - Repro persistence: remember known failing paths and make sure future runs keep checking them even as traversal strategies improve.
 - Public compatibility fixtures: consent-safe examples and synthetic edge cases for regression testing, performance comparisons, and trust-building.
+- Search promotion harness: a broad, predeclared scorecard across structural families, budgets, depths, and seeds before any experimental strategy can change the default.
 - Large-story performance controls: quick, standard, and deep check presets with clearer time/coverage tradeoffs.
 - Structural lint checks: optional checks for missing tags, inconsistent tag schemas, or project-specific metadata conventions.
 
