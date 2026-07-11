@@ -312,6 +312,49 @@ test("explore finds endings, runtime errors with repro, and unvisited knots", as
   assert.strictEqual(report.truncated, false);
 });
 
+test("portfolio progress counts move monotonically across interleaved passes", async () => {
+  // A branchy story with a budget below its reachable space, so no pass proves
+  // exhaustion early and the scheduler round-robins every pass — the exact
+  // condition under which per-pass snapshot counts used to bounce.
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  const externals = scanExternals(EARLY_CHOICE_GRID);
+  const events = [];
+  // progressIntervalMs: 0 emits on every chunk, so the interleaving of passes
+  // is fully exercised.
+  const report = explorePortfolio(compiled.storyJson, knots, externals, {
+    maxStates: 400,
+    progressIntervalMs: 0,
+    onProgress: (p) => events.push(p),
+  });
+  assert.ok(events.length > 5, "expected many interleaved progress events");
+  assert.ok(
+    new Set(events.map((e) => e.pass)).size > 1,
+    "expected more than one pass to report, or interleaving is untested"
+  );
+  for (let i = 1; i < events.length; i++) {
+    const prev = events[i - 1];
+    const cur = events[i];
+    assert.ok(
+      cur.endingsFound >= prev.endingsFound,
+      `endings must not decrease: ${prev.endingsFound} -> ${cur.endingsFound}`
+    );
+    assert.ok(
+      cur.runtimeErrorsFound >= prev.runtimeErrorsFound,
+      `runtime errors must not decrease: ${prev.runtimeErrorsFound} -> ${cur.runtimeErrorsFound}`
+    );
+    assert.ok(
+      cur.unvisitedKnots <= prev.unvisitedKnots,
+      `unvisited knots must not increase: ${prev.unvisitedKnots} -> ${cur.unvisitedKnots}`
+    );
+  }
+  // The live counts converge to the final portfolio report.
+  const last = events.at(-1);
+  assert.strictEqual(last.endingsFound, report.endingsFound.length);
+  assert.strictEqual(last.runtimeErrorsFound, report.runtimeErrors.length);
+  assert.strictEqual(last.unvisitedKnots, report.unvisitedKnots.length);
+});
+
 test("BFS strategy reaches the same endings", async () => {
   const compiled = await compile(MANOR);
   const dfs = explore(compiled.storyJson, scanKnots(MANOR));

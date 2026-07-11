@@ -2108,6 +2108,13 @@ export function explorePortfolio(
   const seenEndings = new Set<string>();
   const seenKnots = new Set<string>();
   const seenErrors = new Set<string>();
+  // Live progress reports portfolio-wide cumulative discoveries, not a single
+  // pass's snapshot. Per-pass snapshots are each correct but not comparable
+  // across the interleaved rounds, so a naive relay makes the counts bounce
+  // (endings/errors drop, unvisited knots climb) as passes alternate. The
+  // dedup sets above are monotonic by construction, so we drive progress from
+  // them: endings/errors only grow, and unvisited knots only shrink.
+  const totalNonFunctionKnots = knots.filter((k) => !k.isFunction).length;
   const marginalTotals = engines.map(() => ({ endings: 0, knots: 0, errors: 0 }));
   let currentWeights = [...engineWeights];
   let remaining = maxStates;
@@ -2140,8 +2147,14 @@ export function explorePortfolio(
       const consumed = grants[a] > 0 ? engine.run(grants[a]) : 0;
       remaining -= consumed;
       const snapshot = engine.snapshot();
-      opts.onProgress?.(progressFromSnapshot(engine.label, maxStates - remaining, snapshot));
       const marginal = countMarginalFindings(snapshot, seenEndings, seenKnots, seenErrors);
+      opts.onProgress?.({
+        pass: engine.label,
+        statesExplored: maxStates - remaining,
+        endingsFound: seenEndings.size,
+        runtimeErrorsFound: seenErrors.size,
+        unvisitedKnots: totalNonFunctionKnots - seenKnots.size,
+      });
       marginalTotals[i].endings += marginal.newEndings;
       marginalTotals[i].knots += marginal.newKnots;
       marginalTotals[i].errors += marginal.newRuntimeErrors;
