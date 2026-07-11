@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "tsc",
-    "test": "tsc && node --test \"test/**/*.test.js\"",
+    "test": "tsc && node --test --test-concurrency=1 \"test/**/*.test.js\"",
     "web": "node dist/web.js",
     "usage-report": "node dist/usage-report.js"
   },
