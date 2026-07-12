@@ -26,6 +26,8 @@ const {
   mergeMinRepro,
   stateKey,
   validateAssertionsForStory,
+  validateGoalsForStory,
+  exploreWithGoals,
 } = require("../dist/explore");
 const { recommendNextRun } = require("../dist/advice");
 const { runSubmission, webConfigFromEnv } = require("../dist/web");
@@ -43,6 +45,7 @@ const {
   parseAssertionDefinitions,
   validateAssertions,
 } = require("../dist/assertions");
+const { parseGoalDefinitions } = require("../dist/goals");
 
 const MANOR = path.join(__dirname, "..", "examples", "manor.ink");
 const BROKEN = path.join(__dirname, "..", "examples", "broken.ink");
@@ -147,13 +150,16 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.inkcheckVersion, "0.5.1");
   assert.deepStrictEqual(value.searchModes, ["portfolio", "shared", "shared-variable"]);
   assert.strictEqual(value.limits.maxStates, 100_000_000);
+  assert.strictEqual(value.limits.maxGoalStates, 100_000_000);
+  assert.strictEqual(value.limits.maxTotalStates, 100_000_000);
+  assert.strictEqual(value.limits.defaultGoalMaxStates, 0);
   assert.strictEqual(value.features.projectInspection, true);
   assert.strictEqual(value.schemas.report, 1);
   assert.strictEqual(value.schemas.config, CONFIG_SCHEMA_VERSION);
   assert.strictEqual(value.limits.defaultMaxDepth, 100);
   assert.strictEqual(value.features.indexedWitnesses, true);
   assert.strictEqual(value.features.assertions, true);
-  assert.strictEqual(value.features.goals, false);
+  assert.strictEqual(value.features.goals, true);
   assert.strictEqual(value.features.resumableSearch, false);
 });
 
@@ -293,6 +299,150 @@ test("assertion config rejects duplicate IDs and malformed compound conditions",
   assert.ok(issues.some((issue) => /expected ==, !=, <, <=, >, >=/.test(issue)));
 });
 
+test("goal config reuses the safe typed condition grammar", () => {
+  const parsed = parseProjectConfig(`
+schemaVersion: 1
+entrypoint: story.ink
+goals:
+  - id: depleted_gold
+    description: Reach a depleted resource state
+    condition:
+      left: { variable: gold }
+      operator: "<="
+      right: { literal: 0 }
+`);
+  assert.strictEqual(parsed.goals[0].id, "depleted_gold");
+  assert.throws(
+    () => parseProjectConfig(`schemaVersion: 1\nentrypoint: story.ink\ngoals:\n  - id: unsafe\n    condition:\n      expression: process.exit()\n`),
+    /expected exactly one condition form|unknown key/
+  );
+});
+
+test("bounded goal search reaches targets with exact witnesses and protects general exploration", async () => {
+  const compiled = await compile(ASSERTION_STORY);
+  const knots = scanKnots(ASSERTION_STORY);
+  const issues = [];
+  const goals = parseGoalDefinitions([{
+    id: "negative_gold",
+    condition: { left: { variable: "gold" }, operator: "<", right: { literal: 0 } },
+  }], "goals", issues);
+  assert.deepStrictEqual(issues, []);
+  validateGoalsForStory(compiled.storyJson, knots, [], goals);
+  const result = exploreWithGoals(compiled.storyJson, knots, [], {
+    maxDepth: 10,
+    maxStates: 100,
+    goalMaxStates: 25,
+    seed: 7,
+    goals,
+  });
+  const goal = result.goalResults[0];
+  assert.strictEqual(goal.status, "reached");
+  assert.deepStrictEqual(goal.witness.choiceIndices, [0]);
+  assert.deepStrictEqual(goal.witness.observedValues, { gold: -1 });
+  assert.ok(goal.witness.foundBy);
+  assert.ok(result.passes.some((pass) => pass.pass === "dfs:last"), "general portfolio remains active");
+  assert.ok(result.passes.some((pass) => /^shared:goal-directed-v1/.test(pass.pass)), "goal slice is reported");
+  assert.strictEqual(result.limits.maxStates, 100);
+  assert.strictEqual(result.limits.goalMaxStates, 25);
+  assert.strictEqual(result.limits.totalMaxStates, 125);
+  assert.strictEqual(result.goalBudget.generalGranted, 100);
+  assert.strictEqual(result.goalBudget.directedGranted, 25);
+});
+
+test("every exploration engine records goals reached during general exploration", async () => {
+  const compiled = await compile(ASSERTION_STORY);
+  const knots = scanKnots(ASSERTION_STORY);
+  const goals = [{
+    id: "negative_gold",
+    condition: { left: { variable: "gold" }, operator: "<", right: { literal: 0 } },
+  }];
+  const engines = [
+    ["dfs", explore],
+    ["shared", exploreShared],
+    ["random", exploreRandom],
+    ["beam", exploreBeam],
+    ["portfolio", explorePortfolio],
+  ];
+  for (const [name, run] of engines) {
+    const result = run(compiled.storyJson, knots, [], { maxDepth: 10, maxStates: 2_000, seed: 7, goals });
+    assert.strictEqual(result.goalResults[0].status, "reached", name);
+    assert.deepStrictEqual(result.goalResults[0].witness.choiceIndices, [0], name);
+  }
+});
+
+test("goals do not reduce or alter the baseline when no extra goal budget is requested", async () => {
+  const compiled = await compile(ASSERTION_STORY);
+  const knots = scanKnots(ASSERTION_STORY);
+  const options = { maxDepth: 10, maxStates: 100, seed: 7 };
+  const baseline = explorePortfolio(compiled.storyJson, knots, [], options);
+  const observed = exploreWithGoals(compiled.storyJson, knots, [], {
+    ...options,
+    goals: [{
+      id: "negative_gold",
+      condition: { left: { variable: "gold" }, operator: "<", right: { literal: 0 } },
+    }],
+  });
+  assert.strictEqual(observed.statesExplored, baseline.statesExplored);
+  assert.deepStrictEqual(observed.endingsFound, baseline.endingsFound);
+  assert.deepStrictEqual(observed.runtimeErrors, baseline.runtimeErrors);
+  assert.strictEqual(observed.goalBudget, undefined);
+  assert.strictEqual(observed.goalResults[0].status, "reached");
+});
+
+test("additional goal work requires goals and shares the 100M total ceiling", async () => {
+  const compiled = await compile(ASSERTION_STORY);
+  const knots = scanKnots(ASSERTION_STORY);
+  assert.throws(
+    () => exploreWithGoals(compiled.storyJson, knots, [], { maxStates: 10, goalMaxStates: 1 }),
+    /requires at least one goal/
+  );
+  assert.throws(
+    () => exploreWithGoals(compiled.storyJson, knots, [], {
+      maxStates: 100_000_000,
+      goalMaxStates: 1,
+      goals: [{ id: "x", condition: { left: { variable: "gold" }, operator: "==", right: { literal: 0 } } }],
+    }),
+    /must not exceed 100000000/
+  );
+});
+
+test("goal-directed progress remains monotonic across the general and directed slices", async () => {
+  const compiled = await compile(ASSERTION_STORY);
+  const knots = scanKnots(ASSERTION_STORY);
+  const states = [];
+  exploreWithGoals(compiled.storyJson, knots, [], {
+    maxDepth: 10,
+    maxStates: 100,
+    goalMaxStates: 25,
+    goals: [{
+      id: "negative_gold",
+      condition: { left: { variable: "gold" }, operator: "<", right: { literal: 0 } },
+    }],
+    progressIntervalStates: 1,
+    onProgress: (progress) => states.push(progress.statesExplored),
+  });
+  assert.ok(states.length > 1);
+  assert.deepStrictEqual(states, [...states].sort((a, b) => a - b));
+});
+
+test("bounded goal misses are not reported as proof", async () => {
+  const compiled = await compile(ASSERTION_STORY);
+  const knots = scanKnots(ASSERTION_STORY);
+  const issues = [];
+  const goals = parseGoalDefinitions([{
+    id: "impossible_gold",
+    condition: { left: { variable: "gold" }, operator: "<", right: { literal: -100 } },
+  }], "goals", issues);
+  const result = exploreWithGoals(compiled.storyJson, knots, [], {
+    maxDepth: 1,
+    maxStates: 2,
+    goalMaxStates: 1,
+    goals,
+  });
+  assert.strictEqual(result.goalResults[0].status, "not_reached_within_limits");
+  assert.ok(result.goalResults[0].closestObserved);
+});
+
 test("every exploration engine evaluates the same assertions on visited states", async () => {
   const compiled = await compile(ASSERTION_STORY);
   const knots = scanKnots(ASSERTION_STORY);
@@ -368,6 +518,36 @@ test("CLI assertions fail CI and emit stable replayable counterexamples", () => 
     assert.strictEqual(human.status, 1);
     assert.match(human.stdout, /Story assertion/);
     assert.match(human.stdout, /Gold never goes negative/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("CLI project goals return bounded allocation and replayable witnesses without failing CI", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-goals-cli-"));
+  try {
+    fs.copyFileSync(ASSERTION_STORY, path.join(tmp, "story.ink"));
+    fs.writeFileSync(path.join(tmp, "inkcheck.yml"), require("yaml").stringify({
+      schemaVersion: 1,
+      entrypoint: "story.ink",
+      ci: { maxDepth: 10, maxStates: 100, goalMaxStates: 25, minRepro: false },
+      goals: [{
+        id: "negative_gold",
+        condition: { left: { variable: "gold" }, operator: "<", right: { literal: 0 } },
+      }],
+    }));
+    const checked = spawnSync(process.execPath, [CLI, "--json"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(checked.status, 0, checked.stderr);
+    const report = JSON.parse(checked.stdout);
+    assert.strictEqual(report.explore.goalBudget.generalGranted, 100);
+    assert.strictEqual(report.explore.goalBudget.directedGranted, 25);
+    assert.ok(report.explore.goalBudget.generalConsumed <= 100);
+    assert.ok(report.explore.goalBudget.directedConsumed <= 25);
+    assert.strictEqual(report.effectiveConfiguration.goalMaxStates, 25);
+    assert.strictEqual(report.explore.limits.totalMaxStates, 125);
+    const goal = report.explore.goalResults[0];
+    assert.strictEqual(goal.status, "reached");
+    assert.deepStrictEqual(goal.witness.choiceIndices, [0]);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -1445,7 +1625,7 @@ test("markdown and text reports state limits and targeted advice", () => {
     { encoding: "utf8" }
   );
   assert.match(md.stdout, /\| Depth limit \| 100 \|/);
-  assert.match(md.stdout, /\| State budget \| 200 \|/);
+  assert.match(md.stdout, /\| Baseline state budget \| 200 \|/);
   // A systematic pass exhausts manor within this budget, so the run is
   // complete even though the sampling slice spent its whole sub-budget.
   assert.match(md.stdout, /\| Truncated \| no \|/);

@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { compile, stats, scanKnots, scanExternals, scanInboundDiverts, scanShapeProfile, scanStorySemantics, DEFAULT_MAX_DEPTH } from "./inklecate";
-import { classifyUnvisitedKnots, playtest, explore, explorePortfolio, exploreShared, exploreSharedVariableAware, mergeMinRepro, validateAssertionsForStory } from "./explore";
+import { classifyUnvisitedKnots, playtest, explore, exploreWithGoals, mergeMinRepro, validateAssertionsForStory, validateGoalsForStory } from "./explore";
 import { recommendNextRun } from "./advice";
 import { VERSION } from "./version";
 import { capabilities, inspectProject, REPORT_SCHEMA_VERSION } from "./discovery";
@@ -14,6 +14,7 @@ import {
   enrichCompile,
 } from "./report-contract";
 import { parseAssertionDefinitions } from "./assertions";
+import { parseGoalDefinitions } from "./goals";
 
 const server = new McpServer({ name: "inkcheck", version: VERSION });
 
@@ -123,6 +124,8 @@ server.registerTool(
         .describe(`Max choices deep to explore (default ${DEFAULT_MAX_DEPTH})`),
       maxStates: z.number().int().min(1).max(100000000).optional()
         .describe("Max story states to visit (default 10000000)"),
+      goalMaxStates: z.number().int().min(0).max(100000000).optional()
+        .describe("Additional directed-goal states; baseline maxStates is preserved (default 0)"),
       seed: z.number().int().min(0).max(4294967295).optional()
         .describe("Seed for the reproducible random-sampling slice (default 1)"),
       minRepro: z.boolean().optional()
@@ -131,12 +134,23 @@ server.registerTool(
         .describe("Search engine: portfolio (default), shared, or variable-aware shared"),
       assertions: z.array(z.unknown()).optional()
         .describe("Safe typed assertion definitions using comparisons plus all, any, and not"),
+      goals: z.array(z.unknown()).optional()
+        .describe("Safe typed target conditions; goalMaxStates enables explicit additional steering work"),
     },
   },
-  async ({ file, maxDepth, maxStates, seed, minRepro, search, assertions: assertionInput }) => {
+  async ({ file, maxDepth, maxStates, goalMaxStates, seed, minRepro, search, assertions: assertionInput, goals: goalInput }) => {
     const assertionIssues: string[] = [];
     const assertions = parseAssertionDefinitions(assertionInput, "assertions", assertionIssues) ?? [];
     if (assertionIssues.length) return err(`Invalid assertions:\n${assertionIssues.map((issue) => `- ${issue}`).join("\n")}`);
+    const goalIssues: string[] = [];
+    const goals = parseGoalDefinitions(goalInput, "goals", goalIssues) ?? [];
+    if (goalIssues.length) return err(`Invalid goals:\n${goalIssues.map((issue) => `- ${issue}`).join("\n")}`);
+    const baselineMaxStates = maxStates ?? 10_000_000;
+    const additionalGoalStates = goalMaxStates ?? 0;
+    if (additionalGoalStates > 0 && goals.length === 0) return err("goalMaxStates requires at least one goal");
+    if (baselineMaxStates + additionalGoalStates > 100_000_000) {
+      return err("maxStates + goalMaxStates must not exceed 100000000");
+    }
     const compiled = await compile(file);
     const { storyJson: _compiledStoryJson, ...compileReport } = compiled;
     const configuration = {
@@ -145,6 +159,9 @@ server.registerTool(
       strict: false,
       maxMemoryMb: null,
       maxTimeSec: null,
+      goalMaxStates: additionalGoalStates,
+      ...(assertions.length ? { assertions } : {}),
+      ...(goals.length ? { goals } : {}),
     };
     if (!compiled.success || !compiled.storyJson) {
       return {
@@ -161,10 +178,11 @@ server.registerTool(
     const semantics = scanStorySemantics(file);
     try {
       validateAssertionsForStory(compiled.storyJson, knots, externals, assertions);
+      validateGoalsForStory(compiled.storyJson, knots, externals, goals);
     } catch (error) {
       return err(error instanceof Error ? error.message : String(error));
     }
-    const totalMaxStates = maxStates ?? 10_000_000;
+    const totalMaxStates = baselineMaxStates;
     const reproStates = minRepro !== false && totalMaxStates > 1 ? Math.max(1, Math.floor(totalMaxStates * 0.1)) : 0;
     const portfolioStates = totalMaxStates - reproStates;
     // Stop cleanly before a V8 heap OOM (uncatchable after the fact); the
@@ -180,13 +198,10 @@ server.registerTool(
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
       assertions,
+      goals,
+      goalMaxStates: additionalGoalStates,
     };
-    const searchStory = search === "shared-variable"
-      ? exploreSharedVariableAware
-      : search === "shared"
-        ? exploreShared
-        : explorePortfolio;
-    let result = searchStory(compiled.storyJson, knots, externals, options);
+    let result = exploreWithGoals(compiled.storyJson, knots, externals, options, search ?? "portfolio");
     if (reproStates > 0) {
       const bfs = explore(compiled.storyJson, knots, externals, {
         maxDepth,

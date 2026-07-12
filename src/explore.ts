@@ -13,6 +13,7 @@ import {
   AssertionTracker,
   validateAssertions,
 } from "./assertions";
+import { GoalDefinition, GoalResult, GoalTracker, validateGoals } from "./goals";
 
 export interface PlaytestStep {
   text: string;
@@ -87,6 +88,15 @@ export interface ExploreResult {
   endingsFound: EndingReport[];
   runtimeErrors: RuntimeErrorReport[];
   assertionResults: AssertionResult[];
+  /** Optional author/agent search targets; absent for ordinary runs. */
+  goalResults?: GoalResult[];
+  /** Configured and consumed allocation when explicit goals steer part of a run. */
+  goalBudget?: {
+    generalGranted: number;
+    generalConsumed: number;
+    directedGranted: number;
+    directedConsumed: number;
+  };
   runtimeWarnings: string[];
   /** Authored knots never visited on any explored path (functions excluded). */
   unvisitedKnots: UnvisitedKnotReport[];
@@ -104,7 +114,16 @@ export interface ExploreResult {
    * sampling-slice budget exhaustion no longer counts as truncation.
    */
   exhaustive: boolean;
-  limits: { maxDepth: number; maxStates: number; seed?: number };
+  limits: {
+    maxDepth: number;
+    /** Ordinary baseline/repro exploration budget. */
+    maxStates: number;
+    /** Explicit additional directed-goal budget. */
+    goalMaxStates?: number;
+    /** Combined configured work ceiling when goal work is enabled. */
+    totalMaxStates?: number;
+    seed?: number;
+  };
   /** Portfolio runs only: the adaptive schedule that was actually executed. */
   schedule?: ScheduleRound[];
   /** Lifetime per-pass telemetry; merges concatenate contributing passes. */
@@ -217,6 +236,22 @@ export function validateAssertionsForStory(
     knots.filter((knot) => !knot.isFunction).map((knot) => knot.name)
   );
   if (issues.length) throw new RangeError(`Invalid assertions:\n${issues.map((issue) => `- ${issue}`).join("\n")}`);
+}
+
+export function validateGoalsForStory(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[],
+  goals: GoalDefinition[]
+): void {
+  const session = makeStory(storyJson, externals);
+  continueMaximally(session);
+  const issues = validateGoals(
+    goals,
+    extractVariables(session.story),
+    knots.filter((knot) => !knot.isFunction).map((knot) => knot.name)
+  );
+  if (issues.length) throw new RangeError(`Invalid goals:\n${issues.map((issue) => `- ${issue}`).join("\n")}`);
 }
 
 interface StorySession {
@@ -424,6 +459,12 @@ export interface ExploreOptions {
   sharedVariableAware?: boolean;
   /** Prevalidated non-executable project assertions evaluated on visited states. */
   assertions?: AssertionDefinition[];
+  /** Prevalidated goal conditions used only by an explicitly bounded goal slice. */
+  goals?: GoalDefinition[];
+  /** Additional directed-goal states; baseline maxStates is never reduced. Default 0. */
+  goalMaxStates?: number;
+  /** Internal selector for the deterministic goal-proximity shared frontier. */
+  sharedGoalAware?: boolean;
 }
 
 export const DEFAULT_RANDOM_SEED = 1;
@@ -650,6 +691,7 @@ function createSearchEngine(
   // Root: continue the fresh story to the first choice point.
   const rootStep = continueMaximally(s);
   const assertions = assertionTracker(s.story, knots, opts.assertions, foundBy);
+  const goals = new GoalTracker(opts.goals ?? [], foundBy);
   s.errors.forEach((e) =>
     runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
@@ -665,6 +707,7 @@ function createSearchEngine(
     choiceIndices: [],
     state: 0,
   });
+  goals.observe({ variables: rootVariables, path: [], choiceIndices: [], state: 0 });
 
   if (rootStep.choicesOffered.length === 0 && s.errors.length === 0) {
     // Linear story (or immediate end).
@@ -775,6 +818,7 @@ function createSearchEngine(
       choiceIndices,
       state: statesExplored,
     });
+    goals.observe({ variables: stateVariables, path, choiceIndices, state: statesExplored });
     if (ended && s.errors.length === 0) {
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(stateVariables);
@@ -816,6 +860,7 @@ function createSearchEngine(
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
     assertionResults: assertions.results(exhaustive),
+    ...(opts.goals?.length ? { goalResults: goals.results(exhaustive) } : {}),
     runtimeWarnings: [...runtimeWarnings],
     unvisitedKnots: nonFunctionKnots
       .filter((k) => !visitedKnots.has(k.name))
@@ -998,7 +1043,10 @@ function createSharedEngine(
     throw new RangeError("seed must be an integer from 0 to 4294967295");
   }
   const variableAware = opts.sharedVariableAware ?? false;
-  const foundBy = variableAware
+  const goalAware = opts.sharedGoalAware ?? false;
+  const foundBy = goalAware
+    ? `shared:goal-directed-v1:seed=${seed}`
+    : variableAware
     ? `shared:variable-aware-v1:seed=${seed}`
     : `shared:deep-novelty-v1:seed=${seed}`;
   const stateSensitivity = {
@@ -1021,8 +1069,11 @@ function createSharedEngine(
   const random: number[] = [];
   const novelty = new SharedMaxHeap();
   const variablePriority = new SharedMaxHeap();
+  const goalPriority = new SharedMaxHeap();
   const rng = mulberry32(seed);
-  const policies: Array<"novelty" | "deep" | "variable" | "random"> = variableAware
+  const policies: Array<"novelty" | "deep" | "variable" | "goal" | "random"> = goalAware
+    ? ["novelty", "deep", "goal", "random", "novelty", "deep", "goal", "random"]
+    : variableAware
     ? ["novelty", "deep", "deep", "random", "novelty", "deep", "variable", "random"]
     : ["novelty", "deep", "deep", "random"];
   let policyCursor = 0;
@@ -1111,7 +1162,8 @@ function createSharedEngine(
     choiceIndex: number | undefined,
     depth: number,
     noveltyScore: number,
-    variableScore = 0
+    variableScore = 0,
+    goalScore = 0
   ): void => {
     const id = nodes.length;
     nodes.push({ stateJson, variables, parent, choiceText, choiceIndex, depth });
@@ -1129,6 +1181,9 @@ function createSharedEngine(
         score: variableScore * 1_000_000 + noveltyScore * 1_000 + depth,
         order: insertionOrder++,
       });
+    }
+    if (goalAware) {
+      goalPriority.push({ id, score: goalScore * 1_000 + noveltyScore, order: insertionOrder++ });
     }
     pendingStates++;
     pendingBytes += stateJson.length;
@@ -1171,6 +1226,14 @@ function createSharedEngine(
     }
   };
 
+  const takeGoal = (): number | undefined => {
+    while (true) {
+      const item = goalPriority.pop();
+      if (!item) return undefined;
+      if (valid(item.id)) return item.id;
+    }
+  };
+
   const takeNext = (): number | undefined => {
     for (let attempt = 0; attempt < policies.length; attempt++) {
       const policy = policies[policyCursor++ % policies.length];
@@ -1178,12 +1241,14 @@ function createSharedEngine(
         ? takeDeep()
         : policy === "random"
           ? takeRandom()
+          : policy === "goal"
+            ? takeGoal()
           : policy === "variable"
             ? takeVariable()
             : takeNovelty();
       if (id !== undefined) return id;
     }
-    return takeNovelty() ?? takeVariable() ?? takeDeep() ?? takeRandom();
+    return takeGoal() ?? takeNovelty() ?? takeVariable() ?? takeDeep() ?? takeRandom();
   };
 
   const session = makeStory(storyJson, externals);
@@ -1194,6 +1259,7 @@ function createSharedEngine(
 
   const rootStep = continueMaximally(session);
   const assertions = assertionTracker(session.story, knots, opts.assertions, foundBy);
+  const goals = new GoalTracker(opts.goals ?? [], foundBy);
   session.errors.forEach((message) =>
     runtimeErrors.set(message, {
       message,
@@ -1215,6 +1281,7 @@ function createSharedEngine(
     choiceIndices: [],
     state: 0,
   });
+  goals.observe({ variables: rootVariables, path: [], choiceIndices: [], state: 0 });
   variableStateCounts.set(variableStateKey(rootVariables), 1);
 
   if (rootStep.choicesOffered.length === 0) {
@@ -1234,7 +1301,7 @@ function createSharedEngine(
     const rootState = session.story.state.ToJson();
     seenStates.add(stateKey(rootState, stateSensitivity));
     seenChoiceSets.add(rootStep.choicesOffered.slice().sort().join("\u0001"));
-    addNode(rootState, rootVariables, null, undefined, undefined, 0, 1);
+    addNode(rootState, rootVariables, null, undefined, undefined, 0, 1, 0, goals.priority(rootVariables));
   }
   noteDiscoveryProgress();
 
@@ -1370,6 +1437,7 @@ function createSharedEngine(
       choiceIndices,
       state: statesExplored,
     });
+    goals.observe({ variables: nextVariables, path, choiceIndices, state: statesExplored });
     if (ended) {
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = `${finalText}|${JSON.stringify(nextVariables)}`;
@@ -1418,7 +1486,8 @@ function createSharedEngine(
       choice.index,
       path.length,
       noveltyScore,
-      variableScore
+      variableScore,
+      goals.priority(nextVariables)
     );
     finishIfLast();
     return true;
@@ -1433,6 +1502,7 @@ function createSharedEngine(
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
     assertionResults: assertions.results(exhaustive),
+    ...(opts.goals?.length ? { goalResults: goals.results(exhaustive) } : {}),
     runtimeWarnings: [...runtimeWarnings],
     unvisitedKnots: nonFunctionKnots
       .filter((knot) => !visitedKnots.has(knot.name))
@@ -1538,6 +1608,61 @@ export function exploreSharedVariableAware(
   return exploreShared(storyJson, knots, externals, { ...opts, sharedVariableAware: true });
 }
 
+/**
+ * Run the selected baseline engine with its full budget, then optionally add a
+ * deterministic directed-goal slice. Extra work is explicit; goal definitions
+ * with a zero goal budget are still observed by every baseline engine.
+ */
+export function exploreWithGoals(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[],
+  opts: ExploreOptions,
+  baseline: "portfolio" | "shared" | "shared-variable" = "portfolio"
+): ExploreResult {
+  const maxStates = opts.maxStates ?? 100_000;
+  const goalMaxStates = opts.goalMaxStates ?? 0;
+  if (!Number.isSafeInteger(goalMaxStates) || goalMaxStates < 0 || goalMaxStates > 100_000_000) {
+    throw new RangeError("goalMaxStates must be an integer from 0 to 100000000");
+  }
+  if (maxStates + goalMaxStates > 100_000_000) {
+    throw new RangeError("maxStates + goalMaxStates must not exceed 100000000");
+  }
+  if (goalMaxStates > 0 && !opts.goals?.length) {
+    throw new RangeError("goalMaxStates requires at least one goal");
+  }
+  const baseOptions = { ...opts, maxStates, goalMaxStates: undefined };
+  const general = baseline === "shared-variable"
+    ? exploreSharedVariableAware(storyJson, knots, externals, baseOptions)
+    : baseline === "shared"
+      ? exploreShared(storyJson, knots, externals, baseOptions)
+      : explorePortfolio(storyJson, knots, externals, baseOptions);
+  const generalConsumed = general.statesExplored;
+  if (goalMaxStates === 0) return general;
+  const directed = exploreShared(storyJson, knots, externals, {
+    ...opts,
+    maxStates: goalMaxStates,
+    goalMaxStates: undefined,
+    sharedVariableAware: false,
+    sharedGoalAware: true,
+    onProgress: opts.onProgress
+      ? (progress) => opts.onProgress!({ ...progress, statesExplored: generalConsumed + progress.statesExplored })
+      : undefined,
+  });
+  const directedConsumed = directed.statesExplored;
+  const merged = mergeExploreResults(general, directed);
+  merged.limits.maxStates = maxStates;
+  merged.limits.goalMaxStates = goalMaxStates;
+  merged.limits.totalMaxStates = maxStates + goalMaxStates;
+  merged.goalBudget = {
+    generalGranted: maxStates,
+    generalConsumed,
+    directedGranted: goalMaxStates,
+    directedConsumed,
+  };
+  return merged;
+}
+
 /** Deterministic PRNG (mulberry32) so random exploration stays reproducible in CI. */
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -1609,6 +1734,7 @@ function createRandomEngine(
 
   const rootStep = continueMaximally(s);
   const assertions = assertionTracker(s.story, knots, opts.assertions, foundBy);
+  const goals = new GoalTracker(opts.goals ?? [], foundBy);
   s.errors.forEach((e) =>
     runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
@@ -1627,6 +1753,7 @@ function createRandomEngine(
     choiceIndices: [],
     state: 0,
   });
+  goals.observe({ variables: rootVariables, path: [], choiceIndices: [], state: 0 });
   if (linear && s.errors.length === 0) {
     endings.set(rootStep.text, {
       path: [],
@@ -1706,6 +1833,12 @@ function createRandomEngine(
       choiceIndices: [...walkChoiceIndices!],
       state: statesExplored,
     });
+    goals.observe({
+      variables: stateVariables,
+      path: [...walkPath!],
+      choiceIndices: [...walkChoiceIndices!],
+      state: statesExplored,
+    });
     if (ended) {
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(stateVariables);
@@ -1732,6 +1865,7 @@ function createRandomEngine(
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
     assertionResults: assertions.results(false),
+    ...(opts.goals?.length ? { goalResults: goals.results(false) } : {}),
     runtimeWarnings: [...runtimeWarnings],
     unvisitedKnots: nonFunctionKnots
       .filter((k) => !visitedKnots.has(k.name))
@@ -1918,6 +2052,7 @@ function createBeamEngine(
 
   const rootStep = continueMaximally(s);
   const assertions = assertionTracker(s.story, knots, opts.assertions, foundBy);
+  const goals = new GoalTracker(opts.goals ?? [], foundBy);
   s.errors.forEach((e) =>
     runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
@@ -1932,6 +2067,7 @@ function createBeamEngine(
     choiceIndices: [],
     state: 0,
   });
+  goals.observe({ variables: rootVariables, path: [], choiceIndices: [], state: 0 });
 
   interface BeamFrame {
     stateJson: string;
@@ -2082,6 +2218,7 @@ function createBeamEngine(
       choiceIndices,
       state: statesExplored,
     });
+    goals.observe({ variables: stateVariables, path, choiceIndices, state: statesExplored });
     if (ended) {
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(stateVariables);
@@ -2129,6 +2266,7 @@ function createBeamEngine(
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
     assertionResults: assertions.results(exhaustive),
+    ...(opts.goals?.length ? { goalResults: goals.results(exhaustive) } : {}),
     runtimeWarnings: [...runtimeWarnings],
     unvisitedKnots: nonFunctionKnots
       .filter((k) => !visitedKnots.has(k.name))
@@ -2516,6 +2654,22 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
     }
     if (existing.violations.length) existing.status = "violated";
   }
+  const goalsById = new Map((main.goalResults ?? []).map((result) => [result.id, result]));
+  for (const result of other.goalResults ?? []) {
+    const existing = goalsById.get(result.id);
+    if (!existing) {
+      (main.goalResults ??= []).push(result);
+      goalsById.set(result.id, result);
+      continue;
+    }
+    existing.statesEvaluated += result.statesEvaluated;
+    if (result.witness && (!existing.witness || result.witness.path.length < existing.witness.path.length)) {
+      existing.witness = result.witness;
+    }
+    if (result.closestObserved && (!existing.closestObserved || result.closestObserved.distance < existing.closestObserved.distance)) {
+      existing.closestObserved = result.closestObserved;
+    }
+  }
   main.runtimeWarnings = [...new Set([...main.runtimeWarnings, ...other.runtimeWarnings])];
   const visited = new Set([...main.visitedKnots, ...other.visitedKnots]);
   main.visitedKnots = [...visited];
@@ -2544,14 +2698,27 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
         ? "exhaustively_verified"
         : "not_observed";
   }
+  for (const result of main.goalResults ?? []) {
+    result.status = result.witness
+      ? "reached"
+      : main.exhaustive
+        ? "proven_unreachable"
+        : "not_reached_within_limits";
+  }
   main.externalFunctionsStubbed = [...new Set([...main.externalFunctionsStubbed, ...other.externalFunctionsStubbed])];
   main.randomnessDetected ||= other.randomnessDetected;
   if (other.passes?.length) main.passes = [...(main.passes ?? []), ...other.passes];
   const seed = main.limits.seed ?? other.limits.seed;
+  const goalMaxStates = (main.limits.goalMaxStates ?? 0) + (other.limits.goalMaxStates ?? 0);
+  const maxStates = main.limits.maxStates + other.limits.maxStates;
   main.limits = {
     maxDepth: Math.max(main.limits.maxDepth, other.limits.maxDepth),
-    maxStates: main.limits.maxStates + other.limits.maxStates,
+    maxStates,
   };
+  if (goalMaxStates > 0) {
+    main.limits.goalMaxStates = goalMaxStates;
+    main.limits.totalMaxStates = maxStates + goalMaxStates;
+  }
   if (seed !== undefined) main.limits.seed = seed;
   return main;
 }

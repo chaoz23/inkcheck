@@ -20,11 +20,10 @@ import {
   UnvisitedKnotReport,
   classifyUnvisitedKnots,
   explore,
-  explorePortfolio,
-  exploreShared,
-  exploreSharedVariableAware,
+  exploreWithGoals,
   mergeMinRepro,
   validateAssertionsForStory,
+  validateGoalsForStory,
 } from "./explore";
 import { NextRunAdvice, recommendNextRun } from "./advice";
 import {
@@ -63,6 +62,7 @@ Usage: inkcheck <story.ink> [options]
 Options:
   --max-depth <n>    Max choices deep to explore, 1–1000 (default 100)
   --max-states <n>   Max story states to visit, 1–100000000 (default 10000000)
+  --goal-states <n>  Additional directed-goal states, 1–100000000 (default 0)
   --seed <n>         Seed for the random-sampling slice, 1–4294967295 (default 1)
   --search <mode>    Search: portfolio (default), shared, or shared-variable
   --max-memory <mb>  Stop cleanly before heap use exceeds <mb> (default: 85% of the V8 heap limit)
@@ -155,6 +155,7 @@ async function main() {
   let file: string | undefined;
   let maxDepth: number | undefined;
   let maxStates: number | undefined;
+  let goalMaxStates: number | undefined;
   let seed: number | undefined;
   let search: "portfolio" | "shared" | "shared-variable" = "portfolio";
   let strict = false;
@@ -182,6 +183,7 @@ async function main() {
     const arg = args[i];
     if (arg === "--max-depth") maxDepth = boundedInt(arg, args[++i], 1_000);
     else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 100_000_000);
+    else if (arg === "--goal-states") goalMaxStates = boundedInt(arg, args[++i], 100_000_000);
     else if (arg === "--seed") seed = boundedInt(arg, args[++i], 4_294_967_295);
     else if (arg === "--search" || arg.startsWith("--search=")) {
       searchSpecified = true;
@@ -231,7 +233,7 @@ async function main() {
 
   if (inspectMode) {
     if (asMarkdown || asHuman || profileOnly || auto || followNext || strict || !minRepro ||
-        maxDepth !== undefined || maxStates !== undefined || seed !== undefined ||
+        maxDepth !== undefined || maxStates !== undefined || goalMaxStates !== undefined || seed !== undefined ||
         maxMemoryMb !== undefined || maxTimeSec !== undefined || search !== "portfolio" ||
         progressSpecified) {
       usage("inspect accepts a story path and optional --json only");
@@ -248,6 +250,7 @@ async function main() {
   const configDefaults = projectConfig?.config.ci;
   maxDepth ??= configDefaults?.maxDepth;
   maxStates ??= configDefaults?.maxStates;
+  goalMaxStates ??= configDefaults?.goalMaxStates;
   seed ??= configDefaults?.seed;
   maxMemoryMb ??= configDefaults?.maxMemoryMb;
   maxTimeSec ??= configDefaults?.maxTimeSec;
@@ -273,13 +276,21 @@ async function main() {
       : undefined;
   if (autoDepth !== undefined) maxDepth = autoDepth;
 
-  const totalMaxStates = maxStates ?? 10_000_000;
+  const baselineMaxStates = maxStates ?? 10_000_000;
+  const additionalGoalStates = goalMaxStates ?? 0;
+  if (baselineMaxStates + additionalGoalStates > 100_000_000) {
+    usage("--max-states + --goal-states must not exceed 100000000");
+  }
+  const totalMaxStates = baselineMaxStates + additionalGoalStates;
   const reportConfiguration: EffectiveReportConfiguration = {
     search,
     minRepro,
     strict,
     maxMemoryMb: maxMemoryMb ?? null,
     maxTimeSec: maxTimeSec ?? null,
+    goalMaxStates: additionalGoalStates,
+    ...(projectConfig?.config.assertions?.length ? { assertions: projectConfig.config.assertions } : {}),
+    ...(projectConfig?.config.goals?.length ? { goals: projectConfig.config.goals } : {}),
   };
   const startedAt = Date.now();
   let sequence = 0;
@@ -305,6 +316,8 @@ async function main() {
         elapsedMs: Date.now() - startedAt,
         statesExplored,
         stateBudget: totalMaxStates,
+        baselineStateBudget: baselineMaxStates,
+        goalStateBudget: additionalGoalStates,
         budgetFraction: Math.min(1, statesExplored / totalMaxStates),
         ...details,
       };
@@ -353,8 +366,13 @@ async function main() {
   const st = await stats(file);
   const inboundDiverts = scanInboundDiverts(file);
   const configuredAssertions = projectConfig?.config.assertions ?? [];
+  const configuredGoals = projectConfig?.config.goals ?? [];
+  if (additionalGoalStates > 0 && configuredGoals.length === 0) {
+    usage("--goal-states requires at least one configured goal");
+  }
   try {
     validateAssertionsForStory(compiled.storyJson!, knots, externals, configuredAssertions);
+    validateGoalsForStory(compiled.storyJson!, knots, externals, configuredGoals);
   } catch (error) {
     usage(error instanceof Error ? error.message : String(error));
   }
@@ -379,18 +397,16 @@ async function main() {
 
   const runCheck = (bounds: { maxDepth?: number; maxStates?: number; seed?: number }): ExploreResult => {
     const runStates = bounds.maxStates ?? 10_000_000;
+    if (runStates + additionalGoalStates > 100_000_000) {
+      usage("baseline maxStates + goalMaxStates must not exceed 100000000");
+    }
     const reproStates = minRepro && runStates > 1 ? Math.max(1, Math.floor(runStates * 0.1)) : 0;
     const portfolioStates = runStates - reproStates;
     // Progress accumulates across --next escalations, so offset by the
     // states already spent in earlier runs.
     const statesBase = statesExplored;
     emitProgress("phase_start", { phase: "explore" });
-    const searchStory = search === "shared-variable"
-      ? exploreSharedVariableAware
-      : search === "shared"
-        ? exploreShared
-        : explorePortfolio;
-    let checked = searchStory(compiled.storyJson!, knots, externals, {
+    let checked = exploreWithGoals(compiled.storyJson!, knots, externals, {
       maxDepth: bounds.maxDepth,
       maxStates: Math.max(1, portfolioStates),
       seed: bounds.seed,
@@ -401,6 +417,8 @@ async function main() {
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
       assertions: configuredAssertions,
+      goals: configuredGoals,
+      goalMaxStates: additionalGoalStates,
       onProgress: (progress) => {
         statesExplored = statesBase + progress.statesExplored;
         emitProgress("progress", {
@@ -410,7 +428,7 @@ async function main() {
           unvisitedKnots: progress.unvisitedKnots,
         });
       },
-    });
+    }, search);
     statesExplored = statesBase + checked.statesExplored;
     emitProgress("phase_end", { phase: "explore" });
     if (reproStates > 0) {
@@ -459,7 +477,10 @@ async function main() {
     // investigate verdict, a fixpoint, or after three escalations.
     while (!advice.stop && runs.length <= 3) {
       const previous = report;
-      const flags = advice.flags;
+      const flags = {
+        ...advice.flags,
+        maxStates: Math.min(advice.flags.maxStates, 100_000_000 - additionalGoalStates),
+      };
       console.error(
         `↻ ${advice.recommendation}: rerunning with --max-depth ${flags.maxDepth} --max-states ${flags.maxStates}${flags.seed !== undefined ? ` --seed ${flags.seed}` : ""}`
       );
@@ -519,8 +540,9 @@ async function main() {
     }
     const limitParts = [
       `depth ${report.limits.maxDepth}`,
-      `${report.limits.maxStates} states`,
+      `${report.limits.maxStates} baseline states`,
     ];
+    if (report.limits.goalMaxStates) limitParts.push(`${report.limits.goalMaxStates} additional goal states`);
     if (report.limits.seed !== undefined) limitParts.push(`seed ${report.limits.seed}`);
     const coverageFlag = report.exhaustive
       ? " — exhaustive (every reachable state visited)"
@@ -547,6 +569,14 @@ async function main() {
         const violation = result.violations[0];
         console.log(
           `    ${result.id}${result.description ? ` — ${result.description}` : ""}\n      observed: ${JSON.stringify(violation.observedValues)}\n      repro: [${violation.path.join(" → ") || "linear"}]`
+        );
+      }
+    }
+    if (report.goalResults?.length) {
+      console.log(`◎ ${report.goalResults.filter((goal) => goal.status === "reached").length}/${report.goalResults.length} search goal(s) reached:`);
+      for (const goal of report.goalResults) {
+        console.log(
+          `    ${goal.id}: ${goal.status}${goal.witness ? `\n      repro: [${goal.witness.path.join(" → ") || "linear"}]` : goal.closestObserved ? `\n      closest observed: ${JSON.stringify(goal.closestObserved.observedValues)}` : ""}`
         );
       }
     }
@@ -676,13 +706,18 @@ function renderMarkdown(
     `| Words | ${storyStats.words ?? "unknown"} |`,
     `| States explored | ${report.statesExplored} |`,
     `| Depth limit | ${report.limits.maxDepth} |`,
-    `| State budget | ${report.limits.maxStates} |`,
+    `| Baseline state budget | ${report.limits.maxStates} |`,
+    ...(report.limits.goalMaxStates ? [
+      `| Additional goal state budget | ${report.limits.goalMaxStates} |`,
+      `| Total state budget | ${report.limits.totalMaxStates ?? report.limits.maxStates + report.limits.goalMaxStates} |`,
+    ] : []),
     ...(report.limits.seed !== undefined ? [`| Random seed | ${report.limits.seed} |`] : []),
     `| Truncated | ${report.truncated ? "yes" : "no"} |`,
     `| Exhaustive | ${report.exhaustive ? "yes" : "no"} |`,
     `| Distinct terminal states | ${report.endingsFound.length} |`,
     `| Runtime errors | ${report.runtimeErrors.length} |`,
     `| Assertion violations | ${assertionViolations.length} |`,
+    ...(report.goalResults?.length ? [`| Search goals reached | ${report.goalResults.filter((goal) => goal.status === "reached").length}/${report.goalResults.length} |`] : []),
     `| Unvisited knots | ${report.unvisitedKnots.length} |`,
   ];
   if (report.runtimeErrors.length) {
@@ -700,6 +735,12 @@ function renderMarkdown(
       lines.push(
         `- \`${result.id}\`${result.description ? ` — ${escapeCell(result.description)}` : ""}; observed \`${escapeCell(JSON.stringify(violation.observedValues))}\`; path: ${violation.path.join(" → ") || "linear"}`
       );
+    }
+  }
+  if (report.goalResults?.length) {
+    lines.push("", "## Search goals", "");
+    for (const goal of report.goalResults) {
+      lines.push(`- \`${goal.id}\`: **${goal.status}**${goal.witness ? ` — path: ${goal.witness.path.join(" → ") || "linear"}` : goal.closestObserved ? ` — closest observed: \`${escapeCell(JSON.stringify(goal.closestObserved.observedValues))}\`` : ""}`);
     }
   }
   if (report.unvisitedKnots.length) {

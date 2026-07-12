@@ -42,6 +42,7 @@ entrypoint: story.ink
 ci:
   maxDepth: 100
   maxStates: 1000000
+  goalMaxStates: 250000
   seed: 1
   search: portfolio
   strict: true
@@ -53,11 +54,20 @@ assertions:
       left: { variable: gold }
       operator: ">="
       right: { literal: 0 }
+goals:
+  - id: depleted_gold
+    description: Seek paths where the player runs out of gold
+    condition:
+      left: { variable: gold }
+      operator: "<="
+      right: { literal: 0 }
 ```
 
-Run `inkcheck validate-config` to check it. From that directory, `inkcheck` uses the configured entrypoint and defaults; explicit CLI flags still win. Unknown keys fail validation so future goals, external behavior, and edit-policy fields cannot appear supported before their implementations exist. The published contract is [config schema v1](docs/config-schema-v1.json).
+Run `inkcheck validate-config` to check it. From that directory, `inkcheck` uses the configured entrypoint and defaults; explicit CLI flags still win. Unknown keys fail validation so unsupported external behavior and edit-policy fields cannot appear implemented. The published contract is [config schema v1](docs/config-schema-v1.json).
 
 Assertions are typed data, never JavaScript or arbitrary Ink expressions. Operands are variables or scalar literals; comparisons use `==`, `!=`, `<`, `<=`, `>`, or `>=`, and conditions can compose with `all`, `any`, and `not`. Rules run always, at terminal states, or when entering a named knot. Unknown variables/knots and invalid cross-type comparisons fail before exploration spends its state budget. A violation always fails CI and includes the observed values plus an exact indexed replay witness. A bounded clean run means only “no violation observed”; only an exhaustive run reports the rule as exhaustively verified.
+
+Goals use the same non-executable condition grammar, but guide exploration instead of failing CI. General exploration always receives the full `maxStates` budget. Set `goalMaxStates` in config or `--goal-states` on the CLI to add an explicit deterministic goal-proximity slice; it defaults to zero and the combined budget may not exceed 100,000,000 states. Goals are still observed during ordinary exploration when no extra slice is requested. A reached goal includes exact choice indices; a miss says `not_reached_within_limits` unless exhaustive exploration actually proves it unreachable. Reports expose baseline, goal, and total budgets separately so steering cannot silently displace general QA findings. See the comparison evidence in [search experiments](docs/search-experiments.md).
 
 For a new project containing one `.ink` file, `inkcheck init` creates this config. Multi-file projects must name the root with `--entrypoint`. `inkcheck agent-kit --format codex` adds the config when needed, a pinned GitHub Actions example, `.inkcheck/` artifact ignore rules, and compact version-matched agent instructions. Both commands are idempotent and preflight every target; they refuse the whole operation rather than overwrite or partially modify existing authored files.
 
@@ -282,6 +292,8 @@ The roadmap is focused on earning trust in bounded QA: clearer limits, better ev
 - Coverage transparency: clearer reporting for truncation, depth limits, visited endings, skipped search space, and what was or was not explored.
 - Report quality: better source locations, shorter repro paths, stable issue identities, and clearer grouping of runtime errors, unvisited knots, and coverage limits.
 - Author-defined story assertions: deterministic project rules such as "gold never goes negative", "health never exceeds max", or "required variables are set before endings."
+- Goal-directed variable search: let authors and agents seek approved states while preserving a protected general-search budget and exact bounded-coverage language.
+- Optional hosted AI goal assistant: a first-class, explicitly enabled human interface that helps non-technical authors propose variable goals and assertions for approval, then delegates all execution and verification to Inkcheck's deterministic non-AI engine. Provider, consent, source-sharing, retention, cost, and disable controls must be explicit; generated rules are never silently trusted or applied.
 - Repro persistence: remember known failing paths and make sure future runs keep checking them even as traversal strategies improve.
 - Public compatibility fixtures: consent-safe examples and synthetic edge cases for regression testing, performance comparisons, and trust-building.
 - Search promotion harness: a broad, predeclared scorecard across structural families, budgets, depths, and seeds before any experimental strategy can change the default.
