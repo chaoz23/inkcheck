@@ -1154,6 +1154,12 @@ test("unvisited knots are classified as orphan candidates or limit-bound", async
   const findings = buildHumanFindings({ explore: shallow });
   const endingFinding = findings.find((f) => f.title.includes("ending7"));
   assert.match(endingFinding.action, /--max-depth/);
+  // Hosted readers run at fixed limits and cannot set CLI flags, so their copy
+  // must not name flags — it points at the local CLI instead (#49).
+  const hostedFindings = buildHumanFindings({ explore: shallow }, { audience: "hosted" });
+  const hostedEnding = hostedFindings.find((f) => f.title.includes("ending7"));
+  assert.doesNotMatch(hostedEnding.action, /--max-/);
+  assert.match(hostedEnding.action, /run inkcheck locally/i);
   const vaultFinding = buildHumanFindings({ explore: report }).find((f) =>
     f.title.includes("treasure_vault")
   );
@@ -2036,6 +2042,11 @@ test("hosted runner returns truncated exploration as a useful partial report", a
           `${finding.title} ${finding.message} ${finding.action}`
         )
     )
+  );
+  // Hosted findings must never point at CLI flags the web user cannot set (#49).
+  assert.ok(
+    result.humanFindings.every((finding) => !/--max-/.test(finding.action)),
+    "hosted humanFindings must not name CLI flags"
   );
 });
 
