@@ -34,6 +34,7 @@ const {
 const { recommendNextRun } = require("../dist/advice");
 const { recommendShadowDecision, SHADOW_POLICY_VERSION } = require("../dist/decision-policy");
 const { comparePolicyReplay } = require("../dist/shadow-evaluation");
+const { CumulativeFloorAllocator } = require("../dist/floor-allocator");
 const { runSubmission, webConfigFromEnv } = require("../dist/web");
 const { SubmissionError, validateSubmission } = require("../dist/web-validation");
 const {
@@ -74,6 +75,42 @@ const POLICY_LATE_ERROR = path.join(__dirname, "fixtures", "policy-late-error.in
 const STAGED_DISJOINT = path.join(__dirname, "fixtures", "staged-disjoint.ink");
 const NO_DISCOVERY_BEFORE_DEPTH = path.join(__dirname, "fixtures", "no-discovery-before-depth.ink");
 const LATE_RECOVERY = path.join(__dirname, "fixtures", "late-recovery.ink");
+
+test("cumulative floors rotate exact service through tiny windows", () => {
+  const allocator = new CumulativeFloorAllocator(["a", "b", "c", "d", "e"]);
+  let totals = [0, 0, 0, 0, 0];
+  let final;
+  for (let round = 0; round < 100; round++) {
+    final = allocator.allocate(1, [1, 1, 1, 1, 1], [true, true, true, true, true]);
+    assert.strictEqual(final.grants.reduce((sum, grant) => sum + grant, 0), 1);
+    totals = totals.map((total, i) => total + final.grants[i]);
+  }
+  assert.strictEqual(totals.reduce((sum, total) => sum + total, 0), 100);
+  assert.ok(totals.every((total) => total >= 8));
+  assert.deepStrictEqual(final.accounts.map((account) => account.floorGrantedCumulative), [8, 8, 8, 8, 8]);
+  assert.ok(final.accounts.every((account) => account.debt < 1));
+});
+
+test("cumulative floors release completed passes and preserve exact 5M accounting", () => {
+  const allocator = new CumulativeFloorAllocator(["winner", "b", "c", "d", "e"]);
+  let granted = 0;
+  let final;
+  for (let round = 0; round < 10; round++) {
+    final = allocator.allocate(500_000, [0.68, 0.08, 0.08, 0.08, 0.08], [true, true, true, true, true]);
+    granted += final.grants.reduce((sum, grant) => sum + grant, 0);
+  }
+  assert.strictEqual(granted, 5_000_000);
+  assert.deepStrictEqual(final.accounts.map((account) => account.floorGrantedCumulative),
+    [400_000, 400_000, 400_000, 400_000, 400_000]);
+  assert.ok(final.accounts.every((account) => account.debt === 0));
+
+  const before = final.accounts[4];
+  final = allocator.allocate(7, [1, 1, 1, 1, 1], [true, true, true, true, false]);
+  assert.strictEqual(final.grants[4], 0);
+  assert.strictEqual(final.accounts[4].promisedCumulative, before.promisedCumulative);
+  assert.strictEqual(final.accounts[4].floorGrantedCumulative, before.floorGrantedCumulative);
+  assert.strictEqual(final.grants.reduce((sum, grant) => sum + grant, 0), 7);
+});
 
 const ASSERTION_RULES = [
   {
@@ -1791,6 +1828,11 @@ test("portfolio-marginal policy credit removes duplicate sparse-error regression
   assert.ok(candidate.policyReplay.every((round) =>
     Math.abs(round.nextRoundWeights.reduce((sum, entry) => sum + entry.share, 0) - 1) < 1e-9
   ));
+  assert.ok(candidate.policyReplay.every((round) => {
+    const planned = new Map(round.floorService.accounts.map((account, i) => [account.pass, round.floorService.grants[i]]));
+    return candidate.schedule[round.round - 1].entries.every((entry) => planned.get(entry.pass) === entry.granted)
+      && round.floorService.accounts.every((account) => account.debt < 1);
+  }));
   assert.ok(candidate.passes.filter((pass) =>
     pass.discoveryCurve.some((sample) => sample.endingsFound > 0)
   ).length > 1, "several passes should still retain their own duplicate ending evidence");

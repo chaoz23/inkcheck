@@ -97,4 +97,22 @@ Issue #105 adds a second bounded curve to each portfolio pass: own discoveries r
 
 At the same matched boundaries, the 50-state sparse runtime error and late-ending regressions disappear: candidate and baseline both retain their critical/authored evidence and exhaustive proof. Deceptive-plateau runs retain the same semantic runtime error, while the evaluator still exposes the separate approximate-location identity drift tracked by #84.
 
-This does not promote policy v1. The early-choice grid still loses authored coverage at 500 and 2,000 states. Its first portfolio discovery remains eligible for the policy's absolute 1,000-state recency floor for too long, concentrating 68% on one systematic pass while broad random work stays at 8%. Recency normalization/first-discovery lock-in (#113) therefore remains a separate blocker alongside cumulative integer floor service (#106).
+This does not promote policy v1. The early-choice grid still loses authored coverage at 500 and 2,000 states. Its first portfolio discovery remains eligible for the policy's absolute 1,000-state recency floor for too long, concentrating 68% on one systematic pass while broad random work stays at 8%. Recency normalization/first-discovery lock-in (#113) therefore remains a separate blocker.
+
+### Cumulative integer floor replay (#106)
+
+Policy replay now pools fractional 8% promises across deterministic windows and issues whole floor states to the active pass with the largest cumulative debt. This makes the floor an auditable service guarantee even when a window has fewer states than passes. Synthetic tests rotate five passes through 100 one-state windows, reconcile a 5,000,000-state allocation exactly, and stop accruing service when a pass completes. The fixed production scheduler is unchanged.
+
+Paired results below use depth 100 and seed 7. Cells are `runtime errors / endings / visited knots / exhaustive (E) or partial (P)`:
+
+| Fixture | Budget | Fixed portfolio | Floor-ledger replay |
+|---|---:|---:|---:|
+| Sparse runtime error | 25 | 1 / 1 / 1 / P | 1 / 1 / 1 / P |
+| Sparse runtime error | 50 | 1 / 1 / 1 / E | 1 / 1 / 1 / E |
+| Late recovery | 50 | 0 / 2 / 0 / E | 0 / 2 / 0 / E |
+| Early-choice grid | 100 | 0 / 3 / 16 / P | 0 / 1 / 16 / P |
+| Early-choice grid | 500 | 0 / 15 / 20 / P | 0 / 13 / 18 / P |
+| Early-choice grid | 2,000 | 0 / 32 / 22 / P | 0 / 13 / 18 / P |
+| Deceptive plateau | 100 | 1 / 1 / 7 / E | 1 / 1 / 7 / E |
+
+The floor defect is fixed: no explorer can silently lose its promised cumulative probe service to repeated rounding. The policy still fails the promotion gate because floor protection alone cannot counter first-discovery recency lock-in on the early-choice family. #113 must be resolved and the full predeclared matrix rerun before activation.
