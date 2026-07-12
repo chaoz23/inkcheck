@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Give research policy replay auditable cumulative integer probe floors (#106). Fractional promises pool across windows, whole states rotate to the largest service debt, completed passes release future service, and every replay round records planned grants plus cumulative promise/grant/debt accounts. Tiny-window and exact 5M accounting tests pass; production allocation remains unchanged because the early-choice regression (#113) still blocks promotion.
+
 - Add portfolio-marginal value curves for #105 while retaining pass-local diagnostic curves. Runtime/assertion credit is identity-based, approximate runtime fallback lines are normalized for allocation credit, and exact endings/outcomes/knots/goals/stages are paid once in actual scheduler order. Policy replay now reads marginal evidence, removing its matched 50-state sparse-error and late-ending regressions; early-choice authored-coverage losses remain and continue to block promotion.
 
 - Add a living product/engineering truth scorecard with explicit 10/10 targets, candid current ratings, evidence/gaps, and a release reassessment protocol. The README now states that planned value comes from a reproducible broad hybrid plus bounded Ink-aware specialists, and corrects the current 8% pass floor from a “guarantee” to a fractional intent whose small-window service debt remains #106.

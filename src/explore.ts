@@ -16,6 +16,7 @@ import {
 } from "./assertions";
 import { GoalDefinition, GoalResult, GoalTracker, validateGoals } from "./goals";
 import { recommendShadowDecision, type ShadowDecision } from "./decision-policy";
+import { CumulativeFloorAllocator, type FloorAllocation } from "./floor-allocator";
 
 export interface PlaytestStep {
   text: string;
@@ -531,6 +532,7 @@ export interface PolicyReplayRound {
   decision: ShadowDecision;
   allocationApplied: boolean;
   nextRoundWeights: Array<{ pass: string; share: number }>;
+  floorService: FloorAllocation;
 }
 
 /**
@@ -2694,7 +2696,7 @@ function explorePortfolioInternal(
   }
 
   const roundSize = Math.max(1, Math.floor(maxStates / 10));
-  const minShare = 0.08; // fractional intent; cumulative integer service remains #106
+  const minShare = 0.08;
   const schedule: ScheduleRound[] = [];
   const policyReplay: PolicyReplayRound[] = [];
   const seenEndings = new Set<string>();
@@ -2725,6 +2727,9 @@ function explorePortfolioInternal(
   }));
   const marginalCurves = engines.map(() => new DiscoveryCurveRecorder());
   let currentWeights = [...engineWeights];
+  const replayFloorAllocator = replayShadowAllocation
+    ? new CumulativeFloorAllocator(engines.map((engine) => engine.label), minShare)
+    : undefined;
   let remaining = maxStates;
   let exhaustedEarly = false;
   let memoryStopped = false;
@@ -2744,10 +2749,15 @@ function explorePortfolioInternal(
     const active = engines
       .map((engine, i) => ({ engine, i }))
       .filter(({ engine }) => !engine.done());
-    const grants = splitBudget(
-      Math.min(roundSize, remaining),
-      active.map(({ i }) => currentWeights[i])
+    const roundBudget = Math.min(roundSize, remaining);
+    const floorService = replayFloorAllocator?.allocate(
+      roundBudget,
+      currentWeights,
+      engines.map((engine) => !engine.done())
     );
+    const grants = floorService
+      ? active.map(({ i }) => floorService.grants[i])
+      : splitBudget(roundBudget, active.map(({ i }) => currentWeights[i]));
     const entries: ScheduleRoundEntry[] = [];
     const scores = new Array<number>(engines.length).fill(0);
     for (let a = 0; a < active.length; a++) {
@@ -2898,6 +2908,7 @@ function explorePortfolioInternal(
         decision,
         allocationApplied,
         nextRoundWeights: engines.map((engine, i) => ({ pass: engine.label, share: currentWeights[i] })),
+        floorService: floorService!,
       });
     } else {
       const totalScore = scores.reduce((a, b) => a + b, 0);
