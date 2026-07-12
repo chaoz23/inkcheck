@@ -331,7 +331,9 @@ export async function runSubmission(
       (report as { explore?: { truncated?: unknown } }).explore?.truncated === true;
     return {
       report,
-      humanFindings: buildHumanFindings(report as Parameters<typeof buildHumanFindings>[0]),
+      humanFindings: buildHumanFindings(report as Parameters<typeof buildHumanFindings>[0], {
+        audience: "hosted",
+      }),
       meta: {
         durationMs: Date.now() - started,
         uploadedFiles: submission.files.length,

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Stop hosted `humanFindings` from advising CLI flags a web user cannot set (#49). `buildHumanFindings` takes an `audience: "cli" | "hosted"` option; the hosted server passes `"hosted"`, so the limit-bound unvisited-knot next step now says to run inkcheck locally for a deeper check instead of naming `--max-depth`/`--max-states`. CLI output is unchanged.
 - Add safe typed search goals with an explicit additive budget. General exploration keeps the full `maxStates` allocation; `goalMaxStates` / `--goal-states` optionally adds deterministic goal-proximity work and defaults to zero. Reports, progress events, config validation, discovery, CLI, and MCP expose baseline, goal, and combined budgets, with a shared 100,000,000-state ceiling.
 
 ## 0.5.1 — 2026-07-11

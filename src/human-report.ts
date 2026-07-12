@@ -63,6 +63,16 @@ export interface HumanReportInput {
   explore?: Partial<ExploreResult>;
 }
 
+export interface HumanReportOptions {
+  /**
+   * Who reads these findings. CLI users can raise `--max-depth`/`--max-states`,
+   * so flag advice is actionable for them. Hosted web users run at fixed limits
+   * with no such controls, so their only "go deeper" next step is the local
+   * CLI — hosted copy must not point at flags they cannot set (#49).
+   */
+  audience?: "cli" | "hosted";
+}
+
 const SEVERITY_ORDER: Record<HumanFindingSeverity, number> = {
   error: 0,
   warning: 1,
@@ -98,7 +108,11 @@ function runtimeTitle(error: RuntimeErrorReport): string {
   return message || "Runtime error";
 }
 
-export function buildHumanFindings(input: HumanReportInput): HumanFinding[] {
+export function buildHumanFindings(
+  input: HumanReportInput,
+  options: HumanReportOptions = {}
+): HumanFinding[] {
+  const audience = options.audience ?? "cli";
   const findings: HumanFinding[] = [];
   const compileIssues = Array.isArray(input.compile?.issues) ? input.compile.issues : [];
   for (const issue of compileIssues) {
@@ -181,7 +195,9 @@ export function buildHumanFindings(input: HumanReportInput): HumanFinding[] {
       line: knot.line,
       action: orphan
         ? "If this scene should be reachable, add a divert/choice that leads here. If it is intentionally unused, mark it for yourself or remove it."
-        : "Try a deeper or larger run (raise --max-depth and/or --max-states) before treating this as unreachable; if it still is not reached, check the conditions guarding the diverts that point here.",
+        : audience === "hosted"
+          ? "Before treating this as unreachable, run inkcheck locally with a larger budget for a deeper offline check; if it still is not reached, check the conditions guarding the diverts that point here."
+          : "Try a deeper or larger run (raise --max-depth and/or --max-states) before treating this as unreachable; if it still is not reached, check the conditions guarding the diverts that point here.",
     });
   }
 
