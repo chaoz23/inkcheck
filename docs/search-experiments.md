@@ -57,3 +57,19 @@ The shipped contract therefore uses an **additive** budget: `maxStates` remains 
 The first ordered-stage implementation seeks cumulative milestones within the same explicit additional budget. At depth 100, seed 7, and 100,000 directed states on *The Intercept*, both the flat `framedhooper && piecereturned` goal and the staged `framedhooper` then `piecereturned` goal missed the final compound state. The staged run reached the first milestone at state 684 with an exact witness and found 344 terminal states versus 313 for flat steering; both found 10 visible outcomes, 29/30 knots, and no runtime errors. Wall time was 27.8 seconds staged versus 27.0 seconds flat on the same machine.
 
 This is a reporting and search-order foundation, not evidence that cumulative ordering solves late dependencies. The next research step is a bounded diverse checkpoint frontier: retain several stage-1 witnesses and continue from each, rather than restarting every attempt from the root. That work remains part of issue #86.
+
+## Shadow policy budget ladder
+
+The first #92/#56 shadow-policy evaluation used current portfolio search on *The Intercept* at depth 100, seed 1, and `--no-min-repro`. Runs were independent configured reruns, not prefixes of one continued search. The 5M run is a bounded high-water comparison, not an oracle.
+
+| Budget | Time | Exact terminal states | Visible outcomes | Knots | Runtime errors | Shadow action | High-water-only E/A/K/O/T |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| 100K | 14.4s | 749 | 11 | 29/30 | 0 | reallocate | 0/0/0/1/3,735 |
+| 1M | 128.3s | 2,168 | 12 | 29/30 | 0 | reallocate | 0/0/0/0/2,316 |
+| 5M | 678.5s | 4,484 | 12 | 29/30 | 0 | reallocate | 0/0/0/0/0 |
+
+At 100K, the high-water run adds one author-visible outcome. At 1M, all author-visible outcomes and knots in the 5M run are already present, while exact terminal variants continue to grow substantially. This demonstrates why terminal multiplicity must not dominate the value model.
+
+The policy did not recommend stopping at any rung: discoveries were still arriving, so it retained 8% floors and recommended moving discretionary work. At 100K and 1M it favored seeded random search; at 5M it favored first-choice DFS based on the most recent lexicographic value window. Because shadow mode never applied those allocations, this result validates reportability and avoids a false knee on one real story; it does **not** show that the proposed reallocation would improve yield.
+
+No runtime error or assertion evidence occurred in this case, so it cannot satisfy the critical-evidence promotion gate. The next evaluation must replay shadow allocations on predeclared late-recovery and sparse-error families, while retaining the fixed portfolio as the paired baseline.

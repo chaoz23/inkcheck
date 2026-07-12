@@ -14,6 +14,10 @@ const {
   visibleEndingKey,
   rarityWeight,
 } = require("../dist/search-benchmark");
+const {
+  evaluateShadowBudgetLadder,
+  renderShadowEvaluationMarkdown,
+} = require("../dist/shadow-evaluation");
 
 const FIXTURES = path.join(__dirname, "fixtures", "search");
 const LOCK = path.join(FIXTURES, "combination-lock.ink");
@@ -163,4 +167,111 @@ test("early-variable benchmark exposes strategy differences deterministically", 
     "South scholar ending.",
     "West smith ending.",
   ]);
+});
+
+function shadowReport(budget, { runtimeErrors = [], knots = ["start"], endings = [], dry = 0 } = {}) {
+  const last = Math.max(1, budget - dry);
+  const summary = {
+    discoveryEvents: 5,
+    firstDiscoveryAtState: 1,
+    lastDiscoveryAtState: last,
+    statesSinceLastDiscovery: dry,
+    latestDiscoveryGap: 100,
+    longestObservedDiscoveryGap: 1_000,
+  };
+  const sample = {
+    state: last,
+    endingsFound: endings.length,
+    runtimeErrorsFound: runtimeErrors.length,
+    knotsVisited: knots.length,
+    visibleOutcomes: endings.length,
+    assertionViolations: 0,
+    goalsReached: 0,
+    stagesReached: 0,
+    uniqueStatesObserved: last,
+    newEndings: endings.length,
+    newRuntimeErrors: runtimeErrors.length,
+    newKnots: knots.length,
+    newVisibleOutcomes: endings.length,
+    newAssertionViolations: 0,
+    newGoalsReached: 0,
+    newStagesReached: 0,
+    newUniqueStates: last,
+    statesSincePreviousDiscovery: 100,
+  };
+  return {
+    statesExplored: budget,
+    endingsFound: endings,
+    runtimeErrors,
+    assertionResults: [],
+    runtimeWarnings: [],
+    unvisitedKnots: [],
+    visitedKnots: knots,
+    externalFunctionsStubbed: [],
+    randomnessDetected: false,
+    truncated: true,
+    truncatedBy: { ...EMPTY_TRUNCATION, maxStates: true },
+    exhaustive: false,
+    limits: { maxDepth: 100, maxStates: budget },
+    discoveryCurve: [sample],
+    discoverySummary: summary,
+    passes: [{
+      pass: "dfs:last",
+      systematic: true,
+      statesExplored: budget,
+      granted: budget,
+      endingsFound: endings.length,
+      runtimeErrorsFound: runtimeErrors.length,
+      knotsVisited: knots.length,
+      newEndings: endings.length,
+      newKnots: knots.length,
+      newRuntimeErrors: runtimeErrors.length,
+      dedupeHits: 0,
+      maxDepthReached: 10,
+      lastDiscoveryAtState: last,
+      discoveryCurve: [sample],
+      discoverySummary: summary,
+      truncatedBy: { ...EMPTY_TRUNCATION, maxStates: true },
+      exhaustive: false,
+    }],
+  };
+}
+
+test("shadow budget ladder flags critical evidence beyond a knee without calling high-water proof", () => {
+  const endingReport = ending({ route: "late" });
+  const runtimeError = {
+    message: "late failure",
+    path: ["Wait"],
+    choiceIndices: [0],
+    foundBy: "dfs:last",
+    firstDiscoveredAtState: 20_000,
+    sourceLocation: { file: "story.ink", line: 8, approximate: false },
+  };
+  const earlyRuntimeError = { ...runtimeError, message: "early-only failure", firstDiscoveredAtState: 100 };
+  const result = evaluateShadowBudgetLadder({
+    id: "late-recovery",
+    family: "sparse-runtime-failure",
+    source: { name: "synthetic late recovery", license: "MIT", consent: "repository fixture" },
+    runs: [
+      { budget: 10_000, report: shadowReport(10_000, { dry: 5_000, runtimeErrors: [earlyRuntimeError] }) },
+      { budget: 50_000, report: shadowReport(50_000, { runtimeErrors: [runtimeError], knots: ["start", "late"], endings: [endingReport] }) },
+    ],
+  });
+  assert.strictEqual(result.checkpoints[0].decision.action, "stop_at_knee");
+  assert.strictEqual(result.checkpoints[0].stopRisk, "critical");
+  assert.strictEqual(result.checkpoints[0].highWaterRegressionRisk, "critical");
+  assert.strictEqual(result.checkpoints[0].highWaterOnly.runtimeErrors.count, 1);
+  assert.strictEqual(result.checkpoints[0].checkpointOnly.runtimeErrors.count, 1);
+  assert.strictEqual(result.highWater.bounded, true);
+  assert.match(result.caveat, /not an oracle or coverage proof/);
+  assert.match(renderShadowEvaluationMarkdown([result]), /critical/);
+  assert.throws(() => evaluateShadowBudgetLadder({
+    id: "bad",
+    family: "bad",
+    source: { name: "bad", license: "MIT", consent: "fixture" },
+    runs: [
+      { budget: 9_999, report: shadowReport(10_000) },
+      { budget: 50_000, report: shadowReport(50_000) },
+    ],
+  }), /does not match report maxStates/);
 });
