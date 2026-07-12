@@ -47,6 +47,7 @@
     "docs/agent-discovery.md",
     "docs/config-schema-v1.json",
     "docs/report-schema-v1.md",
+    "docs/product-engineering-scorecard.md",
     "docs/shadow-policy-evaluation.md",
     "CHANGELOG.md",
     "llms.txt",

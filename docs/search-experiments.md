@@ -70,6 +70,23 @@ The first #92/#56 shadow-policy evaluation used current portfolio search on *The
 
 At 100K, the high-water run adds one author-visible outcome. At 1M, all author-visible outcomes and knots in the 5M run are already present, while exact terminal variants continue to grow substantially. This demonstrates why terminal multiplicity must not dominate the value model.
 
-The policy did not recommend stopping at any rung: discoveries were still arriving, so it retained 8% floors and recommended moving discretionary work. At 100K and 1M it favored seeded random search; at 5M it favored first-choice DFS based on the most recent lexicographic value window. Because shadow mode never applied those allocations, this result validates reportability and avoids a false knee on one real story; it does **not** show that the proposed reallocation would improve yield.
+The policy did not recommend stopping at any rung: discoveries were still arriving, so its suggested shares retained 8% fractional floors and moved discretionary work. At 100K and 1M it favored seeded random search; at 5M it favored first-choice DFS based on the most recent lexicographic value window. Because shadow mode never applied those allocations, this result validates reportability and avoids a false knee on one real story; it does **not** show that the proposed reallocation would improve yield or that fractional shares become cumulative integer service (#106).
 
 No runtime error or assertion evidence occurred in this case, so it cannot satisfy the critical-evidence promotion gate. The next evaluation must replay shadow allocations on predeclared late-recovery and sparse-error families, while retaining the fixed portfolio as the paired baseline.
+
+## First policy-applied replay
+
+The first #103 execution slice keeps the same engines, ten deterministic windows, state/depth limits, and seed as the fixed portfolio. It changes only next-window allocation: a `reallocate` shadow action applies its recorded shares; `continue`, `probe`, and every stop action remain non-operative. This is an exported research function, not a CLI mode or default.
+
+The paired sparse-error fixture has one quick ending and one ten-choice route to a content-exhaustion runtime error:
+
+| Budget | Fixed portfolio | Policy candidate | Baseline-only risk |
+| ---: | --- | --- | --- |
+| 25 | error observed, partial | error observed, partial | none |
+| 50 | error observed, exhaustive | error missed, partial | **critical** |
+| 75 | error observed, exhaustive | error observed, exhaustive | none |
+| 100 | error observed, exhaustive | error observed, exhaustive | none |
+
+At 50 states the candidate loses critical evidence and an exhaustive proof at the matched budget. It recovers at 75 states, so the route is reachable; the loss is caused by budget allocation. The late-recovery ending fixture similarly loses one authored outcome at 50 states before recovering by 100.
+
+The replay also reveals two design defects to resolve before promotion: pass-local curves can credit multiple explorers for rediscovering the same evidence instead of portfolio-marginal value, and an 8% conceptual floor can round to zero repeatedly when a deterministic window is smaller than the number of passes. Current shadow policy v1 therefore fails the #56 promotion gate and must remain inactive.

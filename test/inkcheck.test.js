@@ -17,6 +17,7 @@ const { buildHumanFindings } = require("../dist/human-report");
 const {
   explore,
   explorePortfolio,
+  explorePortfolioShadowReplay,
   exploreShared,
   exploreSharedVariableAware,
   exploreRandom,
@@ -32,6 +33,7 @@ const {
 } = require("../dist/explore");
 const { recommendNextRun } = require("../dist/advice");
 const { recommendShadowDecision, SHADOW_POLICY_VERSION } = require("../dist/decision-policy");
+const { comparePolicyReplay } = require("../dist/shadow-evaluation");
 const { runSubmission, webConfigFromEnv } = require("../dist/web");
 const { SubmissionError, validateSubmission } = require("../dist/web-validation");
 const {
@@ -68,6 +70,7 @@ const SEARCH_FIXTURES = path.join(__dirname, "fixtures", "search");
 const INSPECT_PROJECT = path.join(__dirname, "fixtures", "inspect", "project.ink");
 const DUPLICATE_CHOICE_TEXT = path.join(__dirname, "fixtures", "duplicate-choice-text.ink");
 const ASSERTION_STORY = path.join(__dirname, "fixtures", "assertions.ink");
+const POLICY_LATE_ERROR = path.join(__dirname, "fixtures", "policy-late-error.ink");
 const STAGED_DISJOINT = path.join(__dirname, "fixtures", "staged-disjoint.ink");
 const NO_DISCOVERY_BEFORE_DEPTH = path.join(__dirname, "fixtures", "no-discovery-before-depth.ink");
 const LATE_RECOVERY = path.join(__dirname, "fixtures", "late-recovery.ink");
@@ -1737,6 +1740,37 @@ test("shadow policy distinguishes reallocation from a knee candidate", async () 
   assert.match(knee.reason, /shadow knee candidate only/);
   assert.strictEqual(knee.applied, false);
   assert.strictEqual(knee.bindingConstraint, "states");
+});
+
+test("paired policy replay exposes and reproduces a sparse late-error regression", async () => {
+  const compiled = await compile(POLICY_LATE_ERROR);
+  const knots = scanKnots(POLICY_LATE_ERROR);
+  const options = { maxStates: 50, maxDepth: 100, seed: 7 };
+  const baseline = explorePortfolio(compiled.storyJson, knots, [], options);
+  const candidate = explorePortfolioShadowReplay(compiled.storyJson, knots, [], options);
+  const repeated = explorePortfolioShadowReplay(compiled.storyJson, knots, [], options);
+  const comparison = comparePolicyReplay(baseline, candidate);
+
+  assert.strictEqual(baseline.policyReplay, undefined);
+  assert.strictEqual(baseline.runtimeErrors.length, 1);
+  assert.strictEqual(baseline.exhaustive, true);
+  assert.strictEqual(candidate.runtimeErrors.length, 0);
+  assert.strictEqual(candidate.exhaustive, false);
+  assert.strictEqual(comparison.regressionRisk, "critical");
+  assert.strictEqual(comparison.baselineOnly.runtimeErrors.count, 1);
+  assert.deepStrictEqual(candidate, repeated);
+  assert.ok(candidate.policyReplay.length > 0);
+  assert.ok(candidate.policyReplay.some((round) => round.allocationApplied));
+  assert.ok(candidate.policyReplay.every((round) =>
+    Math.abs(round.nextRoundWeights.reduce((sum, entry) => sum + entry.share, 0) - 1) < 1e-9
+  ));
+
+  const recovered = explorePortfolioShadowReplay(compiled.storyJson, knots, [], {
+    ...options,
+    maxStates: 100,
+  });
+  assert.strictEqual(recovered.runtimeErrors.length, 1);
+  assert.strictEqual(recovered.exhaustive, true);
 });
 
 test("--next follows recommendations to an exhaustive result", () => {

@@ -72,6 +72,14 @@ export interface ShadowEvaluationResult {
   caveat: string;
 }
 
+export interface PolicyReplayComparison {
+  budget: number;
+  baselineOnly: Record<keyof EvidenceSet, EvidenceDifference>;
+  candidateOnly: Record<keyof EvidenceSet, EvidenceDifference>;
+  regressionRisk: ShadowStopRisk;
+  candidateGainClass: ShadowStopRisk;
+}
+
 function stableObject(value: Record<string, unknown>): string {
   return JSON.stringify(Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))));
 }
@@ -125,6 +133,34 @@ function risk(delta: ShadowEvaluationCheckpoint["highWaterOnly"]): ShadowStopRis
   return "none";
 }
 
+function compareEvidence(left: EvidenceSet, right: EvidenceSet): Record<keyof EvidenceSet, EvidenceDifference> {
+  return {
+    runtimeErrors: difference(left.runtimeErrors, right.runtimeErrors),
+    assertionViolations: difference(left.assertionViolations, right.assertionViolations),
+    authoredKnots: difference(left.authoredKnots, right.authoredKnots),
+    visibleOutcomes: difference(left.visibleOutcomes, right.visibleOutcomes),
+    terminalStates: difference(left.terminalStates, right.terminalStates),
+  };
+}
+
+/** Compare a matched fixed-portfolio baseline with an opt-in policy-applied candidate. */
+export function comparePolicyReplay(baseline: ExploreResult, candidate: ExploreResult): PolicyReplayComparison {
+  if (baseline.limits.maxStates !== candidate.limits.maxStates) {
+    throw new Error("paired policy replay requires matching maxStates");
+  }
+  const baselineEvidence = evidence(baseline);
+  const candidateEvidence = evidence(candidate);
+  const baselineOnly = compareEvidence(baselineEvidence, candidateEvidence);
+  const candidateOnly = compareEvidence(candidateEvidence, baselineEvidence);
+  return {
+    budget: baseline.limits.maxStates,
+    baselineOnly,
+    candidateOnly,
+    regressionRisk: risk(baselineOnly),
+    candidateGainClass: risk(candidateOnly),
+  };
+}
+
 function stopCandidate(decision: ShadowDecision): boolean {
   return decision.action === "stop_at_knee"
     || decision.action === "stop_at_deadline"
@@ -167,20 +203,8 @@ export function evaluateShadowBudgetLadder(input: ShadowEvaluationCase): ShadowE
     },
     checkpoints: runs.map((run) => {
       const observed = evidence(run.report);
-      const highWaterOnly = {
-        runtimeErrors: difference(highWaterEvidence.runtimeErrors, observed.runtimeErrors),
-        assertionViolations: difference(highWaterEvidence.assertionViolations, observed.assertionViolations),
-        authoredKnots: difference(highWaterEvidence.authoredKnots, observed.authoredKnots),
-        visibleOutcomes: difference(highWaterEvidence.visibleOutcomes, observed.visibleOutcomes),
-        terminalStates: difference(highWaterEvidence.terminalStates, observed.terminalStates),
-      };
-      const checkpointOnly = {
-        runtimeErrors: difference(observed.runtimeErrors, highWaterEvidence.runtimeErrors),
-        assertionViolations: difference(observed.assertionViolations, highWaterEvidence.assertionViolations),
-        authoredKnots: difference(observed.authoredKnots, highWaterEvidence.authoredKnots),
-        visibleOutcomes: difference(observed.visibleOutcomes, highWaterEvidence.visibleOutcomes),
-        terminalStates: difference(observed.terminalStates, highWaterEvidence.terminalStates),
-      };
+      const highWaterOnly = compareEvidence(highWaterEvidence, observed);
+      const checkpointOnly = compareEvidence(observed, highWaterEvidence);
       const decision = recommendShadowDecision(run.report);
       return {
         budget: run.budget,
