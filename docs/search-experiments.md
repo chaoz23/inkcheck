@@ -51,3 +51,9 @@ Configured goals are a different experiment from name-agnostic `shared-variable`
 This first slice demonstrates a narrow gain, a neutral result, and a regression in unrelated terminal-state count. At only 25 states on the deceptive plateau, allocating work to the goal loses the baseline runtime error; at 50 states both retain it.
 
 The shipped contract therefore uses an **additive** budget: `maxStates` remains the complete baseline and `goalMaxStates` buys extra directed work. It defaults to zero. Across 504 synthetic baseline/additive comparisons, additive steering preserved baseline findings while adding target discoveries; on 18 *The Intercept* comparisons it produced no losses, improved terminal-state counts in 11, knot coverage in 9, and reached one goal the matching baseline missed. These are encouraging bounded-run results, not proof that every goal or story benefits. Broader corpus and agent-authored-goal evaluation remains required.
+
+## Staged goal probe
+
+The first ordered-stage implementation seeks cumulative milestones within the same explicit additional budget. At depth 100, seed 7, and 100,000 directed states on *The Intercept*, both the flat `framedhooper && piecereturned` goal and the staged `framedhooper` then `piecereturned` goal missed the final compound state. The staged run reached the first milestone at state 684 with an exact witness and found 344 terminal states versus 313 for flat steering; both found 10 visible outcomes, 29/30 knots, and no runtime errors. Wall time was 27.8 seconds staged versus 27.0 seconds flat on the same machine.
+
+This is a reporting and search-order foundation, not evidence that cumulative ordering solves late dependencies. The next research step is a bounded diverse checkpoint frontier: retain several stage-1 witnesses and continue from each, rather than restarting every attempt from the root. That work remains part of issue #86.

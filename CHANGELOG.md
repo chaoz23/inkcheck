@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add safe typed search goals with an explicit additive budget. General exploration keeps the full `maxStates` allocation; `goalMaxStates` / `--goal-states` optionally adds deterministic goal-proximity work and defaults to zero. Reports, progress events, config validation, discovery, CLI, and MCP expose baseline, goal, and combined budgets, with a shared 100,000,000-state ceiling.
+- Add ordered staged goals for late variable dependencies. Each cumulative milestone has a deterministic witness and status; a bounded prerequisite miss blocks downstream stages instead of claiming they are unreachable. Stages share the explicit additive goal budget and never displace baseline exploration.
 
 ## 0.5.1 — 2026-07-11
 

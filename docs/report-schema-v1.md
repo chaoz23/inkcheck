@@ -39,6 +39,8 @@ Runtime errors and endings include:
 - `witness`: choice text/indices and, for errors where available, the triggering source location
 - `foundBy`, suggested action, and an `inkcheck://findings/...` documentation identifier
 
+Search goals may contain ordered `stages`. Each stage reports `reached`, `not_reached_within_limits`, `proven_unreachable`, or `blocked_by_stage`. Reached stages carry the same indexed replay metadata as a reached top-level goal. A later stage is cumulative: its witness satisfies that stage and every earlier stage on one path.
+
 Choice indices are authoritative for replay because authored labels need not be unique. `playtest_story.replayStatus` is `completed`, `runtime_error`, or `path_changed`; the last status means source changes invalidated the indexed path.
 
 ## Compatibility

@@ -32,6 +32,7 @@ export interface InkcheckCapabilities {
     indexedWitnesses: boolean;
     assertions: boolean;
     goals: boolean;
+    stagedGoals: boolean;
     resumableSearch: boolean;
   };
 }
@@ -60,6 +61,7 @@ export function capabilities(): InkcheckCapabilities {
       indexedWitnesses: true,
       assertions: true,
       goals: true,
+      stagedGoals: true,
       resumableSearch: false,
     },
   };

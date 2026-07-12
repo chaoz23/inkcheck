@@ -108,18 +108,22 @@ function enrichAssertionResult(result: AssertionResult) {
 }
 
 function enrichGoalResult(result: GoalResult) {
-  if (!result.witness) return result;
   const kind = "goal.reached" as const;
+  const enrichWitness = (witness: NonNullable<GoalResult["witness"]>, identity: Record<string, unknown>) => ({
+    ...witness,
+    id: stableId(kind, { ...identity, choiceIndices: witness.choiceIndices }),
+    kind,
+    replay: { operation: "playtest_story" as const, choices: witness.choiceIndices },
+    suggestedAction: "inspect_goal_witness" as const,
+    documentation: "inkcheck://findings/goal.reached",
+  });
   return {
     ...result,
-    witness: {
-      ...result.witness,
-      id: stableId(kind, { goalId: result.id, choiceIndices: result.witness.choiceIndices }),
-      kind,
-      replay: { operation: "playtest_story" as const, choices: result.witness.choiceIndices },
-      suggestedAction: "inspect_goal_witness" as const,
-      documentation: "inkcheck://findings/goal.reached",
-    },
+    ...(result.witness ? { witness: enrichWitness(result.witness, { goalId: result.id }) } : {}),
+    ...(result.stages ? { stages: result.stages.map((stage) => ({
+      ...stage,
+      ...(stage.witness ? { witness: enrichWitness(stage.witness, { goalId: result.id, stageId: stage.id }) } : {}),
+    })) } : {}),
   };
 }
 

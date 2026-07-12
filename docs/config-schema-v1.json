@@ -72,11 +72,29 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "condition"],
+        "required": ["id"],
+        "oneOf": [
+          { "required": ["condition"], "not": { "required": ["stages"] } },
+          { "required": ["stages"], "not": { "required": ["condition"] } }
+        ],
         "properties": {
           "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$" },
           "description": { "type": "string", "maxLength": 240 },
-          "condition": { "$ref": "#/$defs/condition" }
+          "condition": { "$ref": "#/$defs/condition" },
+          "stages": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "condition"],
+              "properties": {
+                "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$" },
+                "description": { "type": "string", "maxLength": 240 },
+                "condition": { "$ref": "#/$defs/condition" }
+              }
+            }
+          }
         }
       }
     }
