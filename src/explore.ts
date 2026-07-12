@@ -14,6 +14,7 @@ import {
   validateAssertions,
 } from "./assertions";
 import { GoalDefinition, GoalResult, GoalTracker, validateGoals } from "./goals";
+import { recommendShadowDecision, type ShadowDecision } from "./decision-policy";
 
 export interface PlaytestStep {
   text: string;
@@ -131,6 +132,8 @@ export interface ExploreResult {
   /** Portfolio-wide meaningful discoveries in actual interleaved execution order. */
   discoveryCurve?: DiscoveryCurveSample[];
   discoverySummary?: DiscoveryCurveSummary;
+  /** Research-only replay of shadow reallocation decisions; never emitted by the default portfolio. */
+  policyReplay?: PolicyReplayRound[];
 }
 
 /**
@@ -520,6 +523,13 @@ export interface ScheduleRoundEntry {
 export interface ScheduleRound {
   round: number;
   entries: ScheduleRoundEntry[];
+}
+
+export interface PolicyReplayRound {
+  round: number;
+  decision: ShadowDecision;
+  allocationApplied: boolean;
+  nextRoundWeights: Array<{ pass: string; share: number }>;
 }
 
 /**
@@ -2610,11 +2620,12 @@ function countMarginalFindings(
  * exhausted: every further state would be redundant. The executed schedule
  * is recorded on the merged result.
  */
-export function explorePortfolio(
+function explorePortfolioInternal(
   storyJson: string,
   knots: KnotInfo[],
   externals: string[] = [],
-  opts: ExploreOptions = {}
+  opts: ExploreOptions = {},
+  replayShadowAllocation = false
 ): ExploreResult {
   const maxStates = opts.maxStates ?? 100_000;
   if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 100_000_000) {
@@ -2665,6 +2676,7 @@ export function explorePortfolio(
   const roundSize = Math.max(1, Math.floor(maxStates / 10));
   const minShare = 0.08; // dry-spell guard: no active pass is ever defunded
   const schedule: ScheduleRound[] = [];
+  const policyReplay: PolicyReplayRound[] = [];
   const seenEndings = new Set<string>();
   const seenKnots = new Set<string>();
   const seenErrors = new Set<string>();
@@ -2773,12 +2785,43 @@ export function explorePortfolio(
     }
     schedule.push({ round: schedule.length + 1, entries });
     if (memoryStopped || timeStopped) break;
-    const totalScore = scores.reduce((a, b) => a + b, 0);
-    if (totalScore > 0) {
-      const pool = 1 - minShare * engines.length;
-      currentWeights = currentWeights.map(
-        (_, i) => minShare + Math.max(0, pool) * (scores[i] / totalScore)
+    if (replayShadowAllocation) {
+      const snapshots = engines.map((engine) => engine.snapshot());
+      const [firstSnapshot, ...otherSnapshots] = snapshots;
+      const policySnapshot = otherSnapshots.reduce(
+        (acc, result) => mergeExploreResults(acc, result),
+        firstSnapshot
       );
+      policySnapshot.limits.maxStates = maxStates;
+      policySnapshot.discoveryCurve = portfolioCurve.result();
+      policySnapshot.discoverySummary = portfolioCurve.summary(maxStates - remaining);
+      policySnapshot.schedule = [...schedule];
+      policySnapshot.passes = engines.map((engine, i) => ({
+        ...engine.telemetry(),
+        newEndings: marginalTotals[i].endings,
+        newKnots: marginalTotals[i].knots,
+        newRuntimeErrors: marginalTotals[i].errors,
+      }));
+      const decision = recommendShadowDecision(policySnapshot);
+      const allocationApplied = decision.action === "reallocate";
+      if (allocationApplied) {
+        const suggested = new Map(decision.allocation.map((entry) => [entry.pass, entry.suggestedShare]));
+        currentWeights = engines.map((engine, i) => suggested.get(engine.label) ?? currentWeights[i]);
+      }
+      policyReplay.push({
+        round: schedule.length,
+        decision,
+        allocationApplied,
+        nextRoundWeights: engines.map((engine, i) => ({ pass: engine.label, share: currentWeights[i] })),
+      });
+    } else {
+      const totalScore = scores.reduce((a, b) => a + b, 0);
+      if (totalScore > 0) {
+        const pool = 1 - minShare * engines.length;
+        currentWeights = currentWeights.map(
+          (_, i) => minShare + Math.max(0, pool) * (scores[i] / totalScore)
+        );
+      }
     }
   }
 
@@ -2800,6 +2843,7 @@ export function explorePortfolio(
     merged.truncatedBy = { ...merged.truncatedBy, maxStates: false, time: true };
   }
   merged.schedule = schedule;
+  if (replayShadowAllocation) merged.policyReplay = policyReplay;
   // Per-pass lifetime telemetry, with new* replaced by the true
   // portfolio-marginal totals the scheduler measured round by round.
   merged.passes = engines.map((engine, i) => ({
@@ -2809,6 +2853,25 @@ export function explorePortfolio(
     newRuntimeErrors: marginalTotals[i].errors,
   }));
   return merged;
+}
+
+export function explorePortfolio(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {}
+): ExploreResult {
+  return explorePortfolioInternal(storyJson, knots, externals, opts, false);
+}
+
+/** Research-only paired candidate for #103; applies reallocation actions but never policy stops. */
+export function explorePortfolioShadowReplay(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {}
+): ExploreResult {
+  return explorePortfolioInternal(storyJson, knots, externals, opts, true);
 }
 
 /**

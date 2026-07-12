@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add the first opt-in #103 policy-applied replay harness. It uses the existing portfolio engines and deterministic windows, applies only recorded `reallocate` shares, logs every decision/allocation, and leaves the default scheduler unchanged. A paired sparse-error fixture documents a critical v1 regression at 50 states: the fixed portfolio finds the runtime error and proves exhaustion while the candidate misses it and remains partial, before recovering at 75 states. This evidence blocks promotion and identifies duplicate pass-local credit and small-window floor rounding as follow-up defects.
+
 - Add a manifest-driven shadow-policy budget-ladder evaluator for #56. It compares exact runtime, assertion, knot, visible-outcome, and terminal-state identities against a declared high-water run; classifies stop risk without an aggregate score; emits stable JSON or Markdown; requires source license/consent metadata; and explicitly treats independent larger runs as bounded comparisons rather than continuation prefixes or coverage oracles. It does not activate policy decisions or change search behavior.
 
 - Add the v0.6 anytime decision engine in strict shadow mode (#92). JSON and MCP reports now include a deterministic, versioned continue/reallocate/probe/stop recommendation with explicit evidence, uncertainty, binding constraint, and protected per-pass probe floors. Findings use lexicographic value tiers instead of an opaque score, with runtime/assertion evidence kept highest and separately visible. The recommendation is never applied (`mode: shadow`, `applied: false`), so this release gathers auditable policy evidence without changing search allocation, stopping behavior, findings, or coverage claims.
