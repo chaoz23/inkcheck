@@ -20,6 +20,22 @@ The promise is narrower and more useful: make mechanical story QA cheap, repeata
 
 This is an open-source QA project because that boundary matters. If a report overclaims, misses an obvious pattern, needs a better traversal strategy, or fails on a story shape you can share safely, please bring a fixture or issue. The roadmap is about making partial coverage more transparent and more valuable, not pretending partial coverage becomes proof.
 
+### Product direction and self-score
+
+Inkcheck's future value is planned to come from a reproducible hybrid: broad seeded probes, systematic local inspection, bounded diversity search, and Ink-aware specialists for gates, loops, assertions, and storylet eligibility. Specialists must remain bounded and earn more work through portfolio-new evidence because they can become budget traps too.
+
+| Dimension | Current | 10/10 direction |
+| --- | ---: | --- |
+| Actionable, repeatable QA | **7/10** | Stable findings and exact replay across edit/CI/agent campaigns |
+| Honest bounded evidence | **8/10** | Facts, estimates, limits, uncertainty, and proof always separated |
+| Robust unknown-shape exploration | **6/10** | Broad cross-family value without traversal or fixture overfitting |
+| Structured specialist advantage | **2/10** | Gates, loops, boundaries, and hubs tested by bounded expert probes |
+| Anytime value per wall clock | **4/10** | Early result windows, dynamic allocation, deadlines, and long-tail work |
+| Author and agent intent | **6/10** | Safe invariants, goals, resource posture, and compact explanations |
+| Demonstrated generalization | **3/10** | Predeclared multi-project corpus, including genuinely medium/large work |
+
+These are separate scores, not an average. A high trust score cannot offset a lost runtime error. The detailed [product and engineering truths scorecard](docs/product-engineering-scorecard.md) defines every 10/10 target, current evidence, engineering constraints, and the reassessment protocol used at each epic or release.
+
 ## Quick start
 
 With Node.js 18 or newer:
@@ -271,7 +287,7 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 
 - **Compilation** uses `inklecate`, the canonical compiler — found via `$INKLECATE_PATH`, then `PATH`, then auto-downloaded from the pinned official ink 1.2.1 release into `~/.cache/inkcheck` on first run. Downloaded archives are verified against pinned SHA-256 hashes before extraction. Stories are compiled with `-c` so all knot visits are counted.
 - **Exploration** runs the compiled story in [inkjs](https://github.com/y-lohse/inkjs) (the official JS runtime port), reusing pooled story instances so the compiled JSON is parsed once per pass and states rewind via `LoadJson`. States are deduplicated by content hash. Turn and RNG state are preserved whenever the source uses those features; otherwise that bookkeeping is safely canonicalized so ordinary loops can converge. `INCLUDE`s are followed.
-- The CLI uses a bounded, adaptive portfolio search. Complementary passes — last-choice-first, first-choice-first, and inside-out DFS, a diversity-first beam, and seeded random walks — run interleaved in ten deterministic rounds. Initial weights (roughly 20/20/26/15/20%, or a shape profile's suggestion under `--auto`) are reallocated each round toward passes whose findings are still growing, with a guaranteed floor per pass so a discovery dry spell never defunds a pass outright. The passes are complementary: the DFS orderings systematically exhaust subtrees, the beam spreads budget across every variable-state lineage within a hard frontier cap, and the random walks re-roll every choice point so early-choice state combinations get sampled instead of repeated. Findings merge into one report, each labeled with the pass that found it, and the executed schedule appears in `--json` output.
+- The CLI uses a bounded, adaptive portfolio search. Complementary passes — last-choice-first, first-choice-first, and inside-out DFS, a diversity-first beam, and seeded random walks — run interleaved in ten deterministic rounds. Initial weights (roughly 20/20/26/15/20%, or a shape profile's suggestion under `--auto`) are reallocated each round toward passes whose findings are still growing, with an intended 8% fractional floor per active pass. That floor protects ordinary windows but is not yet a cumulative integer service guarantee: very small windows can repeatedly round a share to zero, tracked in #106. The passes are complementary: the DFS orderings systematically exhaust subtrees, the beam spreads budget across variable-state lineages within a hard frontier cap, and random walks re-roll every choice point so early-choice combinations get sampled instead of repeated. Findings merge into one report, each labeled with the pass that found it, and the executed schedule appears in `--json` output.
 - Experimental `--search=shared` keeps one global state identity and exposes the pending work through deep, novelty, and seeded frontier views. A state chosen by any view is expanded once and removed lazily from the others; compact parent links preserve exact repro paths without retaining a full path on every pending state. Variable-state and variable-transition rarity are recorded as evaluation telemetry, not yet used as a search heuristic.
 - Experimental `--search=shared-variable` replaces one of every eight shared-frontier selections with a variable-rarity view. Its score combines the observed frequency of the destination variable snapshot and the rarest change on that edge; it cannot consume more than its fixed slice, so graph novelty, depth, and seeded exploration remain represented.
 - The moment any systematic pass visits every reachable state without hitting a limit, the whole portfolio stops: every further state would be redundant. A small fully-explorable story at the default 10,000,000-state budget still finishes in the handful of states it actually has — the large default costs nothing when a story is exhaustible.
@@ -291,7 +307,7 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 
 ## Roadmap
 
-The roadmap is focused on earning trust in bounded QA: clearer limits, better evidence, and project-specific checks authors can understand.
+The roadmap is governed by the [product and engineering truths scorecard](docs/product-engineering-scorecard.md). Every epic should improve measured value without weakening bounded-coverage honesty, critical-evidence retention, deterministic replay, or resource ceilings.
 
 - Coverage transparency: clearer reporting for truncation, depth limits, visited endings, skipped search space, and what was or was not explored.
 - Report quality: better source locations, shorter repro paths, stable issue identities, and clearer grouping of runtime errors, unvisited knots, and coverage limits.
@@ -301,6 +317,7 @@ The roadmap is focused on earning trust in bounded QA: clearer limits, better ev
 - Repro persistence: remember known failing paths and make sure future runs keep checking them even as traversal strategies improve.
 - Public compatibility fixtures: consent-safe examples and synthetic edge cases for regression testing, performance comparisons, and trust-building.
 - Search promotion harness: a broad, predeclared scorecard across structural families, budgets, depths, and seeds before any experimental strategy can change the default.
+- Bounded specialist search: detect mechanical shapes and dispatch small expert probes for compound gates, loops/counters, storylet eligibility, assertion boundaries, and behavioral frontier diversity (#107-#112). Specialists earn expansion through portfolio-new value and retain protected general/long-tail work.
 - Large-story performance controls: quick, standard, and deep check presets with clearer time/coverage tradeoffs.
 - Structural lint checks: optional checks for missing tags, inconsistent tag schemas, or project-specific metadata conventions.
 

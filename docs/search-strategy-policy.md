@@ -4,7 +4,7 @@ Inkcheck's default search must be robust for an unknown story shape, not merely 
 
 ## Current default
 
-The adaptive portfolio remains the default. Its independent DFS, diversity-beam, and seeded-random passes have different failure modes, retain guaranteed budget floors, and adapt only surplus budget from observed findings. Experimental `shared` and `shared-variable` modes are explicit opt-ins and must not change portfolio weights or behavior indirectly.
+The adaptive portfolio remains the default. Its independent DFS, diversity-beam, and seeded-random passes have different failure modes and adapt surplus budget from observed findings. The current 8% fractional pass floor expresses protected-probe intent at ordinary window sizes, but it is not yet a cumulative integer service guarantee: small windows can repeatedly round a pass to zero (#106). Experimental `shared` and `shared-variable` modes are explicit opt-ins and must not change portfolio weights or behavior indirectly.
 
 Default allocation is frozen until an alternative passes the promotion gate below. A compelling result on one story, one budget, or one metric is insufficient.
 
@@ -33,6 +33,10 @@ Promotion requires all of the following:
 6. A migration note explaining the behavioral change and a retained explicit mode for the previous default during evaluation.
 
 If evidence is mixed, the strategy remains opt-in. This is a feature, not a failure: specialized modes can be valuable without becoming the safest default.
+
+## Specialist economics
+
+Ink-aware specialists can provide value that uniform random brute force cannot: backward gate search, loop/counter boundary probes, assertion steering, and storylet eligibility exploration. They can also become budget traps. Every specialist therefore starts as a small bounded probe, has hard state/time/memory/frontier ceilings, earns expansion only through portfolio-marginal evidence or explicit intent progress, and retains general-search plus long-tail service. Detector confidence or raw state novelty alone cannot justify indefinite expansion.
 
 ## Assertions and agent goals
 

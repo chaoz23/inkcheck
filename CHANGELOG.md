@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a living product/engineering truth scorecard with explicit 10/10 targets, candid current ratings, evidence/gaps, and a release reassessment protocol. The README now states that planned value comes from a reproducible broad hybrid plus bounded Ink-aware specialists, and corrects the current 8% pass floor from a “guarantee” to a fractional intent whose small-window service debt remains #106.
+
 - Add the first opt-in #103 policy-applied replay harness. It uses the existing portfolio engines and deterministic windows, applies only recorded `reallocate` shares, logs every decision/allocation, and leaves the default scheduler unchanged. A paired sparse-error fixture documents a critical v1 regression at 50 states: the fixed portfolio finds the runtime error and proves exhaustion while the candidate misses it and remains partial, before recovering at 75 states. This evidence blocks promotion and identifies duplicate pass-local credit and small-window floor rounding as follow-up defects.
 
 - Add a manifest-driven shadow-policy budget-ladder evaluator for #56. It compares exact runtime, assertion, knot, visible-outcome, and terminal-state identities against a declared high-water run; classifies stop risk without an aggregate score; emits stable JSON or Markdown; requires source license/consent metadata; and explicitly treats independent larger runs as bounded comparisons rather than continuation prefixes or coverage oracles. It does not activate policy decisions or change search behavior.

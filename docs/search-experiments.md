@@ -70,7 +70,7 @@ The first #92/#56 shadow-policy evaluation used current portfolio search on *The
 
 At 100K, the high-water run adds one author-visible outcome. At 1M, all author-visible outcomes and knots in the 5M run are already present, while exact terminal variants continue to grow substantially. This demonstrates why terminal multiplicity must not dominate the value model.
 
-The policy did not recommend stopping at any rung: discoveries were still arriving, so it retained 8% floors and recommended moving discretionary work. At 100K and 1M it favored seeded random search; at 5M it favored first-choice DFS based on the most recent lexicographic value window. Because shadow mode never applied those allocations, this result validates reportability and avoids a false knee on one real story; it does **not** show that the proposed reallocation would improve yield.
+The policy did not recommend stopping at any rung: discoveries were still arriving, so its suggested shares retained 8% fractional floors and moved discretionary work. At 100K and 1M it favored seeded random search; at 5M it favored first-choice DFS based on the most recent lexicographic value window. Because shadow mode never applied those allocations, this result validates reportability and avoids a false knee on one real story; it does **not** show that the proposed reallocation would improve yield or that fractional shares become cumulative integer service (#106).
 
 No runtime error or assertion evidence occurred in this case, so it cannot satisfy the critical-evidence promotion gate. The next evaluation must replay shadow allocations on predeclared late-recovery and sparse-error families, while retaining the fixed portfolio as the paired baseline.
 
