@@ -139,6 +139,8 @@ export interface EffectiveReportConfiguration {
   strict: boolean;
   maxMemoryMb: number | null;
   maxTimeSec: number | null;
+  /** Explicit additional directed-goal budget; zero preserves baseline-only work. */
+  goalMaxStates: number;
   assertions?: AssertionDefinition[];
   goals?: GoalDefinition[];
 }

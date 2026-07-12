@@ -19,7 +19,9 @@ Common fields:
 | `type` | string | Event kind: `run_start`, `phase_start`, `progress`, `phase_end`, or `run_end`. |
 | `elapsedMs` | number | Milliseconds since the CLI run started. |
 | `statesExplored` | number | Total story states explored so far in this CLI process. |
-| `stateBudget` | number | Configured state budget for the run. |
+| `stateBudget` | number | Total configured work budget: baseline plus additional goal states. |
+| `baselineStateBudget` | number | General exploration budget, unchanged by goal steering. |
+| `goalStateBudget` | number | Additional directed-goal budget; zero unless explicitly requested. |
 | `budgetFraction` | number | `statesExplored / stateBudget`, capped at `1`. This is work-budget progress, not story coverage. |
 
 Optional fields:

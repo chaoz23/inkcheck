@@ -17,7 +17,15 @@ export interface InkcheckCapabilities {
   schemaVersion: number;
   inkcheckVersion: string;
   schemas: { report: number; config: number; projectInspection: number };
-  limits: { maxDepth: number; maxStates: number; defaultMaxDepth: number; defaultMaxStates: number };
+  limits: {
+    maxDepth: number;
+    maxStates: number;
+    maxGoalStates: number;
+    maxTotalStates: number;
+    defaultMaxDepth: number;
+    defaultMaxStates: number;
+    defaultGoalMaxStates: number;
+  };
   searchModes: string[];
   features: {
     projectInspection: boolean;
@@ -40,8 +48,11 @@ export function capabilities(): InkcheckCapabilities {
     limits: {
       maxDepth: 1_000,
       maxStates: 100_000_000,
+      maxGoalStates: 100_000_000,
+      maxTotalStates: 100_000_000,
       defaultMaxDepth: 100,
       defaultMaxStates: 10_000_000,
+      defaultGoalMaxStates: 0,
     },
     searchModes: ["portfolio", "shared", "shared-variable"],
     features: {

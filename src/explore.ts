@@ -114,7 +114,16 @@ export interface ExploreResult {
    * sampling-slice budget exhaustion no longer counts as truncation.
    */
   exhaustive: boolean;
-  limits: { maxDepth: number; maxStates: number; seed?: number };
+  limits: {
+    maxDepth: number;
+    /** Ordinary baseline/repro exploration budget. */
+    maxStates: number;
+    /** Explicit additional directed-goal budget. */
+    goalMaxStates?: number;
+    /** Combined configured work ceiling when goal work is enabled. */
+    totalMaxStates?: number;
+    seed?: number;
+  };
   /** Portfolio runs only: the adaptive schedule that was actually executed. */
   schedule?: ScheduleRound[];
   /** Lifetime per-pass telemetry; merges concatenate contributing passes. */
@@ -452,6 +461,8 @@ export interface ExploreOptions {
   assertions?: AssertionDefinition[];
   /** Prevalidated goal conditions used only by an explicitly bounded goal slice. */
   goals?: GoalDefinition[];
+  /** Additional directed-goal states; baseline maxStates is never reduced. Default 0. */
+  goalMaxStates?: number;
   /** Internal selector for the deterministic goal-proximity shared frontier. */
   sharedGoalAware?: boolean;
 }
@@ -1598,9 +1609,9 @@ export function exploreSharedVariableAware(
 }
 
 /**
- * Preserve most work for ordinary exploration while giving configured goals a
- * deterministic, bounded proximity frontier. This is opt-in: no goals means
- * callers use their selected engine directly and retain existing behavior.
+ * Run the selected baseline engine with its full budget, then optionally add a
+ * deterministic directed-goal slice. Extra work is explicit; goal definitions
+ * with a zero goal budget are still observed by every baseline engine.
  */
 export function exploreWithGoals(
   storyJson: string,
@@ -1610,26 +1621,28 @@ export function exploreWithGoals(
   baseline: "portfolio" | "shared" | "shared-variable" = "portfolio"
 ): ExploreResult {
   const maxStates = opts.maxStates ?? 100_000;
-  if (!opts.goals?.length || maxStates < 2) {
-    const search = baseline === "shared-variable"
-      ? exploreSharedVariableAware
-      : baseline === "shared"
-        ? exploreShared
-        : explorePortfolio;
-    return search(storyJson, knots, externals, opts);
+  const goalMaxStates = opts.goalMaxStates ?? 0;
+  if (!Number.isSafeInteger(goalMaxStates) || goalMaxStates < 0 || goalMaxStates > 100_000_000) {
+    throw new RangeError("goalMaxStates must be an integer from 0 to 100000000");
   }
-  const goalStates = Math.max(1, Math.floor(maxStates * 0.25));
-  const generalStates = maxStates - goalStates;
-  const baseOptions = { ...opts, maxStates: generalStates };
+  if (maxStates + goalMaxStates > 100_000_000) {
+    throw new RangeError("maxStates + goalMaxStates must not exceed 100000000");
+  }
+  if (goalMaxStates > 0 && !opts.goals?.length) {
+    throw new RangeError("goalMaxStates requires at least one goal");
+  }
+  const baseOptions = { ...opts, maxStates, goalMaxStates: undefined };
   const general = baseline === "shared-variable"
     ? exploreSharedVariableAware(storyJson, knots, externals, baseOptions)
     : baseline === "shared"
       ? exploreShared(storyJson, knots, externals, baseOptions)
       : explorePortfolio(storyJson, knots, externals, baseOptions);
   const generalConsumed = general.statesExplored;
+  if (goalMaxStates === 0) return general;
   const directed = exploreShared(storyJson, knots, externals, {
     ...opts,
-    maxStates: goalStates,
+    maxStates: goalMaxStates,
+    goalMaxStates: undefined,
     sharedVariableAware: false,
     sharedGoalAware: true,
     onProgress: opts.onProgress
@@ -1639,10 +1652,12 @@ export function exploreWithGoals(
   const directedConsumed = directed.statesExplored;
   const merged = mergeExploreResults(general, directed);
   merged.limits.maxStates = maxStates;
+  merged.limits.goalMaxStates = goalMaxStates;
+  merged.limits.totalMaxStates = maxStates + goalMaxStates;
   merged.goalBudget = {
-    generalGranted: generalStates,
+    generalGranted: maxStates,
     generalConsumed,
-    directedGranted: goalStates,
+    directedGranted: goalMaxStates,
     directedConsumed,
   };
   return merged;
@@ -2694,10 +2709,16 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
   main.randomnessDetected ||= other.randomnessDetected;
   if (other.passes?.length) main.passes = [...(main.passes ?? []), ...other.passes];
   const seed = main.limits.seed ?? other.limits.seed;
+  const goalMaxStates = (main.limits.goalMaxStates ?? 0) + (other.limits.goalMaxStates ?? 0);
+  const maxStates = main.limits.maxStates + other.limits.maxStates;
   main.limits = {
     maxDepth: Math.max(main.limits.maxDepth, other.limits.maxDepth),
-    maxStates: main.limits.maxStates + other.limits.maxStates,
+    maxStates,
   };
+  if (goalMaxStates > 0) {
+    main.limits.goalMaxStates = goalMaxStates;
+    main.limits.totalMaxStates = maxStates + goalMaxStates;
+  }
   if (seed !== undefined) main.limits.seed = seed;
   return main;
 }

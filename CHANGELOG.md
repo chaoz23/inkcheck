@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add safe typed search goals with an explicit additive budget. General exploration keeps the full `maxStates` allocation; `goalMaxStates` / `--goal-states` optionally adds deterministic goal-proximity work and defaults to zero. Reports, progress events, config validation, discovery, CLI, and MCP expose baseline, goal, and combined budgets, with a shared 100,000,000-state ceiling.
+
 ## 0.5.1 — 2026-07-11
 
 - Add safe author-defined story assertions (#64): versioned config and structured MCP input accept typed variable/literal comparisons composed with `all`, `any`, and `not`, scoped always, at terminal states, or on entering a named knot. Every search engine evaluates the same prevalidated rules on visited states; violations fail CI and carry stable IDs, observed values, exact indexed witnesses, and replay operations. Reports distinguish violations, bounded runs where no violation was observed, and exhaustive verification. No JavaScript, shell, or arbitrary Ink expressions are accepted.

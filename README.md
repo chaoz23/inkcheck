@@ -42,6 +42,7 @@ entrypoint: story.ink
 ci:
   maxDepth: 100
   maxStates: 1000000
+  goalMaxStates: 250000
   seed: 1
   search: portfolio
   strict: true
@@ -66,7 +67,7 @@ Run `inkcheck validate-config` to check it. From that directory, `inkcheck` uses
 
 Assertions are typed data, never JavaScript or arbitrary Ink expressions. Operands are variables or scalar literals; comparisons use `==`, `!=`, `<`, `<=`, `>`, or `>=`, and conditions can compose with `all`, `any`, and `not`. Rules run always, at terminal states, or when entering a named knot. Unknown variables/knots and invalid cross-type comparisons fail before exploration spends its state budget. A violation always fails CI and includes the observed values plus an exact indexed replay witness. A bounded clean run means only “no violation observed”; only an exhaustive run reports the rule as exhaustively verified.
 
-Goals use the same non-executable condition grammar, but guide exploration instead of failing CI. When goals are configured, Inkcheck protects 75% of the non-repro exploration allocation for the selected general search and gives 25% to a deterministic goal-proximity frontier; the optional shortest-repro slice remains separate. A reached goal includes exact choice indices; a miss says `not_reached_within_limits` unless exhaustive exploration actually proves it unreachable. Goal steering is useful but not uniformly better: it can find a requested variable combination sooner while reducing unrelated discoveries at a tight budget, so the allocation and comparison evidence remain visible in the report and [search experiments](docs/search-experiments.md).
+Goals use the same non-executable condition grammar, but guide exploration instead of failing CI. General exploration always receives the full `maxStates` budget. Set `goalMaxStates` in config or `--goal-states` on the CLI to add an explicit deterministic goal-proximity slice; it defaults to zero and the combined budget may not exceed 100,000,000 states. Goals are still observed during ordinary exploration when no extra slice is requested. A reached goal includes exact choice indices; a miss says `not_reached_within_limits` unless exhaustive exploration actually proves it unreachable. Reports expose baseline, goal, and total budgets separately so steering cannot silently displace general QA findings. See the comparison evidence in [search experiments](docs/search-experiments.md).
 
 For a new project containing one `.ink` file, `inkcheck init` creates this config. Multi-file projects must name the root with `--entrypoint`. `inkcheck agent-kit --format codex` adds the config when needed, a pinned GitHub Actions example, `.inkcheck/` artifact ignore rules, and compact version-matched agent instructions. Both commands are idempotent and preflight every target; they refuse the whole operation rather than overwrite or partially modify existing authored files.
 

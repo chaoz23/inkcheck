@@ -38,7 +38,7 @@ At 2,000 states the variable frontier finds two additional terminal states in *T
 
 ## Explicit goal steering
 
-Configured goals are a different experiment from name-agnostic `shared-variable`: 75% of the non-repro exploration allocation remains with the selected general engine and 25% uses the safe goal condition as a deterministic proximity signal. These measurements call the engines directly without a repro slice and use the portfolio baseline, seed 7, and depth 30.
+Configured goals are a different experiment from name-agnostic `shared-variable`. An early zero-sum prototype reserved 75% of a fixed budget for general search and 25% for goal steering. The table below records that historical experiment; it exposed the unacceptable possibility that steering could remove unrelated baseline findings.
 
 | Fixture | Budget | Baseline target reached | Goal target reached | Baseline / goal terminal states | Baseline / goal runtime errors |
 | --- | ---: | --- | --- | ---: | ---: |
@@ -48,4 +48,6 @@ Configured goals are a different experiment from name-agnostic `shared-variable`
 | Storylet machine | 250 | yes | yes | 24 / 26 | 0 / 0 |
 | Deceptive plateau (`key == true`) | 50 | yes | yes | 1 / 1 | 1 / 1 |
 
-This first slice demonstrates a narrow gain, a neutral result, and a regression in unrelated terminal-state count. At only 25 states on the deceptive plateau, allocating work to the goal loses the baseline runtime error; at 50 states both retain it. That is why goals are explicit project intent, why the general allocation is protected and reported, and why no result here promotes goal steering into the no-goal default. Broader corpus and agent-authored-goal evaluation is still required.
+This first slice demonstrates a narrow gain, a neutral result, and a regression in unrelated terminal-state count. At only 25 states on the deceptive plateau, allocating work to the goal loses the baseline runtime error; at 50 states both retain it.
+
+The shipped contract therefore uses an **additive** budget: `maxStates` remains the complete baseline and `goalMaxStates` buys extra directed work. It defaults to zero. Across 504 synthetic baseline/additive comparisons, additive steering preserved baseline findings while adding target discoveries; on 18 *The Intercept* comparisons it produced no losses, improved terminal-state counts in 11, knot coverage in 9, and reached one goal the matching baseline missed. These are encouraging bounded-run results, not proof that every goal or story benefits. Broader corpus and agent-authored-goal evaluation remains required.

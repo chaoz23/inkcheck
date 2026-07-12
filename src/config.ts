@@ -16,6 +16,8 @@ export interface InkcheckCiConfig {
   maxTimeSec?: number;
   strict?: boolean;
   minRepro?: boolean;
+  /** Additional directed-goal work; ordinary maxStates remains unchanged. */
+  goalMaxStates?: number;
 }
 
 export interface InkcheckProjectConfig {
@@ -96,13 +98,14 @@ export function parseProjectConfig(source: string): InkcheckProjectConfig {
     } else {
       unknownKeys(
         value.ci,
-        ["maxDepth", "maxStates", "seed", "search", "maxMemoryMb", "maxTimeSec", "strict", "minRepro"],
+        ["maxDepth", "maxStates", "goalMaxStates", "seed", "search", "maxMemoryMb", "maxTimeSec", "strict", "minRepro"],
         "ci",
         issues
       );
       ci = {
         maxDepth: boundedInteger(value.ci.maxDepth, "ci.maxDepth", 1, 1_000, issues),
         maxStates: boundedInteger(value.ci.maxStates, "ci.maxStates", 1, 100_000_000, issues),
+        goalMaxStates: boundedInteger(value.ci.goalMaxStates, "ci.goalMaxStates", 0, 100_000_000, issues),
         seed: boundedInteger(value.ci.seed, "ci.seed", 1, 4_294_967_295, issues),
         maxMemoryMb: boundedInteger(value.ci.maxMemoryMb, "ci.maxMemoryMb", 1, 1_000_000, issues),
         maxTimeSec: boundedInteger(value.ci.maxTimeSec, "ci.maxTimeSec", 1, 86_400, issues),
@@ -124,6 +127,12 @@ export function parseProjectConfig(source: string): InkcheckProjectConfig {
   }
   const assertions = parseAssertionDefinitions(value.assertions, "assertions", issues);
   const goals = parseGoalDefinitions(value.goals, "goals", issues);
+  const baselineStates = ci?.maxStates ?? 10_000_000;
+  const goalStates = ci?.goalMaxStates ?? 0;
+  if (goalStates > 0 && !goals?.length) issues.push("ci.goalMaxStates: requires at least one goal");
+  if (baselineStates + goalStates > 100_000_000) {
+    issues.push("ci.maxStates + ci.goalMaxStates: must not exceed 100000000");
+  }
 
   if (issues.length) throw new ConfigValidationError(issues);
   return {
