@@ -57,14 +57,15 @@ function zeroValue(): ValueTiers {
 }
 
 function isBeyondObservedRecovery(pass: PassTelemetry): boolean {
-  const dry = pass.discoverySummary.statesSinceLastDiscovery;
-  const longest = pass.discoverySummary.longestObservedDiscoveryGap;
+  const summary = pass.portfolioMarginalSummary ?? pass.discoverySummary;
+  const dry = summary.statesSinceLastDiscovery;
+  const longest = summary.longestObservedDiscoveryGap;
   return dry !== null && dry > Math.max(1_000, (longest ?? 0) * 2);
 }
 
 function recentValue(pass: PassTelemetry): ValueTiers {
   if (isBeyondObservedRecovery(pass)) return zeroValue();
-  const samples = pass.discoveryCurve.slice(-3);
+  const samples = (pass.portfolioMarginalCurve ?? pass.discoveryCurve).slice(-3);
   return samples.reduce<ValueTiers>((value, sample) => ({
     critical: value.critical + sample.newRuntimeErrors + sample.newAssertionViolations,
     intent: value.intent + sample.newGoalsReached + sample.newStagesReached,
@@ -127,13 +128,18 @@ export function recommendShadowDecision(report: ExploreResult): ShadowDecision {
   const summary = report.discoverySummary;
   const passes = report.passes ?? [];
   const allocation = suggestedAllocation(passes);
-  const compacted = passes.some((pass) => pass.discoverySummary.discoveryEvents > pass.discoveryCurve.length)
+  const compacted = passes.some((pass) => {
+    const curve = pass.portfolioMarginalCurve ?? pass.discoveryCurve;
+    const passSummary = pass.portfolioMarginalSummary ?? pass.discoverySummary;
+    return passSummary.discoveryEvents > curve.length;
+  })
     || (summary !== undefined && summary.discoveryEvents > (report.discoveryCurve?.length ?? 0));
   const lateRecoveryObserved = passes.some((pass) => {
-    const longest = pass.discoverySummary.longestObservedDiscoveryGap;
+    const passSummary = pass.portfolioMarginalSummary ?? pass.discoverySummary;
+    const longest = passSummary.longestObservedDiscoveryGap;
     return longest !== null
       && longest >= Math.max(10, Math.floor(pass.statesExplored * 0.1))
-      && pass.discoverySummary.discoveryEvents >= 2;
+      && passSummary.discoveryEvents >= 2;
   });
   const criticalEvidenceObserved = passes.some((pass) =>
     pass.discoveryCurve.some((sample: DiscoveryCurveSample) => sample.runtimeErrorsFound > 0 || sample.assertionViolations > 0)

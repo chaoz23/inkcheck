@@ -3,6 +3,7 @@ import { Story } from "inkjs";
 import { KnotInfo, DEFAULT_MAX_DEPTH } from "./inklecate";
 import {
   rarityWeight,
+  runtimeErrorKey,
   variableChanges,
   variableStateKey,
   variableTransitionKey,
@@ -564,6 +565,10 @@ export interface PassTelemetry {
   discoveryCurve: DiscoveryCurveSample[];
   /** Factual bounded-run distances; no plateau or completeness inference. */
   discoverySummary: DiscoveryCurveSummary;
+  /** Portfolio-only first-discovery value credited to this pass in scheduler order. */
+  portfolioMarginalCurve?: DiscoveryCurveSample[];
+  /** Compaction-safe distances for the portfolio-marginal curve. */
+  portfolioMarginalSummary?: DiscoveryCurveSummary;
   truncatedBy: TruncationCauses;
   exhaustive: boolean;
   /** Beam only: largest frontier kept between levels. */
@@ -691,6 +696,21 @@ export class DiscoveryCurveRecorder {
 
 function visibleOutcomeKey(finalText: string): string {
   return finalText.trim().replace(/\s+/g, " ");
+}
+
+function stableObservedValues(values: Record<string, unknown>): string {
+  return JSON.stringify(Object.fromEntries(Object.entries(values).sort(([a], [b]) => a.localeCompare(b))));
+}
+
+function assertionViolationKey(ruleId: string, observedValues: Record<string, unknown>, choiceIndices: number[]): string {
+  return `${ruleId}|${stableObservedValues(observedValues)}|${JSON.stringify(choiceIndices)}`;
+}
+
+function portfolioRuntimeErrorKey(error: RuntimeErrorReport): string {
+  if (error.sourceLocation?.approximate) {
+    return `${error.message}|${error.sourceLocation.file}|approximate`;
+  }
+  return runtimeErrorKey(error);
 }
 
 function recordEnding(
@@ -2674,12 +2694,13 @@ function explorePortfolioInternal(
   }
 
   const roundSize = Math.max(1, Math.floor(maxStates / 10));
-  const minShare = 0.08; // dry-spell guard: no active pass is ever defunded
+  const minShare = 0.08; // fractional intent; cumulative integer service remains #106
   const schedule: ScheduleRound[] = [];
   const policyReplay: PolicyReplayRound[] = [];
   const seenEndings = new Set<string>();
   const seenKnots = new Set<string>();
   const seenErrors = new Set<string>();
+  const seenPolicyErrors = new Set<string>();
   const seenVisibleOutcomes = new Set<string>();
   const seenAssertionViolations = new Set<string>();
   const seenGoals = new Set<string>();
@@ -2692,7 +2713,17 @@ function explorePortfolioInternal(
   // dedup sets above are monotonic by construction, so we drive progress from
   // them: endings/errors only grow, and unvisited knots only shrink.
   const totalNonFunctionKnots = knots.filter((k) => !k.isFunction).length;
-  const marginalTotals = engines.map(() => ({ endings: 0, knots: 0, errors: 0 }));
+  const marginalTotals = engines.map(() => ({
+    endings: 0,
+    knots: 0,
+    errors: 0,
+    policyErrors: 0,
+    visibleOutcomes: 0,
+    assertions: 0,
+    goals: 0,
+    stages: 0,
+  }));
+  const marginalCurves = engines.map(() => new DiscoveryCurveRecorder());
   let currentWeights = [...engineWeights];
   let remaining = maxStates;
   let exhaustedEarly = false;
@@ -2725,14 +2756,48 @@ function explorePortfolioInternal(
       remaining -= consumed;
       const snapshot = engine.snapshot();
       const marginal = countMarginalFindings(snapshot, seenEndings, seenKnots, seenErrors);
-      for (const ending of snapshot.endingsFound) seenVisibleOutcomes.add(visibleOutcomeKey(ending.finalText));
-      for (const assertion of snapshot.assertionResults) {
-        if (assertion.status === "violated") seenAssertionViolations.add(assertion.id);
+      let newPolicyErrors = 0;
+      for (const error of snapshot.runtimeErrors) {
+        // Approximate fallback lines can vary by witness path (#84). For budget
+        // credit, conservatively collapse them by message/file rather than pay
+        // several passes for one semantic failure. Report identity is unchanged.
+        const key = portfolioRuntimeErrorKey(error);
+        if (!seenPolicyErrors.has(key)) {
+          seenPolicyErrors.add(key);
+          newPolicyErrors++;
+        }
       }
+      let newVisibleOutcomes = 0;
+      for (const ending of snapshot.endingsFound) {
+        const key = visibleOutcomeKey(ending.finalText);
+        if (!seenVisibleOutcomes.has(key)) {
+          seenVisibleOutcomes.add(key);
+          newVisibleOutcomes++;
+        }
+      }
+      let newAssertionViolations = 0;
+      for (const assertion of snapshot.assertionResults) {
+        for (const violation of assertion.violations) {
+          const key = assertionViolationKey(assertion.id, violation.observedValues, violation.choiceIndices);
+          if (!seenAssertionViolations.has(key)) {
+            seenAssertionViolations.add(key);
+            newAssertionViolations++;
+          }
+        }
+      }
+      let newGoals = 0;
+      let newStages = 0;
       for (const goal of snapshot.goalResults ?? []) {
-        if (goal.status === "reached") seenGoals.add(goal.id);
+        if (goal.status === "reached" && !seenGoals.has(goal.id)) {
+          seenGoals.add(goal.id);
+          newGoals++;
+        }
         for (const stage of goal.stages ?? []) {
-          if (stage.status === "reached") seenStages.add(`${goal.id}/${stage.id}`);
+          const key = `${goal.id}/${stage.id}`;
+          if (stage.status === "reached" && !seenStages.has(key)) {
+            seenStages.add(key);
+            newStages++;
+          }
         }
       }
       portfolioCurve.observe(maxStates - remaining, {
@@ -2762,6 +2827,21 @@ function explorePortfolioInternal(
       marginalTotals[i].endings += marginal.newEndings;
       marginalTotals[i].knots += marginal.newKnots;
       marginalTotals[i].errors += marginal.newRuntimeErrors;
+      marginalTotals[i].policyErrors += newPolicyErrors;
+      marginalTotals[i].visibleOutcomes += newVisibleOutcomes;
+      marginalTotals[i].assertions += newAssertionViolations;
+      marginalTotals[i].goals += newGoals;
+      marginalTotals[i].stages += newStages;
+      marginalCurves[i].observe(snapshot.statesExplored, {
+        endingsFound: marginalTotals[i].endings,
+        runtimeErrorsFound: marginalTotals[i].policyErrors,
+        knotsVisited: marginalTotals[i].knots,
+        visibleOutcomes: marginalTotals[i].visibleOutcomes,
+        assertionViolations: marginalTotals[i].assertions,
+        goalsReached: marginalTotals[i].goals,
+        stagesReached: marginalTotals[i].stages,
+        uniqueStatesObserved: 0,
+      });
       entries.push({
         pass: engine.label,
         granted: grants[a],
@@ -2796,12 +2876,17 @@ function explorePortfolioInternal(
       policySnapshot.discoveryCurve = portfolioCurve.result();
       policySnapshot.discoverySummary = portfolioCurve.summary(maxStates - remaining);
       policySnapshot.schedule = [...schedule];
-      policySnapshot.passes = engines.map((engine, i) => ({
-        ...engine.telemetry(),
-        newEndings: marginalTotals[i].endings,
-        newKnots: marginalTotals[i].knots,
-        newRuntimeErrors: marginalTotals[i].errors,
-      }));
+      policySnapshot.passes = engines.map((engine, i) => {
+        const telemetry = engine.telemetry();
+        return {
+          ...telemetry,
+          newEndings: marginalTotals[i].endings,
+          newKnots: marginalTotals[i].knots,
+          newRuntimeErrors: marginalTotals[i].errors,
+          portfolioMarginalCurve: marginalCurves[i].result(),
+          portfolioMarginalSummary: marginalCurves[i].summary(telemetry.statesExplored),
+        };
+      });
       const decision = recommendShadowDecision(policySnapshot);
       const allocationApplied = decision.action === "reallocate";
       if (allocationApplied) {
@@ -2846,12 +2931,17 @@ function explorePortfolioInternal(
   if (replayShadowAllocation) merged.policyReplay = policyReplay;
   // Per-pass lifetime telemetry, with new* replaced by the true
   // portfolio-marginal totals the scheduler measured round by round.
-  merged.passes = engines.map((engine, i) => ({
-    ...engine.telemetry(),
-    newEndings: marginalTotals[i].endings,
-    newKnots: marginalTotals[i].knots,
-    newRuntimeErrors: marginalTotals[i].errors,
-  }));
+  merged.passes = engines.map((engine, i) => {
+    const telemetry = engine.telemetry();
+    return {
+      ...telemetry,
+      newEndings: marginalTotals[i].endings,
+      newKnots: marginalTotals[i].knots,
+      newRuntimeErrors: marginalTotals[i].errors,
+      portfolioMarginalCurve: marginalCurves[i].result(),
+      portfolioMarginalSummary: marginalCurves[i].summary(telemetry.statesExplored),
+    };
+  });
   return merged;
 }
 

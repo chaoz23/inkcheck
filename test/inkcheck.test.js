@@ -1419,7 +1419,26 @@ test("portfolio reports per-pass telemetry consistent with the schedule", async 
     }
     assert.ok(t.discoveryCurve.length <= 64, `${t.pass} curve exceeded bound`);
     assert.deepStrictEqual(t.discoveryCurve.map((sample) => sample.state), [...t.discoveryCurve.map((sample) => sample.state)].sort((a, b) => a - b));
+    assert.ok(t.portfolioMarginalCurve.length <= 64, `${t.pass} marginal curve exceeded bound`);
+    assert.deepStrictEqual(
+      t.portfolioMarginalCurve.map((sample) => sample.state),
+      [...t.portfolioMarginalCurve.map((sample) => sample.state)].sort((a, b) => a - b)
+    );
+    if (t.portfolioMarginalCurve.length) {
+      assert.strictEqual(t.portfolioMarginalSummary.lastDiscoveryAtState, t.portfolioMarginalCurve.at(-1).state);
+    }
   }
+  const marginalFinal = (field) => report.passes.reduce(
+    (sum, pass) => sum + (pass.portfolioMarginalCurve.at(-1)?.[field] ?? 0),
+    0
+  );
+  assert.strictEqual(marginalFinal("endingsFound"), report.endingsFound.length);
+  assert.strictEqual(marginalFinal("runtimeErrorsFound"), report.runtimeErrors.length);
+  assert.strictEqual(marginalFinal("knotsVisited"), report.visitedKnots.length);
+  assert.strictEqual(
+    marginalFinal("visibleOutcomes"),
+    new Set(report.endingsFound.map((ending) => ending.finalText.trim().replace(/\s+/g, " "))).size
+  );
   const beam = report.passes.find((t) => t.pass.startsWith("beam:"));
   assert.ok(beam.peakFrontier >= 1);
   assert.ok(typeof beam.prunes === "number");
@@ -1726,6 +1745,8 @@ test("shadow policy distinguishes reallocation from a knee candidate", async () 
       ...pass,
       discoveryCurve: [index === 0 ? productiveSample : quietSample],
       discoverySummary: baseSummary,
+      portfolioMarginalCurve: undefined,
+      portfolioMarginalSummary: undefined,
     })),
   });
   assert.strictEqual(mixed.action, "reallocate");
@@ -1734,7 +1755,13 @@ test("shadow policy distinguishes reallocation from a knee candidate", async () 
     ...actual,
     exhaustive: false,
     discoverySummary: { ...baseSummary, statesSinceLastDiscovery: 5_000, longestObservedDiscoveryGap: 1_000 },
-    passes: actual.passes.map((pass) => ({ ...pass, discoveryCurve: [productiveSample], discoverySummary: baseSummary })),
+    passes: actual.passes.map((pass) => ({
+      ...pass,
+      discoveryCurve: [productiveSample],
+      discoverySummary: baseSummary,
+      portfolioMarginalCurve: undefined,
+      portfolioMarginalSummary: undefined,
+    })),
   });
   assert.strictEqual(knee.action, "stop_at_knee");
   assert.match(knee.reason, /shadow knee candidate only/);
@@ -1742,7 +1769,7 @@ test("shadow policy distinguishes reallocation from a knee candidate", async () 
   assert.strictEqual(knee.bindingConstraint, "states");
 });
 
-test("paired policy replay exposes and reproduces a sparse late-error regression", async () => {
+test("portfolio-marginal policy credit removes duplicate sparse-error regression", async () => {
   const compiled = await compile(POLICY_LATE_ERROR);
   const knots = scanKnots(POLICY_LATE_ERROR);
   const options = { maxStates: 50, maxDepth: 100, seed: 7 };
@@ -1754,16 +1781,25 @@ test("paired policy replay exposes and reproduces a sparse late-error regression
   assert.strictEqual(baseline.policyReplay, undefined);
   assert.strictEqual(baseline.runtimeErrors.length, 1);
   assert.strictEqual(baseline.exhaustive, true);
-  assert.strictEqual(candidate.runtimeErrors.length, 0);
-  assert.strictEqual(candidate.exhaustive, false);
-  assert.strictEqual(comparison.regressionRisk, "critical");
-  assert.strictEqual(comparison.baselineOnly.runtimeErrors.count, 1);
+  assert.strictEqual(candidate.runtimeErrors.length, 1);
+  assert.strictEqual(candidate.exhaustive, true);
+  assert.strictEqual(comparison.regressionRisk, "none");
+  assert.strictEqual(comparison.baselineOnly.runtimeErrors.count, 0);
   assert.deepStrictEqual(candidate, repeated);
   assert.ok(candidate.policyReplay.length > 0);
   assert.ok(candidate.policyReplay.some((round) => round.allocationApplied));
   assert.ok(candidate.policyReplay.every((round) =>
     Math.abs(round.nextRoundWeights.reduce((sum, entry) => sum + entry.share, 0) - 1) < 1e-9
   ));
+  assert.ok(candidate.passes.filter((pass) =>
+    pass.discoveryCurve.some((sample) => sample.endingsFound > 0)
+  ).length > 1, "several passes should still retain their own duplicate ending evidence");
+  assert.strictEqual(candidate.passes.reduce((sum, pass) =>
+    sum + pass.portfolioMarginalCurve.reduce((events, sample) => events + sample.newEndings, 0)
+  , 0), candidate.endingsFound.length, "the portfolio should pay for each exact ending once");
+  assert.strictEqual(candidate.passes.reduce((sum, pass) =>
+    sum + pass.portfolioMarginalCurve.reduce((events, sample) => events + sample.newRuntimeErrors, 0)
+  , 0), 1, "the portfolio should pay for the semantic runtime error once");
 
   const recovered = explorePortfolioShadowReplay(compiled.storyJson, knots, [], {
     ...options,
@@ -1771,6 +1807,20 @@ test("paired policy replay exposes and reproduces a sparse late-error regression
   });
   assert.strictEqual(recovered.runtimeErrors.length, 1);
   assert.strictEqual(recovered.exhaustive, true);
+});
+
+test("approximate runtime locations do not create duplicate marginal policy credit", async () => {
+  const file = path.join(SEARCH_FIXTURES, "deceptive-plateau.ink");
+  const compiled = await compile(file);
+  const candidate = explorePortfolioShadowReplay(compiled.storyJson, scanKnots(file), [], {
+    maxStates: 100,
+    maxDepth: 100,
+    seed: 7,
+  });
+  assert.strictEqual(candidate.runtimeErrors.length, 1);
+  assert.strictEqual(candidate.passes.reduce((sum, pass) =>
+    sum + pass.portfolioMarginalCurve.reduce((events, sample) => events + sample.newRuntimeErrors, 0)
+  , 0), 1);
 });
 
 test("--next follows recommendations to an exhaustive result", () => {
