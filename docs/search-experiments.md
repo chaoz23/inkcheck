@@ -90,3 +90,11 @@ The paired sparse-error fixture has one quick ending and one ten-choice route to
 At 50 states the candidate loses critical evidence and an exhaustive proof at the matched budget. It recovers at 75 states, so the route is reachable; the loss is caused by budget allocation. The late-recovery ending fixture similarly loses one authored outcome at 50 states before recovering by 100.
 
 The replay also reveals two design defects to resolve before promotion: pass-local curves can credit multiple explorers for rediscovering the same evidence instead of portfolio-marginal value, and an 8% conceptual floor can round to zero repeatedly when a deterministic window is smaller than the number of passes. Current shadow policy v1 therefore fails the #56 promotion gate and must remain inactive.
+
+### Portfolio-marginal credit follow-up
+
+Issue #105 adds a second bounded curve to each portfolio pass: own discoveries remain available for diagnosis, while allocation reads only portfolio-first exact endings, visible outcomes, knots, critical identities, and explicit intent progress. Approximate runtime locations are conservatively normalized for allocation credit so different witness-dependent fallback lines do not pay twice for one semantic error.
+
+At the same matched boundaries, the 50-state sparse runtime error and late-ending regressions disappear: candidate and baseline both retain their critical/authored evidence and exhaustive proof. Deceptive-plateau runs retain the same semantic runtime error, while the evaluator still exposes the separate approximate-location identity drift tracked by #84.
+
+This does not promote policy v1. The early-choice grid still loses authored coverage at 500 and 2,000 states. Its first portfolio discovery remains eligible for the policy's absolute 1,000-state recency floor for too long, concentrating 68% on one systematic pass while broad random work stays at 8%. Recency normalization/first-discovery lock-in (#113) therefore remains a separate blocker alongside cumulative integer floor service (#106).
