@@ -33,6 +33,7 @@ export interface InkcheckCapabilities {
     assertions: boolean;
     goals: boolean;
     stagedGoals: boolean;
+    anytimeShadowDecision: boolean;
     resumableSearch: boolean;
   };
 }
@@ -62,6 +63,7 @@ export function capabilities(): InkcheckCapabilities {
       assertions: true,
       goals: true,
       stagedGoals: true,
+      anytimeShadowDecision: true,
       resumableSearch: false,
     },
   };

@@ -31,6 +31,7 @@ const {
   DiscoveryCurveRecorder,
 } = require("../dist/explore");
 const { recommendNextRun } = require("../dist/advice");
+const { recommendShadowDecision, SHADOW_POLICY_VERSION } = require("../dist/decision-policy");
 const { runSubmission, webConfigFromEnv } = require("../dist/web");
 const { SubmissionError, validateSubmission } = require("../dist/web-validation");
 const {
@@ -899,6 +900,9 @@ test("versioned JSON reports have stable identities and exact replay instruction
   );
   assert.strictEqual(first.explore.runtimeErrors[0].replay.tool, "playtest_story");
   assert.strictEqual(first.effectiveConfiguration.search, "portfolio");
+  assert.strictEqual(first.shadowDecision.mode, "shadow");
+  assert.strictEqual(first.shadowDecision.applied, false);
+  assert.deepStrictEqual(first.shadowDecision, second.shadowDecision);
 
   const depthLimited = spawnSync(
     process.execPath,
@@ -1626,6 +1630,113 @@ test("recommendNextRun degrades to reseed or investigate at the ceilings", () =>
   assert.strictEqual(investigate.recommendation, "investigate");
   assert.strictEqual(investigate.stop, true);
   assert.match(investigate.rationale, /inbound diverts/);
+});
+
+test("shadow decision policy explains every action without changing execution", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const knots = scanKnots(EARLY_CHOICE_GRID);
+  const actual = explorePortfolio(compiled.storyJson, knots, [], { maxStates: 2_000 });
+  const decision = recommendShadowDecision(actual);
+  assert.deepStrictEqual(decision, recommendShadowDecision(actual));
+  assert.strictEqual(decision.mode, "shadow");
+  assert.strictEqual(decision.applied, false);
+  assert.strictEqual(decision.policyVersion, SHADOW_POLICY_VERSION);
+  assert.ok(decision.reason.length > 0);
+  assert.ok(decision.uncertainty.note.length > 0);
+  assert.ok(Math.abs(decision.allocation.reduce((sum, entry) => sum + entry.suggestedShare, 0) - 1) < 1e-9);
+  assert.ok(decision.allocation.every((entry) => entry.suggestedShare >= entry.probeFloor));
+  assert.ok(decision.allocation.every((entry) => entry.recentValue && !('score' in entry)));
+
+  const exhaustive = recommendShadowDecision({ ...actual, exhaustive: true });
+  assert.strictEqual(exhaustive.action, "stop_exhaustive");
+  assert.strictEqual(exhaustive.bindingConstraint, "exhaustive");
+
+  const memory = recommendShadowDecision({
+    ...actual,
+    exhaustive: false,
+    truncated: true,
+    truncatedBy: { ...actual.truncatedBy, memory: true, maxStates: false },
+  });
+  assert.strictEqual(memory.action, "stop_at_resource_limit");
+  assert.strictEqual(memory.bindingConstraint, "memory");
+
+  const deadline = recommendShadowDecision({
+    ...actual,
+    exhaustive: false,
+    truncated: true,
+    truncatedBy: { ...actual.truncatedBy, time: true, maxStates: false },
+  });
+  assert.strictEqual(deadline.action, "stop_at_deadline");
+
+  const noEvidence = recommendShadowDecision({
+    ...actual,
+    exhaustive: false,
+    discoveryCurve: [],
+    discoverySummary: {
+      discoveryEvents: 0,
+      firstDiscoveryAtState: null,
+      lastDiscoveryAtState: null,
+      statesSinceLastDiscovery: null,
+      latestDiscoveryGap: null,
+      longestObservedDiscoveryGap: null,
+    },
+    passes: actual.passes.map((pass) => ({ ...pass, discoveryCurve: [], discoverySummary: {
+      discoveryEvents: 0,
+      firstDiscoveryAtState: null,
+      lastDiscoveryAtState: null,
+      statesSinceLastDiscovery: null,
+      latestDiscoveryGap: null,
+      longestObservedDiscoveryGap: null,
+    } })),
+  });
+  assert.strictEqual(noEvidence.action, "probe");
+});
+
+test("shadow policy distinguishes reallocation from a knee candidate", async () => {
+  const compiled = await compile(EARLY_CHOICE_GRID);
+  const actual = explorePortfolio(compiled.storyJson, scanKnots(EARLY_CHOICE_GRID), [], { maxStates: 2_000 });
+  const productiveSample = {
+    ...actual.passes[0].discoveryCurve.at(-1),
+    newEndings: 1,
+    newVisibleOutcomes: 1,
+    newRuntimeErrors: 0,
+    newAssertionViolations: 0,
+    newGoalsReached: 0,
+    newStagesReached: 0,
+    newKnots: 0,
+    newUniqueStates: 1,
+  };
+  const quietSample = { ...productiveSample, newEndings: 0, newVisibleOutcomes: 0, newUniqueStates: 0 };
+  const baseSummary = {
+    discoveryEvents: 8,
+    firstDiscoveryAtState: 1,
+    lastDiscoveryAtState: 1_900,
+    statesSinceLastDiscovery: 100,
+    latestDiscoveryGap: 50,
+    longestObservedDiscoveryGap: 500,
+  };
+  const mixed = recommendShadowDecision({
+    ...actual,
+    exhaustive: false,
+    discoverySummary: baseSummary,
+    passes: actual.passes.map((pass, index) => ({
+      ...pass,
+      discoveryCurve: [index === 0 ? productiveSample : quietSample],
+      discoverySummary: baseSummary,
+    })),
+  });
+  assert.strictEqual(mixed.action, "reallocate");
+
+  const knee = recommendShadowDecision({
+    ...actual,
+    exhaustive: false,
+    discoverySummary: { ...baseSummary, statesSinceLastDiscovery: 5_000, longestObservedDiscoveryGap: 1_000 },
+    passes: actual.passes.map((pass) => ({ ...pass, discoveryCurve: [productiveSample], discoverySummary: baseSummary })),
+  });
+  assert.strictEqual(knee.action, "stop_at_knee");
+  assert.match(knee.reason, /shadow knee candidate only/);
+  assert.strictEqual(knee.applied, false);
+  assert.strictEqual(knee.bindingConstraint, "states");
 });
 
 test("--next follows recommendations to an exhaustive result", () => {

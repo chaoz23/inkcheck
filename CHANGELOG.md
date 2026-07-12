@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add the v0.6 anytime decision engine in strict shadow mode (#92). JSON and MCP reports now include a deterministic, versioned continue/reallocate/probe/stop recommendation with explicit evidence, uncertainty, binding constraint, and protected per-pass probe floors. Findings use lexicographic value tiers instead of an opaque score, with runtime/assertion evidence kept highest and separately visible. The recommendation is never applied (`mode: shadow`, `applied: false`), so this release gathers auditable policy evidence without changing search allocation, stopping behavior, findings, or coverage claims.
+
 - Complete the factual #91 curve contract with explicit marginal deltas and internal unique-state novelty. Dedicated fixtures cover no discoveries before a bound, increasing discovery gaps, and a long dry interval followed by late recovery; wall time remains observational progress telemetry rather than contaminating deterministic curves.
 - Add deterministic discovery summaries for 0.6 shadow-mode consumers (#91): event count, first/latest discovery positions, current dry distance, latest gap, and longest observed gap survive bounded curve compaction and stream through NDJSON. These are measured facts only; no plateau, knee, or stopping inference is introduced.
 - Extend 0.6 discovery curves with meaningful QA value classes and actual portfolio order (#91): exact terminal states remain separate from normalized visible outcomes, while assertion violations, reached goals/stages, runtime errors, and authored knots have independent counters. Portfolio reports retain a bounded merged curve, and NDJSON progress streams the new privacy-safe counts. Scheduling and stopping remain unchanged.
