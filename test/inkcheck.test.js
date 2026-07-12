@@ -341,6 +341,24 @@ test("bounded goal search reaches targets with exact witnesses and protects gene
   assert.strictEqual(result.limits.maxStates, 100);
 });
 
+test("goal-directed progress remains monotonic across the general and directed slices", async () => {
+  const compiled = await compile(ASSERTION_STORY);
+  const knots = scanKnots(ASSERTION_STORY);
+  const states = [];
+  exploreWithGoals(compiled.storyJson, knots, [], {
+    maxDepth: 10,
+    maxStates: 100,
+    goals: [{
+      id: "negative_gold",
+      condition: { left: { variable: "gold" }, operator: "<", right: { literal: 0 } },
+    }],
+    progressIntervalStates: 1,
+    onProgress: (progress) => states.push(progress.statesExplored),
+  });
+  assert.ok(states.length > 1);
+  assert.deepStrictEqual(states, [...states].sort((a, b) => a - b));
+});
+
 test("bounded goal misses are not reported as proof", async () => {
   const compiled = await compile(ASSERTION_STORY);
   const knots = scanKnots(ASSERTION_STORY);

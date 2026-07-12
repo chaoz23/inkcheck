@@ -1622,13 +1622,16 @@ export function exploreWithGoals(
     : baseline === "shared"
       ? exploreShared(storyJson, knots, externals, baseOptions)
       : explorePortfolio(storyJson, knots, externals, baseOptions);
+  const generalConsumed = general.statesExplored;
   const directed = exploreShared(storyJson, knots, externals, {
     ...opts,
     maxStates: goalStates,
     sharedVariableAware: false,
     sharedGoalAware: true,
+    onProgress: opts.onProgress
+      ? (progress) => opts.onProgress!({ ...progress, statesExplored: generalConsumed + progress.statesExplored })
+      : undefined,
   });
-  const generalConsumed = general.statesExplored;
   const directedConsumed = directed.statesExplored;
   const directedExhaustive = directed.exhaustive;
   const merged = mergeExploreResults(general, directed);
