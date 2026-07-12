@@ -335,10 +335,31 @@ test("bounded goal search reaches targets with exact witnesses and protects gene
   assert.strictEqual(goal.status, "reached");
   assert.deepStrictEqual(goal.witness.choiceIndices, [0]);
   assert.deepStrictEqual(goal.witness.observedValues, { gold: -1 });
-  assert.match(goal.witness.foundBy, /^shared:goal-directed-v1/);
+  assert.ok(goal.witness.foundBy);
   assert.ok(result.passes.some((pass) => pass.pass === "dfs:last"), "general portfolio remains active");
   assert.ok(result.passes.some((pass) => /^shared:goal-directed-v1/.test(pass.pass)), "goal slice is reported");
   assert.strictEqual(result.limits.maxStates, 100);
+});
+
+test("every exploration engine records goals reached during general exploration", async () => {
+  const compiled = await compile(ASSERTION_STORY);
+  const knots = scanKnots(ASSERTION_STORY);
+  const goals = [{
+    id: "negative_gold",
+    condition: { left: { variable: "gold" }, operator: "<", right: { literal: 0 } },
+  }];
+  const engines = [
+    ["dfs", explore],
+    ["shared", exploreShared],
+    ["random", exploreRandom],
+    ["beam", exploreBeam],
+    ["portfolio", explorePortfolio],
+  ];
+  for (const [name, run] of engines) {
+    const result = run(compiled.storyJson, knots, [], { maxDepth: 10, maxStates: 2_000, seed: 7, goals });
+    assert.strictEqual(result.goalResults[0].status, "reached", name);
+    assert.deepStrictEqual(result.goalResults[0].witness.choiceIndices, [0], name);
+  }
 });
 
 test("goal-directed progress remains monotonic across the general and directed slices", async () => {

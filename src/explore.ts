@@ -680,6 +680,7 @@ function createSearchEngine(
   // Root: continue the fresh story to the first choice point.
   const rootStep = continueMaximally(s);
   const assertions = assertionTracker(s.story, knots, opts.assertions, foundBy);
+  const goals = new GoalTracker(opts.goals ?? [], foundBy);
   s.errors.forEach((e) =>
     runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
@@ -695,6 +696,7 @@ function createSearchEngine(
     choiceIndices: [],
     state: 0,
   });
+  goals.observe({ variables: rootVariables, path: [], choiceIndices: [], state: 0 });
 
   if (rootStep.choicesOffered.length === 0 && s.errors.length === 0) {
     // Linear story (or immediate end).
@@ -805,6 +807,7 @@ function createSearchEngine(
       choiceIndices,
       state: statesExplored,
     });
+    goals.observe({ variables: stateVariables, path, choiceIndices, state: statesExplored });
     if (ended && s.errors.length === 0) {
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(stateVariables);
@@ -846,6 +849,7 @@ function createSearchEngine(
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
     assertionResults: assertions.results(exhaustive),
+    ...(opts.goals?.length ? { goalResults: goals.results(exhaustive) } : {}),
     runtimeWarnings: [...runtimeWarnings],
     unvisitedKnots: nonFunctionKnots
       .filter((k) => !visitedKnots.has(k.name))
@@ -1616,7 +1620,7 @@ export function exploreWithGoals(
   }
   const goalStates = Math.max(1, Math.floor(maxStates * 0.25));
   const generalStates = maxStates - goalStates;
-  const baseOptions = { ...opts, maxStates: generalStates, goals: undefined };
+  const baseOptions = { ...opts, maxStates: generalStates };
   const general = baseline === "shared-variable"
     ? exploreSharedVariableAware(storyJson, knots, externals, baseOptions)
     : baseline === "shared"
@@ -1633,15 +1637,7 @@ export function exploreWithGoals(
       : undefined,
   });
   const directedConsumed = directed.statesExplored;
-  const directedExhaustive = directed.exhaustive;
   const merged = mergeExploreResults(general, directed);
-  for (const result of merged.goalResults ?? []) {
-    result.status = result.witness
-      ? "reached"
-      : directedExhaustive
-        ? "proven_unreachable"
-        : "not_reached_within_limits";
-  }
   merged.limits.maxStates = maxStates;
   merged.goalBudget = {
     generalGranted: generalStates,
@@ -1723,6 +1719,7 @@ function createRandomEngine(
 
   const rootStep = continueMaximally(s);
   const assertions = assertionTracker(s.story, knots, opts.assertions, foundBy);
+  const goals = new GoalTracker(opts.goals ?? [], foundBy);
   s.errors.forEach((e) =>
     runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
@@ -1741,6 +1738,7 @@ function createRandomEngine(
     choiceIndices: [],
     state: 0,
   });
+  goals.observe({ variables: rootVariables, path: [], choiceIndices: [], state: 0 });
   if (linear && s.errors.length === 0) {
     endings.set(rootStep.text, {
       path: [],
@@ -1820,6 +1818,12 @@ function createRandomEngine(
       choiceIndices: [...walkChoiceIndices!],
       state: statesExplored,
     });
+    goals.observe({
+      variables: stateVariables,
+      path: [...walkPath!],
+      choiceIndices: [...walkChoiceIndices!],
+      state: statesExplored,
+    });
     if (ended) {
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(stateVariables);
@@ -1846,6 +1850,7 @@ function createRandomEngine(
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
     assertionResults: assertions.results(false),
+    ...(opts.goals?.length ? { goalResults: goals.results(false) } : {}),
     runtimeWarnings: [...runtimeWarnings],
     unvisitedKnots: nonFunctionKnots
       .filter((k) => !visitedKnots.has(k.name))
@@ -2032,6 +2037,7 @@ function createBeamEngine(
 
   const rootStep = continueMaximally(s);
   const assertions = assertionTracker(s.story, knots, opts.assertions, foundBy);
+  const goals = new GoalTracker(opts.goals ?? [], foundBy);
   s.errors.forEach((e) =>
     runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
   );
@@ -2046,6 +2052,7 @@ function createBeamEngine(
     choiceIndices: [],
     state: 0,
   });
+  goals.observe({ variables: rootVariables, path: [], choiceIndices: [], state: 0 });
 
   interface BeamFrame {
     stateJson: string;
@@ -2196,6 +2203,7 @@ function createBeamEngine(
       choiceIndices,
       state: statesExplored,
     });
+    goals.observe({ variables: stateVariables, path, choiceIndices, state: statesExplored });
     if (ended) {
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(stateVariables);
@@ -2243,6 +2251,7 @@ function createBeamEngine(
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
     assertionResults: assertions.results(exhaustive),
+    ...(opts.goals?.length ? { goalResults: goals.results(exhaustive) } : {}),
     runtimeWarnings: [...runtimeWarnings],
     unvisitedKnots: nonFunctionKnots
       .filter((k) => !visitedKnots.has(k.name))
