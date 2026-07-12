@@ -28,6 +28,7 @@ const {
   validateAssertionsForStory,
   validateGoalsForStory,
   exploreWithGoals,
+  DiscoveryCurveRecorder,
 } = require("../dist/explore");
 const { recommendNextRun } = require("../dist/advice");
 const { runSubmission, webConfigFromEnv } = require("../dist/web");
@@ -67,6 +68,8 @@ const INSPECT_PROJECT = path.join(__dirname, "fixtures", "inspect", "project.ink
 const DUPLICATE_CHOICE_TEXT = path.join(__dirname, "fixtures", "duplicate-choice-text.ink");
 const ASSERTION_STORY = path.join(__dirname, "fixtures", "assertions.ink");
 const STAGED_DISJOINT = path.join(__dirname, "fixtures", "staged-disjoint.ink");
+const NO_DISCOVERY_BEFORE_DEPTH = path.join(__dirname, "fixtures", "no-discovery-before-depth.ink");
+const LATE_RECOVERY = path.join(__dirname, "fixtures", "late-recovery.ink");
 
 const ASSERTION_RULES = [
   {
@@ -1477,6 +1480,58 @@ test("discovery curves separate assertion, goal, stage, and visible-outcome valu
   assert.strictEqual(latest.stagesReached, 2);
   assert.ok(latest.visibleOutcomes > 0);
   assert.ok(latest.visibleOutcomes < report.endingsFound.length);
+});
+
+test("discovery summaries distinguish no evidence from a late recovery", async () => {
+  const emptyCompiled = await compile(NO_DISCOVERY_BEFORE_DEPTH);
+  const empty = explore(emptyCompiled.storyJson, scanKnots(NO_DISCOVERY_BEFORE_DEPTH), [], {
+    maxDepth: 1,
+    maxStates: 10,
+    dfsChoicePriority: "first",
+  });
+  assert.deepStrictEqual(empty.passes[0].discoveryCurve, []);
+  assert.deepStrictEqual(empty.passes[0].discoverySummary, {
+    discoveryEvents: 0,
+    firstDiscoveryAtState: null,
+    lastDiscoveryAtState: null,
+    statesSinceLastDiscovery: null,
+    latestDiscoveryGap: null,
+    longestObservedDiscoveryGap: null,
+  });
+
+  const recoveryCompiled = await compile(LATE_RECOVERY);
+  const recovery = explore(recoveryCompiled.storyJson, scanKnots(LATE_RECOVERY), [], {
+    maxDepth: 20,
+    maxStates: 100,
+    dfsChoicePriority: "first",
+  });
+  const telemetry = recovery.passes[0];
+  assert.ok(telemetry.endingsFound >= 2);
+  assert.ok(telemetry.discoverySummary.discoveryEvents >= 2);
+  assert.ok(telemetry.discoverySummary.longestObservedDiscoveryGap >= 10);
+  assert.strictEqual(telemetry.discoverySummary.lastDiscoveryAtState, telemetry.discoveryCurve.at(-1).state);
+});
+
+test("discovery recorder preserves a smoothly declining synthetic yield", () => {
+  const recorder = new DiscoveryCurveRecorder();
+  const counts = (endingsFound, uniqueStatesObserved) => ({
+    endingsFound,
+    runtimeErrorsFound: 0,
+    knotsVisited: 0,
+    visibleOutcomes: endingsFound,
+    assertionViolations: 0,
+    goalsReached: 0,
+    stagesReached: 0,
+    uniqueStatesObserved,
+  });
+  recorder.observe(1, counts(1, 1));
+  recorder.observe(2, counts(2, 2));
+  recorder.observe(4, counts(3, 4));
+  recorder.observe(8, counts(4, 8));
+  assert.deepStrictEqual(recorder.result().map((sample) => sample.statesSincePreviousDiscovery), [null, 1, 2, 4]);
+  assert.deepStrictEqual(recorder.result().map((sample) => sample.newEndings), [1, 1, 1, 1]);
+  assert.strictEqual(recorder.summary(10).longestObservedDiscoveryGap, 4);
+  assert.strictEqual(recorder.summary(10).statesSinceLastDiscovery, 2);
 });
 
 test("CLI JSON includes telemetry for every pass including the repro slice", () => {

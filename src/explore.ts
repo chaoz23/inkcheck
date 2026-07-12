@@ -574,8 +574,7 @@ export interface PassTelemetry {
   rareVariableTransitions?: number;
 }
 
-export interface DiscoveryCurveSample {
-  state: number;
+export interface DiscoveryCounts {
   endingsFound: number;
   runtimeErrorsFound: number;
   knotsVisited: number;
@@ -583,6 +582,19 @@ export interface DiscoveryCurveSample {
   assertionViolations: number;
   goalsReached: number;
   stagesReached: number;
+  uniqueStatesObserved: number;
+}
+
+export interface DiscoveryCurveSample extends DiscoveryCounts {
+  state: number;
+  newEndings: number;
+  newRuntimeErrors: number;
+  newKnots: number;
+  newVisibleOutcomes: number;
+  newAssertionViolations: number;
+  newGoalsReached: number;
+  newStagesReached: number;
+  newUniqueStates: number;
   /** States since the immediately preceding discovery event before bounded compaction; null for the first. */
   statesSincePreviousDiscovery: number | null;
 }
@@ -598,7 +610,7 @@ export interface DiscoveryCurveSummary {
 
 const MAX_DISCOVERY_CURVE_SAMPLES = 64;
 
-class DiscoveryCurveRecorder {
+export class DiscoveryCurveRecorder {
   private samples: DiscoveryCurveSample[] = [];
   private previousTotal = 0;
   private previousState: number | null = null;
@@ -606,8 +618,18 @@ class DiscoveryCurveRecorder {
   private eventCount = 0;
   private latestGap: number | null = null;
   private longestGap: number | null = null;
+  private previousCounts: DiscoveryCounts = {
+    endingsFound: 0,
+    runtimeErrorsFound: 0,
+    knotsVisited: 0,
+    visibleOutcomes: 0,
+    assertionViolations: 0,
+    goalsReached: 0,
+    stagesReached: 0,
+    uniqueStatesObserved: 0,
+  };
 
-  observe(state: number, counts: Omit<DiscoveryCurveSample, "state" | "statesSincePreviousDiscovery">): boolean {
+  observe(state: number, counts: DiscoveryCounts): boolean {
     const total = counts.endingsFound + counts.runtimeErrorsFound + counts.knotsVisited
       + counts.assertionViolations + counts.goalsReached + counts.stagesReached;
     if (total <= this.previousTotal) return false;
@@ -615,6 +637,14 @@ class DiscoveryCurveRecorder {
     this.samples.push({
       state,
       ...counts,
+      newEndings: counts.endingsFound - this.previousCounts.endingsFound,
+      newRuntimeErrors: counts.runtimeErrorsFound - this.previousCounts.runtimeErrorsFound,
+      newKnots: counts.knotsVisited - this.previousCounts.knotsVisited,
+      newVisibleOutcomes: counts.visibleOutcomes - this.previousCounts.visibleOutcomes,
+      newAssertionViolations: counts.assertionViolations - this.previousCounts.assertionViolations,
+      newGoalsReached: counts.goalsReached - this.previousCounts.goalsReached,
+      newStagesReached: counts.stagesReached - this.previousCounts.stagesReached,
+      newUniqueStates: counts.uniqueStatesObserved - this.previousCounts.uniqueStatesObserved,
       statesSincePreviousDiscovery: gap,
     });
     this.firstState ??= state;
@@ -622,6 +652,7 @@ class DiscoveryCurveRecorder {
     this.latestGap = gap;
     if (gap !== null) this.longestGap = Math.max(this.longestGap ?? 0, gap);
     this.previousTotal = total;
+    this.previousCounts = { ...counts };
     this.previousState = state;
     if (this.samples.length > MAX_DISCOVERY_CURVE_SAMPLES) {
       const first = this.samples[0];
@@ -784,6 +815,7 @@ function createSearchEngine(
       assertionViolations: assertions.violationCount(),
       goalsReached: goals.reachedGoalCount(),
       stagesReached: goals.reachedStageCount(),
+      uniqueStatesObserved: seenStates.size,
     })) {
       lastDiscoveryAtState = statesExplored;
     }
@@ -1238,6 +1270,7 @@ function createSharedEngine(
       assertionViolations: assertions.violationCount(),
       goalsReached: goals.reachedGoalCount(),
       stagesReached: goals.reachedStageCount(),
+      uniqueStatesObserved: seenStates.size,
     })) {
       lastDiscoveryAtState = statesExplored;
     }
@@ -1851,6 +1884,7 @@ function createRandomEngine(
       assertionViolations: assertions.violationCount(),
       goalsReached: goals.reachedGoalCount(),
       stagesReached: goals.reachedStageCount(),
+      uniqueStatesObserved: statesExplored,
     })) {
       lastDiscoveryAtState = statesExplored;
     }
@@ -2179,6 +2213,7 @@ function createBeamEngine(
       assertionViolations: assertions.violationCount(),
       goalsReached: goals.reachedGoalCount(),
       stagesReached: goals.reachedStageCount(),
+      uniqueStatesObserved: seenStates.size,
     })) {
       lastDiscoveryAtState = statesExplored;
     }
@@ -2696,6 +2731,7 @@ export function explorePortfolio(
         assertionViolations: seenAssertionViolations.size,
         goalsReached: seenGoals.size,
         stagesReached: seenStages.size,
+        uniqueStatesObserved: 0,
       });
       const portfolioSummary = portfolioCurve.summary(maxStates - remaining);
       opts.onProgress?.({
