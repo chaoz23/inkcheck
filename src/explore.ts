@@ -541,6 +541,8 @@ export interface PassTelemetry {
   maxDepthReached: number;
   /** This pass's transition count when it last recorded a finding new to itself; null if it found nothing. */
   lastDiscoveryAtState: number | null;
+  /** Bounded deterministic samples of this pass's meaningful discovery curve. */
+  discoveryCurve: DiscoveryCurveSample[];
   truncatedBy: TruncationCauses;
   exhaustive: boolean;
   /** Beam only: largest frontier kept between levels. */
@@ -559,6 +561,48 @@ export interface PassTelemetry {
   variableTransitionsObserved?: number;
   /** Shared search only: variable changes observed exactly once. */
   rareVariableTransitions?: number;
+}
+
+export interface DiscoveryCurveSample {
+  state: number;
+  endingsFound: number;
+  runtimeErrorsFound: number;
+  knotsVisited: number;
+  /** States since the immediately preceding discovery event before bounded compaction; null for the first. */
+  statesSincePreviousDiscovery: number | null;
+}
+
+const MAX_DISCOVERY_CURVE_SAMPLES = 64;
+
+class DiscoveryCurveRecorder {
+  private samples: DiscoveryCurveSample[] = [];
+  private previousTotal = 0;
+  private previousState: number | null = null;
+
+  observe(state: number, endingsFound: number, runtimeErrorsFound: number, knotsVisited: number): boolean {
+    const total = endingsFound + runtimeErrorsFound + knotsVisited;
+    if (total <= this.previousTotal) return false;
+    this.samples.push({
+      state,
+      endingsFound,
+      runtimeErrorsFound,
+      knotsVisited,
+      statesSincePreviousDiscovery: this.previousState === null ? null : state - this.previousState,
+    });
+    this.previousTotal = total;
+    this.previousState = state;
+    if (this.samples.length > MAX_DISCOVERY_CURVE_SAMPLES) {
+      const first = this.samples[0];
+      const last = this.samples[this.samples.length - 1];
+      const interior = this.samples.slice(1, -1).filter((_, index) => index % 2 === 1);
+      this.samples = [first, ...interior, last];
+    }
+    return true;
+  }
+
+  result(): DiscoveryCurveSample[] {
+    return this.samples.map((sample) => ({ ...sample }));
+  }
 }
 
 /**
@@ -658,11 +702,10 @@ function createSearchEngine(
   let dedupeHits = 0;
   let maxDepthReached = 0;
   let lastDiscoveryAtState: number | null = null;
-  let findingWatermark = 0;
+  const discoveryCurve = new DiscoveryCurveRecorder();
   const noteDiscoveryProgress = () => {
     const total = endings.size + runtimeErrors.size + visitedKnots.size;
-    if (total > findingWatermark) {
-      findingWatermark = total;
+    if (total > 0 && discoveryCurve.observe(statesExplored, endings.size, runtimeErrors.size, visitedKnots.size)) {
       lastDiscoveryAtState = statesExplored;
     }
   };
@@ -934,6 +977,7 @@ function createSearchEngine(
         dedupeHits,
         maxDepthReached,
         lastDiscoveryAtState,
+        discoveryCurve: discoveryCurve.result(),
         truncatedBy: { ...truncatedBy },
         exhaustive: done() && !truncated,
       };
@@ -1088,7 +1132,7 @@ function createSharedEngine(
   let maxDepthReached = 0;
   let deepestStateDiscovered = 0;
   let lastDiscoveryAtState: number | null = null;
-  let findingWatermark = 0;
+  const discoveryCurve = new DiscoveryCurveRecorder();
   let truncated = false;
   const truncatedBy: TruncationCauses = {
     maxDepth: false,
@@ -1105,8 +1149,7 @@ function createSharedEngine(
 
   const noteDiscoveryProgress = () => {
     const total = endings.size + runtimeErrors.size + visitedKnots.size;
-    if (total > findingWatermark) {
-      findingWatermark = total;
+    if (total > 0 && discoveryCurve.observe(statesExplored, endings.size, runtimeErrors.size, visitedKnots.size)) {
       lastDiscoveryAtState = statesExplored;
     }
   };
@@ -1573,6 +1616,7 @@ function createSharedEngine(
         dedupeHits,
         maxDepthReached,
         lastDiscoveryAtState,
+        discoveryCurve: discoveryCurve.result(),
         truncatedBy: { ...truncatedBy },
         exhaustive: done() && !truncated,
         uniqueStates: seenStates.size,
@@ -1705,11 +1749,10 @@ function createRandomEngine(
   const timeGuard = opts.timeGuard;
   let maxDepthReached = 0;
   let lastDiscoveryAtState: number | null = null;
-  let findingWatermark = 0;
+  const discoveryCurve = new DiscoveryCurveRecorder();
   const noteDiscoveryProgress = () => {
     const total = endings.size + runtimeErrors.size + visitedKnots.size;
-    if (total > findingWatermark) {
-      findingWatermark = total;
+    if (total > 0 && discoveryCurve.observe(statesExplored, endings.size, runtimeErrors.size, visitedKnots.size)) {
       lastDiscoveryAtState = statesExplored;
     }
   };
@@ -1925,6 +1968,7 @@ function createRandomEngine(
         dedupeHits: 0,
         maxDepthReached,
         lastDiscoveryAtState,
+        discoveryCurve: discoveryCurve.result(),
         truncatedBy: { ...truncatedBy },
         exhaustive: false,
       };
@@ -2023,11 +2067,10 @@ function createBeamEngine(
   let peakFrontier = 0;
   let prunes = 0;
   let lastDiscoveryAtState: number | null = null;
-  let findingWatermark = 0;
+  const discoveryCurve = new DiscoveryCurveRecorder();
   const noteDiscoveryProgress = () => {
     const total = endings.size + runtimeErrors.size + visitedKnots.size;
-    if (total > findingWatermark) {
-      findingWatermark = total;
+    if (total > 0 && discoveryCurve.observe(statesExplored, endings.size, runtimeErrors.size, visitedKnots.size)) {
       lastDiscoveryAtState = statesExplored;
     }
   };
@@ -2337,6 +2380,7 @@ function createBeamEngine(
         dedupeHits,
         maxDepthReached,
         lastDiscoveryAtState,
+        discoveryCurve: discoveryCurve.result(),
         truncatedBy: { ...truncatedBy },
         exhaustive: finished && !truncated,
         peakFrontier,
