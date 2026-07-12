@@ -34,6 +34,8 @@ Optional fields:
 | `assertionViolations` | number | Distinct configured assertions observed violated. |
 | `goalsReached` | number | Distinct configured top-level goals reached. |
 | `stagesReached` | number | Distinct configured staged-goal milestones reached. |
+| `discoveryEvents` | number | Meaningful discovery events observed by the active pass or merged portfolio recorder. |
+| `statesSinceLastDiscovery` | number or null | Work states since the latest meaningful discovery; factual dry distance, not plateau proof. |
 | `endingsFound` | number | Distinct endings found so far across the whole run (all passes deduplicated). Non-decreasing within a run. |
 | `runtimeErrorsFound` | number | Distinct runtime errors found so far across the whole run. Non-decreasing within a run. |
 | `unvisitedKnots` | number | Knots not yet reached by any pass in this run. Non-increasing within a run. |

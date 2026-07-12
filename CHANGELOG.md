@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add deterministic discovery summaries for 0.6 shadow-mode consumers (#91): event count, first/latest discovery positions, current dry distance, latest gap, and longest observed gap survive bounded curve compaction and stream through NDJSON. These are measured facts only; no plateau, knee, or stopping inference is introduced.
 - Extend 0.6 discovery curves with meaningful QA value classes and actual portfolio order (#91): exact terminal states remain separate from normalized visible outcomes, while assertion violations, reached goals/stages, runtime errors, and authored knots have independent counters. Portfolio reports retain a bounded merged curve, and NDJSON progress streams the new privacy-safe counts. Scheduling and stopping remain unchanged.
 - Begin the Inkcheck 0.6 anytime-decision measurement foundation (#91): every exploration pass records a deterministic discovery curve with separate ending, runtime-error, and authored-knot counts. Curves compact to at most 64 samples regardless of state budget, preserve early/latest evidence and dry-gap measurements, and do not yet alter scheduling or stopping behavior.
 - Stop hosted `humanFindings` from advising CLI flags a web user cannot set (#49). `buildHumanFindings` takes an `audience: "cli" | "hosted"` option; the hosted server passes `"hosted"`, so the limit-bound unvisited-knot next step now says to run inkcheck locally for a deeper check instead of naming `--max-depth`/`--max-states`. CLI output is unchanged.

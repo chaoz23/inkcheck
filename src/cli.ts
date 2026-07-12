@@ -311,6 +311,8 @@ async function main() {
       assertionViolations?: number;
       goalsReached?: number;
       stagesReached?: number;
+      discoveryEvents?: number;
+      statesSinceLastDiscovery?: number | null;
     } = {}
   ) => {
     const event = {
@@ -434,6 +436,8 @@ async function main() {
           assertionViolations: progress.assertionViolations,
           goalsReached: progress.goalsReached,
           stagesReached: progress.stagesReached,
+          discoveryEvents: progress.discoveryEvents,
+          statesSinceLastDiscovery: progress.statesSinceLastDiscovery,
         });
       },
     }, search);

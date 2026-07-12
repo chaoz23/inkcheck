@@ -43,6 +43,8 @@ Search goals may contain ordered `stages`. Each stage reports `reached`, `not_re
 
 Each `explore.passes` entry includes a deterministic `discoveryCurve`, bounded to at most 64 samples. Samples record pass-local state count; cumulative exact terminals, fallback visible outcomes, runtime errors, assertion violations, reached goals/stages, and authored knots; plus the gap from the immediately preceding discovery event. Portfolio reports also carry a merged curve recorded in actual scheduler order. When compaction occurs, early and latest samples are retained while intermediate samples are deterministically downsampled. These are measured yield facts, not an asymptote estimate, stopping recommendation, or coverage proof.
 
+`discoverySummary` preserves factual distances that curve compaction must not lose: total discovery events, first/latest discovery states, current states since discovery, latest discovery gap, and longest observed gap. These fields intentionally contain no plateau probability, knee estimate, value score, or automatic decision.
+
 Choice indices are authoritative for replay because authored labels need not be unique. `playtest_story.replayStatus` is `completed`, `runtime_error`, or `path_changed`; the last status means source changes invalidated the indexed path.
 
 ## Compatibility

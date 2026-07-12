@@ -130,6 +130,7 @@ export interface ExploreResult {
   passes?: PassTelemetry[];
   /** Portfolio-wide meaningful discoveries in actual interleaved execution order. */
   discoveryCurve?: DiscoveryCurveSample[];
+  discoverySummary?: DiscoveryCurveSummary;
 }
 
 /**
@@ -484,6 +485,8 @@ export interface ExploreProgress {
   assertionViolations: number;
   goalsReached: number;
   stagesReached: number;
+  discoveryEvents: number;
+  statesSinceLastDiscovery: number | null;
 }
 
 /** Relative budget weights for the portfolio passes; normalized before use. */
@@ -549,6 +552,8 @@ export interface PassTelemetry {
   lastDiscoveryAtState: number | null;
   /** Bounded deterministic samples of this pass's meaningful discovery curve. */
   discoveryCurve: DiscoveryCurveSample[];
+  /** Factual bounded-run distances; no plateau or completeness inference. */
+  discoverySummary: DiscoveryCurveSummary;
   truncatedBy: TruncationCauses;
   exhaustive: boolean;
   /** Beam only: largest frontier kept between levels. */
@@ -582,22 +587,40 @@ export interface DiscoveryCurveSample {
   statesSincePreviousDiscovery: number | null;
 }
 
+export interface DiscoveryCurveSummary {
+  discoveryEvents: number;
+  firstDiscoveryAtState: number | null;
+  lastDiscoveryAtState: number | null;
+  statesSinceLastDiscovery: number | null;
+  latestDiscoveryGap: number | null;
+  longestObservedDiscoveryGap: number | null;
+}
+
 const MAX_DISCOVERY_CURVE_SAMPLES = 64;
 
 class DiscoveryCurveRecorder {
   private samples: DiscoveryCurveSample[] = [];
   private previousTotal = 0;
   private previousState: number | null = null;
+  private firstState: number | null = null;
+  private eventCount = 0;
+  private latestGap: number | null = null;
+  private longestGap: number | null = null;
 
   observe(state: number, counts: Omit<DiscoveryCurveSample, "state" | "statesSincePreviousDiscovery">): boolean {
     const total = counts.endingsFound + counts.runtimeErrorsFound + counts.knotsVisited
       + counts.assertionViolations + counts.goalsReached + counts.stagesReached;
     if (total <= this.previousTotal) return false;
+    const gap = this.previousState === null ? null : state - this.previousState;
     this.samples.push({
       state,
       ...counts,
-      statesSincePreviousDiscovery: this.previousState === null ? null : state - this.previousState,
+      statesSincePreviousDiscovery: gap,
     });
+    this.firstState ??= state;
+    this.eventCount++;
+    this.latestGap = gap;
+    if (gap !== null) this.longestGap = Math.max(this.longestGap ?? 0, gap);
     this.previousTotal = total;
     this.previousState = state;
     if (this.samples.length > MAX_DISCOVERY_CURVE_SAMPLES) {
@@ -611,6 +634,17 @@ class DiscoveryCurveRecorder {
 
   result(): DiscoveryCurveSample[] {
     return this.samples.map((sample) => ({ ...sample }));
+  }
+
+  summary(statesExplored: number): DiscoveryCurveSummary {
+    return {
+      discoveryEvents: this.eventCount,
+      firstDiscoveryAtState: this.firstState,
+      lastDiscoveryAtState: this.previousState,
+      statesSinceLastDiscovery: this.previousState === null ? null : statesExplored - this.previousState,
+      latestDiscoveryGap: this.latestGap,
+      longestObservedDiscoveryGap: this.longestGap,
+    };
   }
 }
 
@@ -659,6 +693,12 @@ interface PassEngine {
 
 function progressFromSnapshot(pass: string, statesExplored: number, result: ExploreResult): ExploreProgress {
   const goals = result.goalResults ?? [];
+  const telemetry = result.passes?.find((entry) => entry.pass === pass);
+  const summary = result.discoverySummary ?? telemetry?.discoverySummary;
+  const latestFinding = [
+    ...result.endingsFound.map((ending) => ending.firstDiscoveredAtState),
+    ...result.runtimeErrors.map((error) => error.firstDiscoveredAtState),
+  ].reduce<number | null>((latest, state) => latest === null ? state : Math.max(latest, state), null);
   return {
     pass,
     statesExplored,
@@ -669,6 +709,9 @@ function progressFromSnapshot(pass: string, statesExplored: number, result: Expl
     assertionViolations: result.assertionResults.filter((assertion) => assertion.status === "violated").length,
     goalsReached: goals.filter((goal) => goal.status === "reached").length,
     stagesReached: goals.reduce((total, goal) => total + (goal.stages ?? []).filter((stage) => stage.status === "reached").length, 0),
+    discoveryEvents: summary?.discoveryEvents ?? 0,
+    statesSinceLastDiscovery: summary?.statesSinceLastDiscovery
+      ?? (latestFinding === null ? null : statesExplored - latestFinding),
   };
 }
 
@@ -936,6 +979,7 @@ function createSearchEngine(
     const exhaustive = !truncated && (finished || done());
     return ({
     statesExplored,
+    discoverySummary: discoveryCurve.summary(statesExplored),
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
     assertionResults: assertions.results(exhaustive),
@@ -1014,6 +1058,7 @@ function createSearchEngine(
         maxDepthReached,
         lastDiscoveryAtState,
         discoveryCurve: discoveryCurve.result(),
+        discoverySummary: discoveryCurve.summary(statesExplored),
         truncatedBy: { ...truncatedBy },
         exhaustive: done() && !truncated,
       };
@@ -1586,6 +1631,7 @@ function createSharedEngine(
     const exhaustive = done() && !truncated;
     return ({
     statesExplored,
+    discoverySummary: discoveryCurve.summary(statesExplored),
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
     assertionResults: assertions.results(exhaustive),
@@ -1661,6 +1707,7 @@ function createSharedEngine(
         maxDepthReached,
         lastDiscoveryAtState,
         discoveryCurve: discoveryCurve.result(),
+        discoverySummary: discoveryCurve.summary(statesExplored),
         truncatedBy: { ...truncatedBy },
         exhaustive: done() && !truncated,
         uniqueStates: seenStates.size,
@@ -1957,6 +2004,7 @@ function createRandomEngine(
 
   const buildResult = (): ExploreResult => ({
     statesExplored,
+    discoverySummary: discoveryCurve.summary(statesExplored),
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
     assertionResults: assertions.results(false),
@@ -2021,6 +2069,7 @@ function createRandomEngine(
         maxDepthReached,
         lastDiscoveryAtState,
         discoveryCurve: discoveryCurve.result(),
+        discoverySummary: discoveryCurve.summary(statesExplored),
         truncatedBy: { ...truncatedBy },
         exhaustive: false,
       };
@@ -2366,6 +2415,7 @@ function createBeamEngine(
     const exhaustive = finished && !truncated;
     return ({
     statesExplored,
+    discoverySummary: discoveryCurve.summary(statesExplored),
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
     assertionResults: assertions.results(exhaustive),
@@ -2441,6 +2491,7 @@ function createBeamEngine(
         maxDepthReached,
         lastDiscoveryAtState,
         discoveryCurve: discoveryCurve.result(),
+        discoverySummary: discoveryCurve.summary(statesExplored),
         truncatedBy: { ...truncatedBy },
         exhaustive: finished && !truncated,
         peakFrontier,
@@ -2646,6 +2697,7 @@ export function explorePortfolio(
         goalsReached: seenGoals.size,
         stagesReached: seenStages.size,
       });
+      const portfolioSummary = portfolioCurve.summary(maxStates - remaining);
       opts.onProgress?.({
         pass: engine.label,
         statesExplored: maxStates - remaining,
@@ -2656,6 +2708,8 @@ export function explorePortfolio(
         assertionViolations: seenAssertionViolations.size,
         goalsReached: seenGoals.size,
         stagesReached: seenStages.size,
+        discoveryEvents: portfolioSummary.discoveryEvents,
+        statesSinceLastDiscovery: portfolioSummary.statesSinceLastDiscovery,
       });
       marginalTotals[i].endings += marginal.newEndings;
       marginalTotals[i].knots += marginal.newKnots;
@@ -2699,6 +2753,7 @@ export function explorePortfolio(
   // statesExplored and the schedule (early exit can leave budget unspent).
   merged.limits.maxStates = maxStates;
   merged.discoveryCurve = portfolioCurve.result();
+  merged.discoverySummary = portfolioCurve.summary(maxStates - remaining);
   // When a guard stopped the run, that guard is the true cause — the budget
   // did not actually run out, so do not also blame maxStates.
   if (memoryStopped && !merged.exhaustive) {
@@ -2743,6 +2798,10 @@ function endingKey(e: EndingReport): string {
 }
 
 export function mergeExploreResults(main: ExploreResult, other: ExploreResult): ExploreResult {
+  // Generic merges do not know the actual interleaving/offset timeline. A
+  // caller such as the portfolio scheduler may attach its recorder afterward.
+  main.discoveryCurve = undefined;
+  main.discoverySummary = undefined;
   for (const err of main.runtimeErrors) {
     const match = other.runtimeErrors.find((e) => e.message === err.message);
     if (match && match.path.length < err.path.length) {

@@ -1377,6 +1377,8 @@ test("portfolio reports per-pass telemetry consistent with the schedule", async 
   assert.ok(Array.isArray(report.passes) && report.passes.length >= 4);
   assert.ok(report.discoveryCurve.length <= 64);
   const portfolioLatest = report.discoveryCurve.at(-1);
+  assert.strictEqual(report.discoverySummary.lastDiscoveryAtState, portfolioLatest.state);
+  assert.strictEqual(report.discoverySummary.statesSinceLastDiscovery, report.statesExplored - portfolioLatest.state);
   assert.strictEqual(portfolioLatest.endingsFound, report.endingsFound.length);
   assert.strictEqual(portfolioLatest.runtimeErrorsFound, report.runtimeErrors.length);
   assert.strictEqual(portfolioLatest.knotsVisited, report.visitedKnots.length);
@@ -1437,6 +1439,11 @@ test("discovery curves stay bounded while preserving early and latest evidence",
   const telemetry = report.passes[0];
   assert.ok(telemetry.discoveryCurve.length > 1);
   assert.ok(telemetry.discoveryCurve.length <= 64);
+  assert.ok(telemetry.discoverySummary.discoveryEvents >= telemetry.discoveryCurve.length);
+  assert.strictEqual(telemetry.discoverySummary.firstDiscoveryAtState, telemetry.discoveryCurve[0].state);
+  assert.strictEqual(telemetry.discoverySummary.lastDiscoveryAtState, telemetry.discoveryCurve.at(-1).state);
+  assert.strictEqual(telemetry.discoverySummary.statesSinceLastDiscovery, telemetry.statesExplored - telemetry.lastDiscoveryAtState);
+  assert.ok(telemetry.discoverySummary.longestObservedDiscoveryGap >= telemetry.discoverySummary.latestDiscoveryGap);
   assert.strictEqual(telemetry.discoveryCurve.at(-1).state, telemetry.lastDiscoveryAtState);
   assert.strictEqual(telemetry.discoveryCurve.at(-1).knotsVisited, telemetry.knotsVisited);
   for (let index = 1; index < telemetry.discoveryCurve.length; index++) {
@@ -1919,6 +1926,8 @@ test("CLI streams versioned progress to stderr without changing the final JSON r
   assert.ok(Number.isInteger(discoveryProgress.assertionViolations));
   assert.ok(Number.isInteger(discoveryProgress.goalsReached));
   assert.ok(Number.isInteger(discoveryProgress.stagesReached));
+  assert.ok(Number.isInteger(discoveryProgress.discoveryEvents));
+  assert.ok(discoveryProgress.statesSinceLastDiscovery === null || Number.isInteger(discoveryProgress.statesSinceLastDiscovery));
   const final = events.at(-1);
   assert.strictEqual(final.type, "run_end");
   assert.strictEqual(final.statesExplored, report.explore.statesExplored);
