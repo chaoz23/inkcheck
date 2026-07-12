@@ -66,6 +66,7 @@ const SEARCH_FIXTURES = path.join(__dirname, "fixtures", "search");
 const INSPECT_PROJECT = path.join(__dirname, "fixtures", "inspect", "project.ink");
 const DUPLICATE_CHOICE_TEXT = path.join(__dirname, "fixtures", "duplicate-choice-text.ink");
 const ASSERTION_STORY = path.join(__dirname, "fixtures", "assertions.ink");
+const STAGED_DISJOINT = path.join(__dirname, "fixtures", "staged-disjoint.ink");
 
 const ASSERTION_RULES = [
   {
@@ -160,6 +161,7 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.features.indexedWitnesses, true);
   assert.strictEqual(value.features.assertions, true);
   assert.strictEqual(value.features.goals, true);
+  assert.strictEqual(value.features.stagedGoals, true);
   assert.strictEqual(value.features.resumableSearch, false);
 });
 
@@ -316,6 +318,84 @@ goals:
     () => parseProjectConfig(`schemaVersion: 1\nentrypoint: story.ink\ngoals:\n  - id: unsafe\n    condition:\n      expression: process.exit()\n`),
     /expected exactly one condition form|unknown key/
   );
+});
+
+test("staged goal config accepts ordered typed milestones and rejects ambiguous forms", () => {
+  const parsed = parseProjectConfig(`schemaVersion: 1
+entrypoint: story.ink
+goals:
+  - id: prepared_finish
+    stages:
+      - id: prepare
+        condition: { left: { variable: ready }, operator: "==", right: { literal: true } }
+      - id: unlock
+        condition: { left: { variable: key }, operator: "==", right: { literal: true } }
+`);
+  assert.strictEqual(parsed.goals[0].stages.length, 2);
+  assert.strictEqual(parsed.goals[0].stages[1].id, "unlock");
+  assert.throws(
+    () => parseProjectConfig(`schemaVersion: 1
+entrypoint: story.ink
+goals:
+  - id: ambiguous
+    condition: { left: { variable: ready }, operator: "==", right: { literal: true } }
+    stages:
+      - { id: one, condition: { left: { variable: ready }, operator: "==", right: { literal: true } } }
+      - { id: two, condition: { left: { variable: key }, operator: "==", right: { literal: true } } }
+`),
+    /exactly one of condition or stages/
+  );
+});
+
+test("staged goals require one cumulative witness and block downstream stages", async () => {
+  const compiled = await compile(STAGED_DISJOINT);
+  const knots = scanKnots(STAGED_DISJOINT);
+  const goals = [{
+    id: "ordered",
+    stages: [
+      { id: "a_first", condition: { left: { variable: "a" }, operator: "==", right: { literal: true } } },
+      { id: "then_b", condition: { left: { variable: "b" }, operator: "==", right: { literal: true } } },
+    ],
+  }];
+  validateGoalsForStory(compiled.storyJson, knots, [], goals);
+  const result = exploreWithGoals(compiled.storyJson, knots, [], { maxStates: 100, goalMaxStates: 50, goals });
+  assert.strictEqual(result.goalResults[0].stages[0].status, "reached");
+  assert.deepStrictEqual(result.goalResults[0].stages[0].witness.choiceIndices, [0]);
+  assert.strictEqual(result.goalResults[0].stages[1].status, "proven_unreachable");
+  assert.notStrictEqual(result.goalResults[0].status, "reached");
+
+  const impossible = [{
+    id: "blocked",
+    stages: [
+      { id: "never", condition: { all: [
+        { left: { variable: "a" }, operator: "==", right: { literal: true } },
+        { left: { variable: "b" }, operator: "==", right: { literal: true } },
+      ] } },
+      { id: "later", condition: { left: { variable: "b" }, operator: "==", right: { literal: true } } },
+    ],
+  }];
+  const blocked = exploreWithGoals(compiled.storyJson, knots, [], { maxStates: 100, goalMaxStates: 50, goals: impossible });
+  assert.strictEqual(blocked.goalResults[0].stages[0].status, "proven_unreachable");
+  assert.strictEqual(blocked.goalResults[0].stages[1].status, "blocked_by_stage");
+  assert.strictEqual(blocked.goalResults[0].stages[1].blockedBy, "never");
+  assert.strictEqual(blocked.goalResults[0].status, "blocked_by_stage");
+});
+
+test("staged goals report exact witnesses for every cumulative milestone", async () => {
+  const compiled = await compile(ASSERTION_STORY);
+  const knots = scanKnots(ASSERTION_STORY);
+  const goals = [{
+    id: "prepared_finish",
+    stages: [
+      { id: "prepare", condition: { left: { variable: "ready" }, operator: "==", right: { literal: true } } },
+      { id: "unlock", condition: { left: { variable: "key" }, operator: "==", right: { literal: true } } },
+    ],
+  }];
+  const result = exploreWithGoals(compiled.storyJson, knots, [], { maxStates: 100, goalMaxStates: 25, goals });
+  assert.strictEqual(result.goalResults[0].status, "reached");
+  assert.deepStrictEqual(result.goalResults[0].stages.map((stage) => stage.status), ["reached", "reached"]);
+  assert.deepStrictEqual(result.goalResults[0].stages[1].witness.choiceIndices, [4]);
+  assert.deepStrictEqual(result.goalResults[0].stages[1].witness.observedValues, { ready: true, key: true });
 });
 
 test("bounded goal search reaches targets with exact witnesses and protects general exploration", async () => {

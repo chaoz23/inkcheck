@@ -2666,9 +2666,27 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
     if (result.witness && (!existing.witness || result.witness.path.length < existing.witness.path.length)) {
       existing.witness = result.witness;
     }
+    if (existing.witness) existing.status = "reached";
     if (result.closestObserved && (!existing.closestObserved || result.closestObserved.distance < existing.closestObserved.distance)) {
       existing.closestObserved = result.closestObserved;
     }
+    const stagesById = new Map((existing.stages ?? []).map((stage) => [stage.id, stage]));
+    for (const stage of result.stages ?? []) {
+      const current = stagesById.get(stage.id);
+      if (!current) {
+        (existing.stages ??= []).push(stage);
+        stagesById.set(stage.id, stage);
+        continue;
+      }
+      current.statesEvaluated += stage.statesEvaluated;
+      if (stage.witness && (!current.witness || stage.witness.path.length < current.witness.path.length)) current.witness = stage.witness;
+      if (current.witness) current.status = "reached";
+      if (stage.closestObserved && (!current.closestObserved || stage.closestObserved.distance < current.closestObserved.distance)) {
+        current.closestObserved = stage.closestObserved;
+      }
+    }
+    const finalStage = existing.stages?.[existing.stages.length - 1];
+    if (!existing.witness && finalStage) existing.status = finalStage.status;
   }
   main.runtimeWarnings = [...new Set([...main.runtimeWarnings, ...other.runtimeWarnings])];
   const visited = new Set([...main.visitedKnots, ...other.visitedKnots]);
@@ -2699,11 +2717,27 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
         : "not_observed";
   }
   for (const result of main.goalResults ?? []) {
-    result.status = result.witness
-      ? "reached"
-      : main.exhaustive
-        ? "proven_unreachable"
-        : "not_reached_within_limits";
+    if (result.stages?.length) {
+      for (let index = 0; index < result.stages.length; index++) {
+        const stage = result.stages[index];
+        const previous = index > 0 ? result.stages[index - 1] : undefined;
+        stage.status = stage.witness
+          ? "reached"
+          : previous && previous.status !== "reached"
+            ? "blocked_by_stage"
+            : main.exhaustive
+              ? "proven_unreachable"
+              : "not_reached_within_limits";
+        if (stage.status === "blocked_by_stage") stage.blockedBy = previous!.id;
+      }
+      result.status = result.stages[result.stages.length - 1].status;
+    } else {
+      result.status = result.witness
+        ? "reached"
+        : main.exhaustive
+          ? "proven_unreachable"
+          : "not_reached_within_limits";
+    }
   }
   main.externalFunctionsStubbed = [...new Set([...main.externalFunctionsStubbed, ...other.externalFunctionsStubbed])];
   main.randomnessDetected ||= other.randomnessDetected;

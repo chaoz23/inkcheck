@@ -578,6 +578,9 @@ async function main() {
         console.log(
           `    ${goal.id}: ${goal.status}${goal.witness ? `\n      repro: [${goal.witness.path.join(" → ") || "linear"}]` : goal.closestObserved ? `\n      closest observed: ${JSON.stringify(goal.closestObserved.observedValues)}` : ""}`
         );
+        for (const stage of goal.stages ?? []) {
+          console.log(`      ${stage.id}: ${stage.status}${stage.blockedBy ? ` (blocked by ${stage.blockedBy})` : stage.witness ? ` — [${stage.witness.path.join(" → ") || "linear"}]` : ""}`);
+        }
       }
     }
     if (report.unvisitedKnots.length) {
@@ -741,6 +744,9 @@ function renderMarkdown(
     lines.push("", "## Search goals", "");
     for (const goal of report.goalResults) {
       lines.push(`- \`${goal.id}\`: **${goal.status}**${goal.witness ? ` — path: ${goal.witness.path.join(" → ") || "linear"}` : goal.closestObserved ? ` — closest observed: \`${escapeCell(JSON.stringify(goal.closestObserved.observedValues))}\`` : ""}`);
+      for (const stage of goal.stages ?? []) {
+        lines.push(`  - \`${stage.id}\`: **${stage.status}**${stage.blockedBy ? ` — blocked by \`${stage.blockedBy}\`` : stage.witness ? ` — path: ${stage.witness.path.join(" → ") || "linear"}` : ""}`);
+      }
     }
   }
   if (report.unvisitedKnots.length) {
