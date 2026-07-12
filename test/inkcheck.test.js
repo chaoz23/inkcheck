@@ -28,6 +28,7 @@ const {
   validateAssertionsForStory,
   validateGoalsForStory,
   exploreWithGoals,
+  DiscoveryCurveRecorder,
 } = require("../dist/explore");
 const { recommendNextRun } = require("../dist/advice");
 const { runSubmission, webConfigFromEnv } = require("../dist/web");
@@ -67,6 +68,8 @@ const INSPECT_PROJECT = path.join(__dirname, "fixtures", "inspect", "project.ink
 const DUPLICATE_CHOICE_TEXT = path.join(__dirname, "fixtures", "duplicate-choice-text.ink");
 const ASSERTION_STORY = path.join(__dirname, "fixtures", "assertions.ink");
 const STAGED_DISJOINT = path.join(__dirname, "fixtures", "staged-disjoint.ink");
+const NO_DISCOVERY_BEFORE_DEPTH = path.join(__dirname, "fixtures", "no-discovery-before-depth.ink");
+const LATE_RECOVERY = path.join(__dirname, "fixtures", "late-recovery.ink");
 
 const ASSERTION_RULES = [
   {
@@ -1375,6 +1378,14 @@ test("portfolio reports per-pass telemetry consistent with the schedule", async 
   const knots = scanKnots(EARLY_CHOICE_GRID);
   const report = explorePortfolio(compiled.storyJson, knots, [], { maxStates: 3000 });
   assert.ok(Array.isArray(report.passes) && report.passes.length >= 4);
+  assert.ok(report.discoveryCurve.length <= 64);
+  const portfolioLatest = report.discoveryCurve.at(-1);
+  assert.strictEqual(report.discoverySummary.lastDiscoveryAtState, portfolioLatest.state);
+  assert.strictEqual(report.discoverySummary.statesSinceLastDiscovery, report.statesExplored - portfolioLatest.state);
+  assert.strictEqual(portfolioLatest.endingsFound, report.endingsFound.length);
+  assert.strictEqual(portfolioLatest.runtimeErrorsFound, report.runtimeErrors.length);
+  assert.strictEqual(portfolioLatest.knotsVisited, report.visitedKnots.length);
+  assert.ok(portfolioLatest.visibleOutcomes <= portfolioLatest.endingsFound);
 
   // Marginal (portfolio-wide first-discovery) totals must equal the sums
   // of the per-round schedule entries for the same pass.
@@ -1431,6 +1442,11 @@ test("discovery curves stay bounded while preserving early and latest evidence",
   const telemetry = report.passes[0];
   assert.ok(telemetry.discoveryCurve.length > 1);
   assert.ok(telemetry.discoveryCurve.length <= 64);
+  assert.ok(telemetry.discoverySummary.discoveryEvents >= telemetry.discoveryCurve.length);
+  assert.strictEqual(telemetry.discoverySummary.firstDiscoveryAtState, telemetry.discoveryCurve[0].state);
+  assert.strictEqual(telemetry.discoverySummary.lastDiscoveryAtState, telemetry.discoveryCurve.at(-1).state);
+  assert.strictEqual(telemetry.discoverySummary.statesSinceLastDiscovery, telemetry.statesExplored - telemetry.lastDiscoveryAtState);
+  assert.ok(telemetry.discoverySummary.longestObservedDiscoveryGap >= telemetry.discoverySummary.latestDiscoveryGap);
   assert.strictEqual(telemetry.discoveryCurve.at(-1).state, telemetry.lastDiscoveryAtState);
   assert.strictEqual(telemetry.discoveryCurve.at(-1).knotsVisited, telemetry.knotsVisited);
   for (let index = 1; index < telemetry.discoveryCurve.length; index++) {
@@ -1441,6 +1457,81 @@ test("discovery curves stay bounded while preserving early and latest evidence",
     assert.ok(current.runtimeErrorsFound >= previous.runtimeErrorsFound);
     assert.ok(current.knotsVisited >= previous.knotsVisited);
   }
+});
+
+test("discovery curves separate assertion, goal, stage, and visible-outcome value", async () => {
+  const compiled = await compile(ASSERTION_STORY);
+  const knots = scanKnots(ASSERTION_STORY);
+  const goals = [{
+    id: "prepared",
+    stages: [
+      { id: "ready", condition: { left: { variable: "ready" }, operator: "==", right: { literal: true } } },
+      { id: "key", condition: { left: { variable: "key" }, operator: "==", right: { literal: true } } },
+    ],
+  }];
+  const report = explore(compiled.storyJson, knots, [], {
+    maxStates: 1_000,
+    assertions: ASSERTION_RULES,
+    goals,
+  });
+  const latest = report.passes[0].discoveryCurve.at(-1);
+  assert.ok(latest.assertionViolations >= 1);
+  assert.strictEqual(latest.goalsReached, 1);
+  assert.strictEqual(latest.stagesReached, 2);
+  assert.ok(latest.visibleOutcomes > 0);
+  assert.ok(latest.visibleOutcomes < report.endingsFound.length);
+});
+
+test("discovery summaries distinguish no evidence from a late recovery", async () => {
+  const emptyCompiled = await compile(NO_DISCOVERY_BEFORE_DEPTH);
+  const empty = explore(emptyCompiled.storyJson, scanKnots(NO_DISCOVERY_BEFORE_DEPTH), [], {
+    maxDepth: 1,
+    maxStates: 10,
+    dfsChoicePriority: "first",
+  });
+  assert.deepStrictEqual(empty.passes[0].discoveryCurve, []);
+  assert.deepStrictEqual(empty.passes[0].discoverySummary, {
+    discoveryEvents: 0,
+    firstDiscoveryAtState: null,
+    lastDiscoveryAtState: null,
+    statesSinceLastDiscovery: null,
+    latestDiscoveryGap: null,
+    longestObservedDiscoveryGap: null,
+  });
+
+  const recoveryCompiled = await compile(LATE_RECOVERY);
+  const recovery = explore(recoveryCompiled.storyJson, scanKnots(LATE_RECOVERY), [], {
+    maxDepth: 20,
+    maxStates: 100,
+    dfsChoicePriority: "first",
+  });
+  const telemetry = recovery.passes[0];
+  assert.ok(telemetry.endingsFound >= 2);
+  assert.ok(telemetry.discoverySummary.discoveryEvents >= 2);
+  assert.ok(telemetry.discoverySummary.longestObservedDiscoveryGap >= 10);
+  assert.strictEqual(telemetry.discoverySummary.lastDiscoveryAtState, telemetry.discoveryCurve.at(-1).state);
+});
+
+test("discovery recorder preserves a smoothly declining synthetic yield", () => {
+  const recorder = new DiscoveryCurveRecorder();
+  const counts = (endingsFound, uniqueStatesObserved) => ({
+    endingsFound,
+    runtimeErrorsFound: 0,
+    knotsVisited: 0,
+    visibleOutcomes: endingsFound,
+    assertionViolations: 0,
+    goalsReached: 0,
+    stagesReached: 0,
+    uniqueStatesObserved,
+  });
+  recorder.observe(1, counts(1, 1));
+  recorder.observe(2, counts(2, 2));
+  recorder.observe(4, counts(3, 4));
+  recorder.observe(8, counts(4, 8));
+  assert.deepStrictEqual(recorder.result().map((sample) => sample.statesSincePreviousDiscovery), [null, 1, 2, 4]);
+  assert.deepStrictEqual(recorder.result().map((sample) => sample.newEndings), [1, 1, 1, 1]);
+  assert.strictEqual(recorder.summary(10).longestObservedDiscoveryGap, 4);
+  assert.strictEqual(recorder.summary(10).statesSinceLastDiscovery, 2);
 });
 
 test("CLI JSON includes telemetry for every pass including the repro slice", () => {
@@ -1884,7 +1975,14 @@ test("CLI streams versioned progress to stderr without changing the final JSON r
   assert.deepStrictEqual(events.map((event) => event.sequence), events.map((_, i) => i + 1));
   assert.ok(events.every((event) => event.budgetFraction >= 0 && event.budgetFraction <= 1));
   assert.ok(events.every((event, i) => i === 0 || event.statesExplored >= events[i - 1].statesExplored));
-  assert.ok(events.some((event) => event.type === "progress" && event.phase === undefined && event.pass));
+  const discoveryProgress = events.find((event) => event.type === "progress" && event.phase === undefined && event.pass);
+  assert.ok(discoveryProgress);
+  assert.ok(Number.isInteger(discoveryProgress.visibleOutcomes));
+  assert.ok(Number.isInteger(discoveryProgress.assertionViolations));
+  assert.ok(Number.isInteger(discoveryProgress.goalsReached));
+  assert.ok(Number.isInteger(discoveryProgress.stagesReached));
+  assert.ok(Number.isInteger(discoveryProgress.discoveryEvents));
+  assert.ok(discoveryProgress.statesSinceLastDiscovery === null || Number.isInteger(discoveryProgress.statesSinceLastDiscovery));
   const final = events.at(-1);
   assert.strictEqual(final.type, "run_end");
   assert.strictEqual(final.statesExplored, report.explore.statesExplored);

@@ -307,6 +307,12 @@ async function main() {
       endingsFound?: number;
       runtimeErrorsFound?: number;
       unvisitedKnots?: number;
+      visibleOutcomes?: number;
+      assertionViolations?: number;
+      goalsReached?: number;
+      stagesReached?: number;
+      discoveryEvents?: number;
+      statesSinceLastDiscovery?: number | null;
     } = {}
   ) => {
     const event = {
@@ -426,6 +432,12 @@ async function main() {
           endingsFound: progress.endingsFound,
           runtimeErrorsFound: progress.runtimeErrorsFound,
           unvisitedKnots: progress.unvisitedKnots,
+          visibleOutcomes: progress.visibleOutcomes,
+          assertionViolations: progress.assertionViolations,
+          goalsReached: progress.goalsReached,
+          stagesReached: progress.stagesReached,
+          discoveryEvents: progress.discoveryEvents,
+          statesSinceLastDiscovery: progress.statesSinceLastDiscovery,
         });
       },
     }, search);
