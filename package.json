@@ -7,6 +7,7 @@
     "build": "tsc",
     "prepublishOnly": "tsc",
     "test": "tsc && node --test --test-concurrency=1 \"test/**/*.test.js\"",
+    "evaluate-shadow": "node dist/shadow-evaluation-cli.js",
     "web": "node dist/web.js",
     "usage-report": "node dist/usage-report.js"
   },
@@ -46,6 +47,7 @@
     "docs/agent-discovery.md",
     "docs/config-schema-v1.json",
     "docs/report-schema-v1.md",
+    "docs/shadow-policy-evaluation.md",
     "CHANGELOG.md",
     "llms.txt",
     "server.json",
