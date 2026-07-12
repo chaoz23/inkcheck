@@ -1375,6 +1375,12 @@ test("portfolio reports per-pass telemetry consistent with the schedule", async 
   const knots = scanKnots(EARLY_CHOICE_GRID);
   const report = explorePortfolio(compiled.storyJson, knots, [], { maxStates: 3000 });
   assert.ok(Array.isArray(report.passes) && report.passes.length >= 4);
+  assert.ok(report.discoveryCurve.length <= 64);
+  const portfolioLatest = report.discoveryCurve.at(-1);
+  assert.strictEqual(portfolioLatest.endingsFound, report.endingsFound.length);
+  assert.strictEqual(portfolioLatest.runtimeErrorsFound, report.runtimeErrors.length);
+  assert.strictEqual(portfolioLatest.knotsVisited, report.visitedKnots.length);
+  assert.ok(portfolioLatest.visibleOutcomes <= portfolioLatest.endingsFound);
 
   // Marginal (portfolio-wide first-discovery) totals must equal the sums
   // of the per-round schedule entries for the same pass.
@@ -1441,6 +1447,29 @@ test("discovery curves stay bounded while preserving early and latest evidence",
     assert.ok(current.runtimeErrorsFound >= previous.runtimeErrorsFound);
     assert.ok(current.knotsVisited >= previous.knotsVisited);
   }
+});
+
+test("discovery curves separate assertion, goal, stage, and visible-outcome value", async () => {
+  const compiled = await compile(ASSERTION_STORY);
+  const knots = scanKnots(ASSERTION_STORY);
+  const goals = [{
+    id: "prepared",
+    stages: [
+      { id: "ready", condition: { left: { variable: "ready" }, operator: "==", right: { literal: true } } },
+      { id: "key", condition: { left: { variable: "key" }, operator: "==", right: { literal: true } } },
+    ],
+  }];
+  const report = explore(compiled.storyJson, knots, [], {
+    maxStates: 1_000,
+    assertions: ASSERTION_RULES,
+    goals,
+  });
+  const latest = report.passes[0].discoveryCurve.at(-1);
+  assert.ok(latest.assertionViolations >= 1);
+  assert.strictEqual(latest.goalsReached, 1);
+  assert.strictEqual(latest.stagesReached, 2);
+  assert.ok(latest.visibleOutcomes > 0);
+  assert.ok(latest.visibleOutcomes < report.endingsFound.length);
 });
 
 test("CLI JSON includes telemetry for every pass including the repro slice", () => {
@@ -1884,7 +1913,12 @@ test("CLI streams versioned progress to stderr without changing the final JSON r
   assert.deepStrictEqual(events.map((event) => event.sequence), events.map((_, i) => i + 1));
   assert.ok(events.every((event) => event.budgetFraction >= 0 && event.budgetFraction <= 1));
   assert.ok(events.every((event, i) => i === 0 || event.statesExplored >= events[i - 1].statesExplored));
-  assert.ok(events.some((event) => event.type === "progress" && event.phase === undefined && event.pass));
+  const discoveryProgress = events.find((event) => event.type === "progress" && event.phase === undefined && event.pass);
+  assert.ok(discoveryProgress);
+  assert.ok(Number.isInteger(discoveryProgress.visibleOutcomes));
+  assert.ok(Number.isInteger(discoveryProgress.assertionViolations));
+  assert.ok(Number.isInteger(discoveryProgress.goalsReached));
+  assert.ok(Number.isInteger(discoveryProgress.stagesReached));
   const final = events.at(-1);
   assert.strictEqual(final.type, "run_end");
   assert.strictEqual(final.statesExplored, report.explore.statesExplored);

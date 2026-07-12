@@ -30,6 +30,10 @@ Optional fields:
 | --- | --- | --- |
 | `phase` | string | Phase events and some progress events. Known phases are `compile`, `source_scan`, `explore`, `min_repro`, and `report`. |
 | `pass` | string | The pass whose slice produced this progress event, such as `dfs:last`, `beam:w=64`, `random:seed=1`, or `bfs`. Identifies which pass ran; the counts below are run-wide, not scoped to it. |
+| `visibleOutcomes` | number | Distinct normalized visible ending texts observed; a fallback outcome identity, not authored semantic proof. |
+| `assertionViolations` | number | Distinct configured assertions observed violated. |
+| `goalsReached` | number | Distinct configured top-level goals reached. |
+| `stagesReached` | number | Distinct configured staged-goal milestones reached. |
 | `endingsFound` | number | Distinct endings found so far across the whole run (all passes deduplicated). Non-decreasing within a run. |
 | `runtimeErrorsFound` | number | Distinct runtime errors found so far across the whole run. Non-decreasing within a run. |
 | `unvisitedKnots` | number | Knots not yet reached by any pass in this run. Non-increasing within a run. |

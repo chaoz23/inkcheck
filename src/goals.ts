@@ -233,6 +233,19 @@ export class GoalTracker {
     return best.stage * 1_000_000 + Math.floor(999_999 / (1 + best.distance));
   }
 
+  reachedGoalCount(): number {
+    return this.goals.filter((goal) => {
+      const targets = this.targets(goal);
+      return targets.length > 0 && this.witnesses.has(targets[targets.length - 1].key);
+    }).length;
+  }
+
+  reachedStageCount(): number {
+    return this.goals.reduce((total, goal) => total + (goal.stages ?? []).filter((stage) =>
+      this.witnesses.has(`${goal.id}/${stage.id}`)
+    ).length, 0);
+  }
+
   results(exhaustive: boolean): GoalResult[] {
     return this.goals.map((goal) => {
       const targets = this.targets(goal);

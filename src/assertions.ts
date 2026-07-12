@@ -288,6 +288,10 @@ export class AssertionTracker {
     }
   }
 
+  violationCount(): number {
+    return this.violations.size;
+  }
+
   results(exhaustive: boolean): AssertionResult[] {
     return this.definitions.map((rule) => {
       const violation = this.violations.get(rule.id);

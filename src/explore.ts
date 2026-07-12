@@ -128,6 +128,8 @@ export interface ExploreResult {
   schedule?: ScheduleRound[];
   /** Lifetime per-pass telemetry; merges concatenate contributing passes. */
   passes?: PassTelemetry[];
+  /** Portfolio-wide meaningful discoveries in actual interleaved execution order. */
+  discoveryCurve?: DiscoveryCurveSample[];
 }
 
 /**
@@ -478,6 +480,10 @@ export interface ExploreProgress {
   endingsFound: number;
   runtimeErrorsFound: number;
   unvisitedKnots: number;
+  visibleOutcomes: number;
+  assertionViolations: number;
+  goalsReached: number;
+  stagesReached: number;
 }
 
 /** Relative budget weights for the portfolio passes; normalized before use. */
@@ -568,6 +574,10 @@ export interface DiscoveryCurveSample {
   endingsFound: number;
   runtimeErrorsFound: number;
   knotsVisited: number;
+  visibleOutcomes: number;
+  assertionViolations: number;
+  goalsReached: number;
+  stagesReached: number;
   /** States since the immediately preceding discovery event before bounded compaction; null for the first. */
   statesSincePreviousDiscovery: number | null;
 }
@@ -579,14 +589,13 @@ class DiscoveryCurveRecorder {
   private previousTotal = 0;
   private previousState: number | null = null;
 
-  observe(state: number, endingsFound: number, runtimeErrorsFound: number, knotsVisited: number): boolean {
-    const total = endingsFound + runtimeErrorsFound + knotsVisited;
+  observe(state: number, counts: Omit<DiscoveryCurveSample, "state" | "statesSincePreviousDiscovery">): boolean {
+    const total = counts.endingsFound + counts.runtimeErrorsFound + counts.knotsVisited
+      + counts.assertionViolations + counts.goalsReached + counts.stagesReached;
     if (total <= this.previousTotal) return false;
     this.samples.push({
       state,
-      endingsFound,
-      runtimeErrorsFound,
-      knotsVisited,
+      ...counts,
       statesSincePreviousDiscovery: this.previousState === null ? null : state - this.previousState,
     });
     this.previousTotal = total;
@@ -603,6 +612,20 @@ class DiscoveryCurveRecorder {
   result(): DiscoveryCurveSample[] {
     return this.samples.map((sample) => ({ ...sample }));
   }
+}
+
+function visibleOutcomeKey(finalText: string): string {
+  return finalText.trim().replace(/\s+/g, " ");
+}
+
+function recordEnding(
+  endings: Map<string, EndingReport>,
+  visibleOutcomes: Set<string>,
+  key: string,
+  ending: EndingReport
+): void {
+  endings.set(key, ending);
+  visibleOutcomes.add(visibleOutcomeKey(ending.finalText));
 }
 
 /**
@@ -635,12 +658,17 @@ interface PassEngine {
 }
 
 function progressFromSnapshot(pass: string, statesExplored: number, result: ExploreResult): ExploreProgress {
+  const goals = result.goalResults ?? [];
   return {
     pass,
     statesExplored,
     endingsFound: result.endingsFound.length,
     runtimeErrorsFound: result.runtimeErrors.length,
     unvisitedKnots: result.unvisitedKnots.length,
+    visibleOutcomes: new Set(result.endingsFound.map((ending) => visibleOutcomeKey(ending.finalText))).size,
+    assertionViolations: result.assertionResults.filter((assertion) => assertion.status === "violated").length,
+    goalsReached: goals.filter((goal) => goal.status === "reached").length,
+    stagesReached: goals.reduce((total, goal) => total + (goal.stages ?? []).filter((stage) => stage.status === "reached").length, 0),
   };
 }
 
@@ -691,6 +719,7 @@ function createSearchEngine(
   };
 
   const endings = new Map<string, EndingReport>();
+  const visibleOutcomes = new Set<string>();
   const runtimeErrors = new Map<string, RuntimeErrorReport>();
   const runtimeWarnings = new Set<string>();
   const visitedKnots = new Set<string>();
@@ -704,8 +733,15 @@ function createSearchEngine(
   let lastDiscoveryAtState: number | null = null;
   const discoveryCurve = new DiscoveryCurveRecorder();
   const noteDiscoveryProgress = () => {
-    const total = endings.size + runtimeErrors.size + visitedKnots.size;
-    if (total > 0 && discoveryCurve.observe(statesExplored, endings.size, runtimeErrors.size, visitedKnots.size)) {
+    if (discoveryCurve.observe(statesExplored, {
+      endingsFound: endings.size,
+      runtimeErrorsFound: runtimeErrors.size,
+      knotsVisited: visitedKnots.size,
+      visibleOutcomes: visibleOutcomes.size,
+      assertionViolations: assertions.violationCount(),
+      goalsReached: goals.reachedGoalCount(),
+      stagesReached: goals.reachedStageCount(),
+    })) {
       lastDiscoveryAtState = statesExplored;
     }
   };
@@ -754,7 +790,7 @@ function createSearchEngine(
 
   if (rootStep.choicesOffered.length === 0 && s.errors.length === 0) {
     // Linear story (or immediate end).
-    endings.set(rootStep.text, {
+    recordEnding(endings, visibleOutcomes, rootStep.text, {
       path: [],
       choiceIndices: [],
       firstDiscoveredAtState: 0,
@@ -866,7 +902,7 @@ function createSearchEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(stateVariables);
       if (!endings.has(key)) {
-        endings.set(key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy });
+        recordEnding(endings, visibleOutcomes, key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy });
         noteDiscoveryProgress();
       }
       return true;
@@ -1099,6 +1135,7 @@ function createSharedEngine(
   };
 
   const endings = new Map<string, EndingReport>();
+  const visibleOutcomes = new Set<string>();
   const runtimeErrors = new Map<string, RuntimeErrorReport>();
   const runtimeWarnings = new Set<string>();
   const visitedKnots = new Set<string>();
@@ -1148,8 +1185,15 @@ function createSharedEngine(
   const timeGuard = opts.timeGuard;
 
   const noteDiscoveryProgress = () => {
-    const total = endings.size + runtimeErrors.size + visitedKnots.size;
-    if (total > 0 && discoveryCurve.observe(statesExplored, endings.size, runtimeErrors.size, visitedKnots.size)) {
+    if (discoveryCurve.observe(statesExplored, {
+      endingsFound: endings.size,
+      runtimeErrorsFound: runtimeErrors.size,
+      knotsVisited: visitedKnots.size,
+      visibleOutcomes: visibleOutcomes.size,
+      assertionViolations: assertions.violationCount(),
+      goalsReached: goals.reachedGoalCount(),
+      stagesReached: goals.reachedStageCount(),
+    })) {
       lastDiscoveryAtState = statesExplored;
     }
   };
@@ -1330,7 +1374,7 @@ function createSharedEngine(
   if (rootStep.choicesOffered.length === 0) {
     if (session.errors.length === 0) {
       const finalText = rootStep.text.trim().split(/\n/).slice(-3).join("\n");
-      endings.set(`${finalText}|${JSON.stringify(rootVariables)}`, {
+      recordEnding(endings, visibleOutcomes, `${finalText}|${JSON.stringify(rootVariables)}`, {
         path: [],
         choiceIndices: [],
         firstDiscoveredAtState: 0,
@@ -1485,7 +1529,7 @@ function createSharedEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = `${finalText}|${JSON.stringify(nextVariables)}`;
       if (!endings.has(key)) {
-        endings.set(key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: nextVariables, foundBy });
+        recordEnding(endings, visibleOutcomes, key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: nextVariables, foundBy });
         noteDiscoveryProgress();
       }
       finishIfLast();
@@ -1736,6 +1780,7 @@ function createRandomEngine(
   const rng = mulberry32(seed);
 
   const endings = new Map<string, EndingReport>();
+  const visibleOutcomes = new Set<string>();
   const runtimeErrors = new Map<string, RuntimeErrorReport>();
   const runtimeWarnings = new Set<string>();
   const visitedKnots = new Set<string>();
@@ -1751,8 +1796,15 @@ function createRandomEngine(
   let lastDiscoveryAtState: number | null = null;
   const discoveryCurve = new DiscoveryCurveRecorder();
   const noteDiscoveryProgress = () => {
-    const total = endings.size + runtimeErrors.size + visitedKnots.size;
-    if (total > 0 && discoveryCurve.observe(statesExplored, endings.size, runtimeErrors.size, visitedKnots.size)) {
+    if (discoveryCurve.observe(statesExplored, {
+      endingsFound: endings.size,
+      runtimeErrorsFound: runtimeErrors.size,
+      knotsVisited: visitedKnots.size,
+      visibleOutcomes: visibleOutcomes.size,
+      assertionViolations: assertions.violationCount(),
+      goalsReached: goals.reachedGoalCount(),
+      stagesReached: goals.reachedStageCount(),
+    })) {
       lastDiscoveryAtState = statesExplored;
     }
   };
@@ -1798,7 +1850,7 @@ function createRandomEngine(
   });
   goals.observe({ variables: rootVariables, path: [], choiceIndices: [], state: 0 });
   if (linear && s.errors.length === 0) {
-    endings.set(rootStep.text, {
+    recordEnding(endings, visibleOutcomes, rootStep.text, {
       path: [],
       choiceIndices: [],
       firstDiscoveredAtState: 0,
@@ -1886,7 +1938,7 @@ function createRandomEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(stateVariables);
       if (!endings.has(key)) {
-        endings.set(key, { path: [...walkPath], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy });
+        recordEnding(endings, visibleOutcomes, key, { path: [...walkPath], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy });
         noteDiscoveryProgress();
       }
       walkPath = null;
@@ -2048,6 +2100,7 @@ function createBeamEngine(
   };
 
   const endings = new Map<string, EndingReport>();
+  const visibleOutcomes = new Set<string>();
   const runtimeErrors = new Map<string, RuntimeErrorReport>();
   const runtimeWarnings = new Set<string>();
   const visitedKnots = new Set<string>();
@@ -2069,8 +2122,15 @@ function createBeamEngine(
   let lastDiscoveryAtState: number | null = null;
   const discoveryCurve = new DiscoveryCurveRecorder();
   const noteDiscoveryProgress = () => {
-    const total = endings.size + runtimeErrors.size + visitedKnots.size;
-    if (total > 0 && discoveryCurve.observe(statesExplored, endings.size, runtimeErrors.size, visitedKnots.size)) {
+    if (discoveryCurve.observe(statesExplored, {
+      endingsFound: endings.size,
+      runtimeErrorsFound: runtimeErrors.size,
+      knotsVisited: visitedKnots.size,
+      visibleOutcomes: visibleOutcomes.size,
+      assertionViolations: assertions.violationCount(),
+      goalsReached: goals.reachedGoalCount(),
+      stagesReached: goals.reachedStageCount(),
+    })) {
       lastDiscoveryAtState = statesExplored;
     }
   };
@@ -2134,7 +2194,7 @@ function createBeamEngine(
   if (rootStep.choicesOffered.length === 0) {
     // Linear story (or immediate end).
     if (s.errors.length === 0) {
-      endings.set(rootStep.text, {
+      recordEnding(endings, visibleOutcomes, rootStep.text, {
         path: [],
         choiceIndices: [],
         firstDiscoveredAtState: 0,
@@ -2266,7 +2326,7 @@ function createBeamEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(stateVariables);
       if (!endings.has(key)) {
-        endings.set(key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy });
+        recordEnding(endings, visibleOutcomes, key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy });
         noteDiscoveryProgress();
       }
       return true;
@@ -2522,6 +2582,11 @@ export function explorePortfolio(
   const seenEndings = new Set<string>();
   const seenKnots = new Set<string>();
   const seenErrors = new Set<string>();
+  const seenVisibleOutcomes = new Set<string>();
+  const seenAssertionViolations = new Set<string>();
+  const seenGoals = new Set<string>();
+  const seenStages = new Set<string>();
+  const portfolioCurve = new DiscoveryCurveRecorder();
   // Live progress reports portfolio-wide cumulative discoveries, not a single
   // pass's snapshot. Per-pass snapshots are each correct but not comparable
   // across the interleaved rounds, so a naive relay makes the counts bounce
@@ -2562,12 +2627,35 @@ export function explorePortfolio(
       remaining -= consumed;
       const snapshot = engine.snapshot();
       const marginal = countMarginalFindings(snapshot, seenEndings, seenKnots, seenErrors);
+      for (const ending of snapshot.endingsFound) seenVisibleOutcomes.add(visibleOutcomeKey(ending.finalText));
+      for (const assertion of snapshot.assertionResults) {
+        if (assertion.status === "violated") seenAssertionViolations.add(assertion.id);
+      }
+      for (const goal of snapshot.goalResults ?? []) {
+        if (goal.status === "reached") seenGoals.add(goal.id);
+        for (const stage of goal.stages ?? []) {
+          if (stage.status === "reached") seenStages.add(`${goal.id}/${stage.id}`);
+        }
+      }
+      portfolioCurve.observe(maxStates - remaining, {
+        endingsFound: seenEndings.size,
+        runtimeErrorsFound: seenErrors.size,
+        knotsVisited: seenKnots.size,
+        visibleOutcomes: seenVisibleOutcomes.size,
+        assertionViolations: seenAssertionViolations.size,
+        goalsReached: seenGoals.size,
+        stagesReached: seenStages.size,
+      });
       opts.onProgress?.({
         pass: engine.label,
         statesExplored: maxStates - remaining,
         endingsFound: seenEndings.size,
         runtimeErrorsFound: seenErrors.size,
         unvisitedKnots: totalNonFunctionKnots - seenKnots.size,
+        visibleOutcomes: seenVisibleOutcomes.size,
+        assertionViolations: seenAssertionViolations.size,
+        goalsReached: seenGoals.size,
+        stagesReached: seenStages.size,
       });
       marginalTotals[i].endings += marginal.newEndings;
       marginalTotals[i].knots += marginal.newKnots;
@@ -2610,6 +2698,7 @@ export function explorePortfolio(
   // Limits report the configured budget; what was actually consumed is in
   // statesExplored and the schedule (early exit can leave budget unspent).
   merged.limits.maxStates = maxStates;
+  merged.discoveryCurve = portfolioCurve.result();
   // When a guard stopped the run, that guard is the true cause — the budget
   // did not actually run out, so do not also blame maxStates.
   if (memoryStopped && !merged.exhaustive) {
