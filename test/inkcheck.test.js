@@ -1397,7 +1397,10 @@ test("portfolio reports per-pass telemetry consistent with the schedule", async 
     assert.ok(t.maxDepthReached <= 30);
     if (t.lastDiscoveryAtState !== null) {
       assert.ok(t.lastDiscoveryAtState <= t.statesExplored);
+      assert.strictEqual(t.discoveryCurve.at(-1).state, t.lastDiscoveryAtState);
     }
+    assert.ok(t.discoveryCurve.length <= 64, `${t.pass} curve exceeded bound`);
+    assert.deepStrictEqual(t.discoveryCurve.map((sample) => sample.state), [...t.discoveryCurve.map((sample) => sample.state)].sort((a, b) => a - b));
   }
   const beam = report.passes.find((t) => t.pass.startsWith("beam:"));
   assert.ok(beam.peakFrontier >= 1);
@@ -1418,6 +1421,26 @@ test("standalone passes attach their own telemetry entry", async () => {
   assert.strictEqual(t.runtimeErrorsFound, 1);
   assert.ok(t.maxDepthReached >= 2);
   assert.ok(t.lastDiscoveryAtState !== null && t.lastDiscoveryAtState <= t.statesExplored);
+  assert.strictEqual(t.discoveryCurve.at(-1).runtimeErrorsFound, 1);
+  assert.strictEqual(t.discoveryCurve.at(-1).endingsFound, 5);
+});
+
+test("discovery curves stay bounded while preserving early and latest evidence", async () => {
+  const compiled = await compile(DEEP_CHAIN);
+  const report = explore(compiled.storyJson, scanKnots(DEEP_CHAIN), [], { maxDepth: 200, maxStates: 5_000 });
+  const telemetry = report.passes[0];
+  assert.ok(telemetry.discoveryCurve.length > 1);
+  assert.ok(telemetry.discoveryCurve.length <= 64);
+  assert.strictEqual(telemetry.discoveryCurve.at(-1).state, telemetry.lastDiscoveryAtState);
+  assert.strictEqual(telemetry.discoveryCurve.at(-1).knotsVisited, telemetry.knotsVisited);
+  for (let index = 1; index < telemetry.discoveryCurve.length; index++) {
+    const previous = telemetry.discoveryCurve[index - 1];
+    const current = telemetry.discoveryCurve[index];
+    assert.ok(current.state >= previous.state);
+    assert.ok(current.endingsFound >= previous.endingsFound);
+    assert.ok(current.runtimeErrorsFound >= previous.runtimeErrorsFound);
+    assert.ok(current.knotsVisited >= previous.knotsVisited);
+  }
 });
 
 test("CLI JSON includes telemetry for every pass including the repro slice", () => {

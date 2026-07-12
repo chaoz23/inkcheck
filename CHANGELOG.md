@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Begin the Inkcheck 0.6 anytime-decision measurement foundation (#91): every exploration pass records a deterministic discovery curve with separate ending, runtime-error, and authored-knot counts. Curves compact to at most 64 samples regardless of state budget, preserve early/latest evidence and dry-gap measurements, and do not yet alter scheduling or stopping behavior.
 - Stop hosted `humanFindings` from advising CLI flags a web user cannot set (#49). `buildHumanFindings` takes an `audience: "cli" | "hosted"` option; the hosted server passes `"hosted"`, so the limit-bound unvisited-knot next step now says to run inkcheck locally for a deeper check instead of naming `--max-depth`/`--max-states`. CLI output is unchanged.
 - Add safe typed search goals with an explicit additive budget. General exploration keeps the full `maxStates` allocation; `goalMaxStates` / `--goal-states` optionally adds deterministic goal-proximity work and defaults to zero. Reports, progress events, config validation, discovery, CLI, and MCP expose baseline, goal, and combined budgets, with a shared 100,000,000-state ceiling.
 - Add ordered staged goals for late variable dependencies. Each cumulative milestone has a deterministic witness and status; a bounded prerequisite miss blocks downstream stages instead of claiming they are unreachable. Stages share the explicit additive goal budget and never displace baseline exploration.
