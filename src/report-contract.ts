@@ -9,6 +9,7 @@ import type { AssertionResult, AssertionViolation } from "./assertions";
 import type { AssertionDefinition } from "./assertions";
 import type { GoalDefinition } from "./goals";
 import type { GoalResult } from "./goals";
+import { recommendShadowDecision } from "./decision-policy";
 
 export type FindingKind =
   | "compile.missing_divert"
@@ -234,6 +235,7 @@ export function buildReportEnvelope(input: ReportInput) {
     ...(input.profile ? { profile: input.profile } : {}),
     explore,
     nextRun: input.nextRun,
+    shadowDecision: recommendShadowDecision(input.explore),
     ...(input.runs ? { runs: input.runs } : {}),
   };
 }
