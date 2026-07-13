@@ -10,10 +10,12 @@ import {
   deterministicPromotionView,
   renderPromotionMarkdown,
   summarizePromotionFamilies,
+  summarizePromotionProjects,
   validatePromotionManifest,
   type PromotionBenchmarkReport,
   type PromotionManifest,
   type PromotionObservation,
+  type PromotionUnavailableCell,
 } from "./promotion-benchmark";
 import { runSearchBenchmark } from "./search-benchmark";
 import type { AssertionDefinition } from "./assertions";
@@ -54,14 +56,18 @@ async function worker(requestFile: string): Promise<void> {
   process.stdout.write(JSON.stringify({ ...measured, peakRssBytes }));
 }
 
-function runWorker(request: WorkerRequest, scratch: string, sequence: number): PromotionObservation {
+class WorkerTimeoutError extends Error {}
+
+function runWorker(request: WorkerRequest, scratch: string, sequence: number, timeoutMs?: number): PromotionObservation {
   const requestFile = path.join(scratch, `request-${sequence}.json`);
   fs.writeFileSync(requestFile, JSON.stringify(request));
   const child = spawnSync(process.execPath, [__filename, "--worker", requestFile], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
+    ...(timeoutMs ? { timeout: timeoutMs } : {}),
   });
   fs.rmSync(requestFile, { force: true });
+  if (child.error && (child.error as NodeJS.ErrnoException).code === "ETIMEDOUT") throw new WorkerTimeoutError("benchmark worker timed out");
   if (child.status !== 0) throw new Error(child.stderr.trim() || `benchmark worker exited ${child.status}`);
   const value = JSON.parse(child.stdout) as { elapsedMs: number; peakRssBytes: number; summary: PromotionObservation["summary"] };
   return value;
@@ -78,22 +84,43 @@ async function main(): Promise<void> {
   const markdown = args.includes("--markdown");
   const ci = args.includes("--ci");
   const deterministic = args.includes("--deterministic");
+  const optionValue = (name: string): string | undefined => {
+    const index = args.indexOf(name);
+    if (index < 0) return undefined;
+    if (!args[index + 1] || args[index + 1].startsWith("--")) throw new Error(`${name} requires a value`);
+    return args[index + 1];
+  };
+  const selectedCase = optionValue("--case");
+  const selectedBudgetText = optionValue("--budget");
+  const selectedBudget = selectedBudgetText === undefined ? undefined : Number(selectedBudgetText);
+  const workerTimeoutText = optionValue("--worker-timeout-ms");
+  const workerTimeoutMs = workerTimeoutText === undefined ? undefined : Number(workerTimeoutText);
+  if (selectedBudget !== undefined && (!Number.isSafeInteger(selectedBudget) || selectedBudget < 1)) {
+    throw new Error("--budget requires a positive integer");
+  }
+  if (workerTimeoutMs !== undefined && (!Number.isSafeInteger(workerTimeoutMs) || workerTimeoutMs < 1)) {
+    throw new Error("--worker-timeout-ms requires a positive integer");
+  }
   if (markdown && deterministic) throw new Error("--markdown and --deterministic are mutually exclusive");
-  const positional = args.filter((arg) => arg !== "--markdown" && arg !== "--ci" && arg !== "--deterministic");
-  if (positional.length !== 1) throw new Error("usage: inkcheck-promotion manifest.json [--ci] [--markdown|--deterministic]");
+  const optionValues = new Set([selectedCase, selectedBudgetText, workerTimeoutText].filter((value): value is string => value !== undefined));
+  const positional = args.filter((arg) => !["--markdown", "--ci", "--deterministic", "--case", "--budget", "--worker-timeout-ms"].includes(arg) && !optionValues.has(arg));
+  if (positional.length !== 1) throw new Error("usage: inkcheck-promotion manifest.json [--ci] [--case ID] [--budget STATES] [--worker-timeout-ms MS] [--markdown|--deterministic]");
   const manifestFile = path.resolve(positional[0]);
   const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8")) as PromotionManifest;
   validatePromotionManifest(manifest);
   const root = path.dirname(manifestFile);
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-promotion-"));
   const pairs = [];
+  const unavailable: PromotionUnavailableCell[] = [];
   let sequence = 0;
   try {
-    const cases = ci ? manifest.cases.filter((entry) => entry.ci) : manifest.cases;
-    if (cases.length === 0) throw new Error("--ci requires at least one case with ci: true");
+    let cases = ci ? manifest.cases.filter((entry) => entry.ci) : manifest.cases;
+    if (selectedCase) cases = cases.filter((entry) => entry.id === selectedCase);
+    if (cases.length === 0) throw new Error(selectedCase ? `unknown or unselected promotion case: ${selectedCase}` : "--ci requires at least one case with ci: true");
     for (const entry of cases) {
       const story = path.resolve(root, entry.story);
-      const budgets = selected(entry.budgets, ci);
+      const budgets = selected(entry.budgets, ci).filter((budget) => selectedBudget === undefined || budget === selectedBudget);
+      if (budgets.length === 0) throw new Error(`${entry.id}: selected budget is not declared`);
       const depths = ci && entry.depths.length > 1
         ? [entry.depths[0], entry.depths.at(-1)!]
         : entry.depths;
@@ -101,18 +128,49 @@ async function main(): Promise<void> {
       for (const budget of budgets) for (const depth of depths) for (const seed of seeds) {
         const storySeed = entry.storySeed ?? 1;
         const request = { story, budget, depth, seed, storySeed, assertions: entry.assertions };
-        let baseline = runWorker({ ...request, candidate: false }, scratch, sequence++);
-        let candidate = runWorker({ ...request, candidate: true }, scratch, sequence++);
-        if (entry.determinismCheck) {
-          const baselineRepeat = runWorker({ ...request, candidate: false }, scratch, sequence++);
-          const candidateRepeat = runWorker({ ...request, candidate: true }, scratch, sequence++);
+        console.error(`starting ${entry.id} budget=${budget} depth=${depth} seed=${seed}`);
+        let baseline: PromotionObservation;
+        let candidate: PromotionObservation;
+        try {
+          baseline = runWorker({ ...request, candidate: false }, scratch, sequence++, workerTimeoutMs);
+        } catch (error) {
+          if (!(error instanceof WorkerTimeoutError) || !workerTimeoutMs) throw error;
+          unavailable.push({ caseId: entry.id, family: entry.family, budget, depth, seed, storySeed, stage: "baseline", reason: "worker-timeout", timeoutMs: workerTimeoutMs });
+          console.error(`unavailable ${entry.id} budget=${budget} stage=baseline timeout=${workerTimeoutMs}`);
+          continue;
+        }
+        try {
+          candidate = runWorker({ ...request, candidate: true }, scratch, sequence++, workerTimeoutMs);
+        } catch (error) {
+          if (!(error instanceof WorkerTimeoutError) || !workerTimeoutMs) throw error;
+          unavailable.push({ caseId: entry.id, family: entry.family, budget, depth, seed, storySeed, stage: "candidate", reason: "worker-timeout", timeoutMs: workerTimeoutMs });
+          console.error(`unavailable ${entry.id} budget=${budget} stage=candidate timeout=${workerTimeoutMs}`);
+          continue;
+        }
+        if (entry.determinismCheck || entry.determinismBudgets?.includes(budget)) {
+          let baselineRepeat: PromotionObservation | undefined;
+          let candidateRepeat: PromotionObservation | undefined;
+          try {
+            baselineRepeat = runWorker({ ...request, candidate: false }, scratch, sequence++, workerTimeoutMs);
+          } catch (error) {
+            if (!(error instanceof WorkerTimeoutError) || !workerTimeoutMs) throw error;
+            unavailable.push({ caseId: entry.id, family: entry.family, budget, depth, seed, storySeed, stage: "baseline-repeat", reason: "worker-timeout", timeoutMs: workerTimeoutMs });
+            console.error(`unavailable ${entry.id} budget=${budget} stage=baseline-repeat timeout=${workerTimeoutMs}`);
+          }
+          try {
+            candidateRepeat = runWorker({ ...request, candidate: true }, scratch, sequence++, workerTimeoutMs);
+          } catch (error) {
+            if (!(error instanceof WorkerTimeoutError) || !workerTimeoutMs) throw error;
+            unavailable.push({ caseId: entry.id, family: entry.family, budget, depth, seed, storySeed, stage: "candidate-repeat", reason: "worker-timeout", timeoutMs: workerTimeoutMs });
+            console.error(`unavailable ${entry.id} budget=${budget} stage=candidate-repeat timeout=${workerTimeoutMs}`);
+          }
           baseline = {
             ...baseline,
-            deterministicRepeatMatch: JSON.stringify(baseline.summary) === JSON.stringify(baselineRepeat.summary),
+            ...(baselineRepeat ? { deterministicRepeatMatch: JSON.stringify(baseline.summary) === JSON.stringify(baselineRepeat.summary) } : {}),
           };
           candidate = {
             ...candidate,
-            deterministicRepeatMatch: JSON.stringify(candidate.summary) === JSON.stringify(candidateRepeat.summary),
+            ...(candidateRepeat ? { deterministicRepeatMatch: JSON.stringify(candidate.summary) === JSON.stringify(candidateRepeat.summary) } : {}),
           };
         }
         pairs.push(comparePromotionPair({
@@ -126,6 +184,7 @@ async function main(): Promise<void> {
           baseline,
           candidate,
         }));
+        console.error(`finished ${entry.id} budget=${budget} depth=${depth} seed=${seed}`);
       }
     }
   } finally {
@@ -136,9 +195,11 @@ async function main(): Promise<void> {
     generatedAt: new Date().toISOString(),
     candidate: "policy-v2-replay",
     baseline: "fixed-portfolio",
-    caveat: "This report presents separate evidence and worst-family regressions; it does not declare a winner. Bounded runs are not coverage proof.",
+    caveat: "This report presents unavailable cells, separate evidence, and worst-project/family regressions; it does not declare a winner. Bounded runs are not coverage proof.",
     pairs,
     families: summarizePromotionFamilies(pairs),
+    ...(manifest.tier === "authored-project" ? { projects: summarizePromotionProjects(pairs) } : {}),
+    ...(unavailable.length ? { unavailable } : {}),
   };
   const output = markdown
     ? renderPromotionMarkdown(report)

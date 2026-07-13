@@ -8,6 +8,14 @@ npm run --silent evaluate-promotion -- benchmarks/promotion-manifest.json
 npm run --silent evaluate-promotion -- benchmarks/promotion-manifest.json --markdown
 ```
 
+The authored-project tier is separate and manual. Its vendored, pinned sources and provenance live under `benchmarks/authored`; select one reproducible cell when a full matrix would be unnecessarily expensive:
+
+```sh
+npm run --silent evaluate-promotion -- benchmarks/authored-promotion-manifest.json --case the-intercept --budget 5000000 --markdown
+```
+
+The runner writes cell start/finish progress to stderr while preserving machine-readable stdout. `--worker-timeout-ms` gives a manual evaluation an explicit per-process envelope; a timed-out stage is retained under `unavailable` and never treated as a search result, determinism failure, or evidence match. The authored manifest predeclares 1M and 5M rungs; a resource-unavailable cell must be reported as unavailable, not omitted or inferred from a smaller run.
+
 The checked-in manifest declares 20 structurally named synthetic cases with source, license, consent, budgets, depths, search seeds, and an optional initial Ink runtime `storySeed` (default 1). Every matched baseline/candidate pair receives the same two seeds. Cases may also declare the same typed, non-executable assertion rules accepted by an Inkcheck project. It covers early choices, deep suffixes, finite locks and loops, storylets, gated endings, assertions, sparse runtime failures, random/turn state, and unavailable host externals. Depth matrices include an intentionally binding setting. The full command runs every declared point. `--ci` selects the cases marked `ci` and their smallest budget/search seed at the first and last declared depth.
 
 Each baseline and candidate runs in an isolated child process. Reports keep these evidence classes separate:
@@ -28,5 +36,7 @@ npm run --silent evaluate-promotion -- benchmarks/promotion-manifest.json --ci -
 Cases marked `determinismCheck` repeat both strategies in fresh workers with the same declared story seed. The report distinguishes a candidate-only determinism regression from a defect affecting both strategies.
 
 The report highlights baseline-only and candidate-only evidence and groups regressions by structural family. Critical, authored-coverage, proof, and terminal-only differences remain distinct. It deliberately does not calculate a winner or treat a larger bounded run as an oracle.
+
+Authored-project reports put a worst-project table before matched runs and aggregate family results. Project labels use the documented multi-measure thresholds in `benchmarks/authored/README.md`; they are corpus workload tiers, not universal community size claims.
 
 Mixed evidence keeps a candidate experimental. Promotion requires a separate proposal satisfying the [search strategy policy](search-strategy-policy.md), including no lost critical evidence at the largest comparable budget, no severe family blind spot, deterministic fixed-seed behavior, and equal or better limit honesty.
