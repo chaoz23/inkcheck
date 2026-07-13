@@ -4,7 +4,7 @@ Inkcheck's default search must be robust for an unknown story shape, not merely 
 
 ## Current default
 
-The adaptive portfolio remains the default. Its independent DFS, diversity-beam, and seeded-random passes have different failure modes and adapt surplus budget from observed findings. The current 8% fractional pass floor expresses protected-probe intent at ordinary window sizes, but it is not yet a cumulative integer service guarantee: small windows can repeatedly round a pass to zero (#106). Experimental `shared` and `shared-variable` modes are explicit opt-ins and must not change portfolio weights or behavior indirectly.
+The adaptive portfolio remains the default. Its independent DFS, diversity-beam, and seeded-random passes have different failure modes and adapt surplus budget from observed findings. Research policy replay has an auditable cumulative integer floor, but production allocation remains unchanged until the promotion gate passes. Experimental policy replay, `shared`, and `shared-variable` modes must not change portfolio weights or behavior indirectly.
 
 Default allocation is frozen until an alternative passes the promotion gate below. A compelling result on one story, one budget, or one metric is insufficient.
 
@@ -18,6 +18,8 @@ A proposed default must be evaluated against the current default using a predecl
 - Multiple seeds for every strategy with a sampling component.
 - Early-choice grids, deep suffixes, finite locks, loops, storylet machines, gated endings, sparse runtime failures, random behavior, and host-external limitations.
 - Time and peak-memory measurements in addition to search findings.
+
+The executable [promotion benchmark](promotion-benchmark.md) and checked-in 20-family manifest implement this matrix contract. Its CI slice is a regression check, not a substitute for the full manual matrix.
 
 The scorecard reports runtime errors, authored knots, visible ending outcomes, exact terminal states, assertion violations, deduplication, truncation cause, and exhaustive proofs separately. No single aggregate count may hide a regression in a user-important category.
 

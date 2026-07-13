@@ -1,5 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
 const path = require("node:path");
 
 const { compile, scanKnots } = require("../dist/inklecate");
@@ -18,12 +19,21 @@ const {
   evaluateShadowBudgetLadder,
   renderShadowEvaluationMarkdown,
 } = require("../dist/shadow-evaluation");
+const {
+  comparePromotionPair,
+  deterministicPromotionView,
+  renderPromotionMarkdown,
+  summarizePromotionFamilies,
+  validatePromotionManifest,
+} = require("../dist/promotion-benchmark");
 
 const FIXTURES = path.join(__dirname, "fixtures", "search");
 const LOCK = path.join(FIXTURES, "combination-lock.ink");
 const PLATEAU = path.join(FIXTURES, "deceptive-plateau.ink");
 const STORYLETS = path.join(FIXTURES, "storylet-machine.ink");
 const EARLY_GRID = path.join(FIXTURES, "early-variable-grid.ink");
+const FINITE_LOOP = path.join(FIXTURES, "finite-counter-loop.ink");
+const GATED_ENDING = path.join(FIXTURES, "gated-ending.ink");
 
 const EMPTY_TRUNCATION = {
   maxDepth: false,
@@ -69,6 +79,59 @@ test("benchmark summary separates useful outcomes from terminal-state multiplici
   assert.strictEqual(summary.stateSpace.terminalVariableStates, 2);
   assert.deepStrictEqual(summary.findings.visibleEndings, ["Same authored outcome."]);
   assert.deepStrictEqual(summary.findings.visitedKnots, ["ending"]);
+  assert.strictEqual(summary.findings.terminalStates.length, 2);
+  assert.deepStrictEqual(summary.findings.assertionViolations, []);
+});
+
+test("promotion manifest declares twenty consent-safe structural cases", () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "benchmarks", "promotion-manifest.json"), "utf8"));
+  validatePromotionManifest(manifest);
+  assert.strictEqual(manifest.cases.length, 20);
+  assert.ok(manifest.cases.filter((entry) => entry.ci).length >= 8);
+  assert.ok(manifest.cases.some((entry) => entry.family === "host-externals"));
+  assert.ok(manifest.cases.some((entry) => entry.family === "random-and-turn-state"));
+  assert.ok(manifest.cases.some((entry) => entry.assertions?.length));
+});
+
+test("promotion comparison keeps critical losses separate and timing observational", () => {
+  const report = shadowReport(100);
+  const baselineSummary = summarizeSearchResult("fixed-portfolio", {
+    ...report,
+    runtimeErrors: [{
+      message: "baseline-only failure",
+      path: [],
+      choiceIndices: [],
+      foundBy: "fixture",
+      firstDiscoveredAtState: 1,
+      sourceLocation: { file: "story.ink", line: 3, approximate: false },
+    }],
+  });
+  const candidateSummary = summarizeSearchResult("policy-v2-replay", report);
+  const pair = comparePromotionPair({
+    caseId: "critical",
+    family: "sparse-runtime-failure",
+    source: { name: "fixture", license: "MIT", consent: "repository fixture" },
+    budget: 100,
+    depth: 30,
+    seed: 7,
+    baseline: { elapsedMs: 12, peakRssBytes: 1000, summary: baselineSummary },
+    candidate: { elapsedMs: 15, peakRssBytes: 1200, summary: candidateSummary },
+  });
+  assert.strictEqual(pair.comparison.regressionRisk, "critical");
+  assert.strictEqual(pair.comparison.baselineOnly.runtimeErrors.length, 1);
+
+  const promotion = {
+    schemaVersion: 1,
+    generatedAt: "unstable",
+    candidate: "policy-v2-replay",
+    baseline: "fixed-portfolio",
+    caveat: "bounded",
+    pairs: [pair],
+    families: summarizePromotionFamilies([pair]),
+  };
+  const deterministic = JSON.stringify(deterministicPromotionView(promotion));
+  assert.doesNotMatch(deterministic, /elapsedMs|peakRssBytes|generatedAt/);
+  assert.match(renderPromotionMarkdown(promotion), /Worst-family view/);
 });
 
 test("variable vocabulary isolates rare causal changes without key-order noise", () => {
@@ -88,7 +151,7 @@ test("variable vocabulary isolates rare causal changes without key-order noise",
 });
 
 test("all adversarial search fixtures compile", async () => {
-  for (const fixture of [LOCK, PLATEAU, STORYLETS, EARLY_GRID]) {
+  for (const fixture of [LOCK, PLATEAU, STORYLETS, EARLY_GRID, FINITE_LOOP, GATED_ENDING]) {
     const compiled = await compile(fixture);
     assert.strictEqual(compiled.success, true, path.basename(fixture));
   }
