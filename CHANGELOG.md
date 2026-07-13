@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Replace shadow policy v1's absolute 1,000-state recency grace with deterministic scale-normalized renewal (#113). Policy v2 measures marginal yield against recent grant/consumption windows, gives signals a one-to-two-window horizon, requires a three-window warm-up, bounds the experiment slice, and applies replay overlays only for renewed critical evidence or explicit goal progress. Early-choice 100/500/2,000 pairs now match the fixed portfolio; 100K/1M/5M high-water pairs remain neutral at 45 endings and 22 knots; small combination-lock exhaustion proof is preserved. Production allocation remains unchanged pending #56.
+
 - Give research policy replay auditable cumulative integer probe floors (#106). Fractional promises pool across windows, whole states rotate to the largest service debt, completed passes release future service, and every replay round records planned grants plus cumulative promise/grant/debt accounts. Tiny-window and exact 5M accounting tests pass; production allocation remains unchanged because the early-choice regression (#113) still blocks promotion.
 
 - Add portfolio-marginal value curves for #105 while retaining pass-local diagnostic curves. Runtime/assertion credit is identity-based, approximate runtime fallback lines are normalized for allocation credit, and exact endings/outcomes/knots/goals/stages are paid once in actual scheduler order. Policy replay now reads marginal evidence, removing its matched 50-state sparse-error and late-ending regressions; early-choice authored-coverage losses remain and continue to block promotion.

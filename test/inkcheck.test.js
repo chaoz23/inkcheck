@@ -1705,6 +1705,9 @@ test("shadow decision policy explains every action without changing execution", 
   assert.ok(Math.abs(decision.allocation.reduce((sum, entry) => sum + entry.suggestedShare, 0) - 1) < 1e-9);
   assert.ok(decision.allocation.every((entry) => entry.suggestedShare >= entry.probeFloor));
   assert.ok(decision.allocation.every((entry) => entry.recentValue && !('score' in entry)));
+  assert.ok(decision.allocation.every((entry) => entry.marginalYieldPerThousandStates));
+  assert.ok(decision.allocation.every((entry) => entry.recency.grantScaleStates >= 1));
+  assert.ok(decision.allocation.every((entry) => entry.recency.recencyWindowStates <= entry.recency.grantScaleStates * 2));
 
   const exhaustive = recommendShadowDecision({ ...actual, exhaustive: true });
   assert.strictEqual(exhaustive.action, "stop_exhaustive");
@@ -1770,7 +1773,7 @@ test("shadow policy distinguishes reallocation from a knee candidate", async () 
     discoveryEvents: 8,
     firstDiscoveryAtState: 1,
     lastDiscoveryAtState: 1_900,
-    statesSinceLastDiscovery: 100,
+    statesSinceLastDiscovery: 0,
     latestDiscoveryGap: 50,
     longestObservedDiscoveryGap: 500,
   };
@@ -1780,7 +1783,7 @@ test("shadow policy distinguishes reallocation from a knee candidate", async () 
     discoverySummary: baseSummary,
     passes: actual.passes.map((pass, index) => ({
       ...pass,
-      discoveryCurve: [index === 0 ? productiveSample : quietSample],
+      discoveryCurve: [{ ...(index === 0 ? productiveSample : quietSample), state: pass.statesExplored }],
       discoverySummary: baseSummary,
       portfolioMarginalCurve: undefined,
       portfolioMarginalSummary: undefined,
@@ -1824,7 +1827,7 @@ test("portfolio-marginal policy credit removes duplicate sparse-error regression
   assert.strictEqual(comparison.baselineOnly.runtimeErrors.count, 0);
   assert.deepStrictEqual(candidate, repeated);
   assert.ok(candidate.policyReplay.length > 0);
-  assert.ok(candidate.policyReplay.some((round) => round.allocationApplied));
+  assert.ok(candidate.policyReplay.every((round) => round.allocationGate));
   assert.ok(candidate.policyReplay.every((round) =>
     Math.abs(round.nextRoundWeights.reduce((sum, entry) => sum + entry.share, 0) - 1) < 1e-9
   ));
@@ -1849,6 +1852,28 @@ test("portfolio-marginal policy credit removes duplicate sparse-error regression
   });
   assert.strictEqual(recovered.runtimeErrors.length, 1);
   assert.strictEqual(recovered.exhaustive, true);
+});
+
+test("scale-normalized replay preserves early-choice breadth and small-story proof", async () => {
+  const grid = await compile(EARLY_CHOICE_GRID);
+  const gridKnots = scanKnots(EARLY_CHOICE_GRID);
+  for (const maxStates of [100, 500, 2_000]) {
+    const options = { maxStates, maxDepth: 100, seed: 7 };
+    const baseline = explorePortfolio(grid.storyJson, gridKnots, [], options);
+    const candidate = explorePortfolioShadowReplay(grid.storyJson, gridKnots, [], options);
+    assert.strictEqual(candidate.endingsFound.length, baseline.endingsFound.length);
+    assert.strictEqual(candidate.visitedKnots.length, baseline.visitedKnots.length);
+    assert.ok(candidate.policyReplay.every((round) => round.allocationGate));
+  }
+
+  const lockFile = path.join(SEARCH_FIXTURES, "combination-lock.ink");
+  const lock = await compile(lockFile);
+  const options = { maxStates: 100, maxDepth: 100, seed: 7 };
+  const baseline = explorePortfolio(lock.storyJson, scanKnots(lockFile), [], options);
+  const candidate = explorePortfolioShadowReplay(lock.storyJson, scanKnots(lockFile), [], options);
+  assert.strictEqual(baseline.exhaustive, true);
+  assert.strictEqual(candidate.exhaustive, true);
+  assert.strictEqual(candidate.endingsFound.length, baseline.endingsFound.length);
 });
 
 test("approximate runtime locations do not create duplicate marginal policy credit", async () => {

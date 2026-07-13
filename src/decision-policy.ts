@@ -1,6 +1,6 @@
 import type { DiscoveryCurveSample, ExploreResult, PassTelemetry } from "./explore";
 
-export const SHADOW_POLICY_VERSION = 1;
+export const SHADOW_POLICY_VERSION = 2;
 export const SHADOW_PROBE_FLOOR = 0.08;
 
 export type ShadowAction =
@@ -26,6 +26,16 @@ export interface ShadowAllocation {
   suggestedShare: number;
   probeFloor: number;
   recentValue: ValueTiers;
+  marginalYieldPerThousandStates: ValueTiers;
+  recency: {
+    statesSinceMarginalValue: number | null;
+    windowsSinceMarginalValue: number | null;
+    observedRecoveryEnvelopeStates: number;
+    grantScaleStates: number;
+    consumptionScaleStates: number;
+    recencyWindowStates: number;
+    renewal: "renewed" | "decayed" | "no_value_observed";
+  };
   reason: string;
 }
 
@@ -56,23 +66,76 @@ function zeroValue(): ValueTiers {
   return { critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: 0, stateNovelty: 0 };
 }
 
-function isBeyondObservedRecovery(pass: PassTelemetry): boolean {
-  const summary = pass.portfolioMarginalSummary ?? pass.discoverySummary;
-  const dry = summary.statesSinceLastDiscovery;
-  const longest = summary.longestObservedDiscoveryGap;
-  return dry !== null && dry > Math.max(1_000, (longest ?? 0) * 2);
+interface PassRecency {
+  value: ValueTiers;
+  rate: ValueTiers;
+  statesSinceMarginalValue: number | null;
+  windowsSinceMarginalValue: number | null;
+  observedRecoveryEnvelopeStates: number;
+  grantScaleStates: number;
+  consumptionScaleStates: number;
+  recencyWindowStates: number;
+  renewal: "renewed" | "decayed" | "no_value_observed";
 }
 
-function recentValue(pass: PassTelemetry): ValueTiers {
-  if (isBeyondObservedRecovery(pass)) return zeroValue();
-  const samples = (pass.portfolioMarginalCurve ?? pass.discoveryCurve).slice(-3);
-  return samples.reduce<ValueTiers>((value, sample) => ({
-    critical: value.critical + sample.newRuntimeErrors + sample.newAssertionViolations,
-    intent: value.intent + sample.newGoalsReached + sample.newStagesReached,
-    authoredCoverage: value.authoredCoverage + sample.newKnots + sample.newVisibleOutcomes,
-    terminalVariants: value.terminalVariants + sample.newEndings,
-    stateNovelty: value.stateNovelty + sample.newUniqueStates,
+function passRecency(report: ExploreResult, pass: PassTelemetry): PassRecency {
+  const summary = pass.portfolioMarginalSummary ?? pass.discoverySummary;
+  const entries = (report.schedule ?? [])
+    .flatMap((round) => round.entries)
+    .filter((entry) => entry.pass === pass.pass && entry.granted > 0)
+    .slice(-3);
+  const observedWindows = Math.max(1, entries.length);
+  const grantScaleStates = Math.max(1, Math.ceil(
+    entries.length
+      ? entries.reduce((sum, entry) => sum + entry.granted, 0) / observedWindows
+      : pass.granted
+  ));
+  const consumptionScaleStates = Math.max(1, Math.ceil(
+    entries.length
+      ? entries.reduce((sum, entry) => sum + entry.consumed, 0) / observedWindows
+      : pass.statesExplored
+  ));
+  const observedRecoveryEnvelopeStates = summary.discoveryEvents >= 2
+    ? Math.min(grantScaleStates, summary.longestObservedDiscoveryGap ?? 0)
+    : 0;
+  const recencyWindowStates = grantScaleStates + observedRecoveryEnvelopeStates;
+  const dry = summary.statesSinceLastDiscovery;
+  const windowsSinceMarginalValue = dry === null ? null : dry / grantScaleStates;
+  const renewal = summary.discoveryEvents === 0
+    ? "no_value_observed" as const
+    : dry !== null && dry <= recencyWindowStates
+      ? "renewed" as const
+      : "decayed" as const;
+  const samples = renewal === "renewed"
+    ? (pass.portfolioMarginalCurve ?? pass.discoveryCurve)
+      .filter((sample) => pass.statesExplored - sample.state <= recencyWindowStates)
+    : [];
+  const value = samples.reduce<ValueTiers>((current, sample) => ({
+    critical: current.critical + sample.newRuntimeErrors + sample.newAssertionViolations,
+    intent: current.intent + sample.newGoalsReached + sample.newStagesReached,
+    authoredCoverage: current.authoredCoverage + sample.newKnots + sample.newVisibleOutcomes,
+    terminalVariants: current.terminalVariants + sample.newEndings,
+    stateNovelty: current.stateNovelty + sample.newUniqueStates,
   }), zeroValue());
+  const rateScale = 1_000 / consumptionScaleStates;
+  const rate: ValueTiers = {
+    critical: value.critical * rateScale,
+    intent: value.intent * rateScale,
+    authoredCoverage: value.authoredCoverage * rateScale,
+    terminalVariants: value.terminalVariants * rateScale,
+    stateNovelty: value.stateNovelty * rateScale,
+  };
+  return {
+    value,
+    rate,
+    statesSinceMarginalValue: dry,
+    windowsSinceMarginalValue,
+    observedRecoveryEnvelopeStates,
+    grantScaleStates,
+    consumptionScaleStates,
+    recencyWindowStates,
+    renewal,
+  };
 }
 
 function compareValue(a: ValueTiers, b: ValueTiers): number {
@@ -96,30 +159,48 @@ function bindingConstraint(report: ExploreResult): ShadowDecision["bindingConstr
   return null;
 }
 
-function suggestedAllocation(passes: PassTelemetry[]): ShadowAllocation[] {
+function suggestedAllocation(report: ExploreResult, passes: PassTelemetry[]): ShadowAllocation[] {
   if (!passes.length) return [];
-  const values = passes.map(recentValue);
-  const ranked = [...values].sort(compareValue).reverse();
+  const recencies = passes.map((pass) => passRecency(report, pass));
+  const values = recencies.map((recency) => recency.value);
+  const rates = recencies.map((recency) => recency.rate);
+  const ranked = [...rates].sort(compareValue).reverse();
   const best = ranked[0];
   const productive = values.map(hasValue);
   const floor = Math.min(SHADOW_PROBE_FLOOR, 1 / passes.length);
   const floorTotal = floor * passes.length;
   const discretionary = Math.max(0, 1 - floorTotal);
-  const winners = Math.max(1, values.filter((value) => compareValue(value, best) === 0).length);
+  // A renewed signal earns a bounded experiment, not ownership of the whole
+  // discretionary pool. Two thirds preserve broad portfolio service while
+  // one third tests the highest current marginal-yield tier.
+  const exploitation = discretionary / 3;
+  const broadService = discretionary - exploitation;
+  const winners = Math.max(1, rates.filter((rate) => compareValue(rate, best) === 0).length);
   const totalGranted = passes.reduce((total, pass) => total + pass.granted, 0);
   return passes.map((pass, index) => {
-    const winner = compareValue(values[index], best) === 0;
+    const winner = compareValue(rates[index], best) === 0;
+    const recency = recencies[index];
     return {
       pass: pass.pass,
       currentShare: totalGranted > 0 ? pass.granted / totalGranted : 1 / passes.length,
-      suggestedShare: floor + (winner ? discretionary / winners : 0),
+      suggestedShare: floor + broadService / passes.length + (winner ? exploitation / winners : 0),
       probeFloor: floor,
       recentValue: values[index],
+      marginalYieldPerThousandStates: rates[index],
+      recency: {
+        statesSinceMarginalValue: recency.statesSinceMarginalValue,
+        windowsSinceMarginalValue: recency.windowsSinceMarginalValue,
+        observedRecoveryEnvelopeStates: recency.observedRecoveryEnvelopeStates,
+        grantScaleStates: recency.grantScaleStates,
+        consumptionScaleStates: recency.consumptionScaleStates,
+        recencyWindowStates: recency.recencyWindowStates,
+        renewal: recency.renewal,
+      },
       reason: winner
-        ? "highest recent lexicographic value tier; receives discretionary shadow allocation"
+        ? `highest renewed marginal yield tier within ${recency.recencyWindowStates} states (${recency.windowsSinceMarginalValue?.toFixed(2) ?? "no"} windows since value); receives a bounded one-third exploitation slice plus broad service`
         : productive[index]
-          ? "recent findings remain, but a complementary pass ranks higher; protected probe floor retained"
-          : "no retained recent value event; protected probe floor retained for possible late recovery",
+          ? `marginal value renewed within a ${recency.recencyWindowStates}-state window, but a complementary pass has higher yield; protected probe floor retained`
+          : `${recency.renewal === "decayed" ? "marginal value decayed without renewal" : "no marginal value observed"}; protected probe floor retained for possible late recovery`,
     };
   });
 }
@@ -127,7 +208,7 @@ function suggestedAllocation(passes: PassTelemetry[]): ShadowAllocation[] {
 export function recommendShadowDecision(report: ExploreResult): ShadowDecision {
   const summary = report.discoverySummary;
   const passes = report.passes ?? [];
-  const allocation = suggestedAllocation(passes);
+  const allocation = suggestedAllocation(report, passes);
   const compacted = passes.some((pass) => {
     const curve = pass.portfolioMarginalCurve ?? pass.discoveryCurve;
     const passSummary = pass.portfolioMarginalSummary ?? pass.discoverySummary;
