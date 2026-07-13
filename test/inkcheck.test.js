@@ -75,6 +75,7 @@ const POLICY_LATE_ERROR = path.join(__dirname, "fixtures", "policy-late-error.in
 const STAGED_DISJOINT = path.join(__dirname, "fixtures", "staged-disjoint.ink");
 const NO_DISCOVERY_BEFORE_DEPTH = path.join(__dirname, "fixtures", "no-discovery-before-depth.ink");
 const LATE_RECOVERY = path.join(__dirname, "fixtures", "late-recovery.ink");
+const POLICY_RENEWED_GOALS = path.join(SEARCH_FIXTURES, "policy-renewed-goals.ink");
 
 test("cumulative floors rotate exact service through tiny windows", () => {
   const allocator = new CumulativeFloorAllocator(["a", "b", "c", "d", "e"]);
@@ -1831,7 +1832,7 @@ test("portfolio-marginal policy credit removes duplicate sparse-error regression
   assert.ok(candidate.policyReplay.every((round) =>
     Math.abs(round.nextRoundWeights.reduce((sum, entry) => sum + entry.share, 0) - 1) < 1e-9
   ));
-  assert.ok(candidate.policyReplay.every((round) => {
+  assert.ok(candidate.policyReplay.filter((round) => round.floorService).every((round) => {
     const planned = new Map(round.floorService.accounts.map((account, i) => [account.pass, round.floorService.grants[i]]));
     return candidate.schedule[round.round - 1].entries.every((entry) => planned.get(entry.pass) === entry.granted)
       && round.floorService.accounts.every((account) => account.debt < 1);
@@ -1874,6 +1875,56 @@ test("scale-normalized replay preserves early-choice breadth and small-story pro
   assert.strictEqual(baseline.exhaustive, true);
   assert.strictEqual(candidate.exhaustive, true);
   assert.strictEqual(candidate.endingsFound.length, baseline.endingsFound.length);
+});
+
+test("gated-off policy replay preserves deep-suffix baseline coverage", async () => {
+  const compiled = await compile(DEEP_CHAIN);
+  const knots = scanKnots(DEEP_CHAIN);
+  for (const seed of [1, 7]) {
+    const options = { maxStates: 100, maxDepth: 300, seed };
+    const baseline = explorePortfolio(compiled.storyJson, knots, [], options);
+    const candidate = explorePortfolioShadowReplay(compiled.storyJson, knots, [], options);
+
+    assert.deepStrictEqual(candidate.visitedKnots, baseline.visitedKnots);
+    assert.deepStrictEqual(candidate.schedule, baseline.schedule);
+    assert.ok(candidate.policyReplay.every((round) => round.allocationApplied === false));
+    assert.ok(candidate.policyReplay.every((round) => round.floorService === undefined));
+  }
+});
+
+test("approved policy windows retain cumulative integer floor service", async () => {
+  const compiled = await compile(POLICY_RENEWED_GOALS);
+  const knots = scanKnots(POLICY_RENEWED_GOALS);
+  const goals = [{
+    id: "steady_progress",
+    stages: [2, 7, 12, 17, 22].map((minimum) => ({
+      id: `progress_${minimum}`,
+      condition: {
+        left: { variable: "progress" },
+        operator: ">=",
+        right: { literal: minimum },
+      },
+    })),
+  }];
+  const candidate = explorePortfolioShadowReplay(compiled.storyJson, knots, [], {
+    maxStates: 100,
+    maxDepth: 100,
+    seed: 7,
+    goals,
+  });
+
+  assert.ok(candidate.policyReplay.some((round) => round.allocationApplied));
+  const controlled = candidate.policyReplay.filter((round) => round.floorService);
+  assert.ok(controlled.length > 0);
+  assert.ok(controlled.every((round) => {
+    const planned = new Map(round.floorService.accounts.map((account, i) => [
+      account.pass,
+      round.floorService.grants[i],
+    ]));
+    return candidate.schedule[round.round - 1].entries.every((entry) =>
+      planned.get(entry.pass) === entry.granted
+    ) && round.floorService.accounts.every((account) => account.debt < 1);
+  }));
 });
 
 test("approximate runtime locations do not create duplicate marginal policy credit", async () => {
