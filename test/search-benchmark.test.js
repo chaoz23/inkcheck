@@ -1,10 +1,13 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 
 const { compile, scanKnots } = require("../dist/inklecate");
-const { explore, explorePortfolio, exploreRandom } = require("../dist/explore");
+const { explore, explorePortfolio, exploreRandom, exploreShared } = require("../dist/explore");
+const { createResourceGuards } = require("../dist/resource-guards");
 const {
   runSearchBenchmark,
   summarizeSearchResult,
@@ -35,6 +38,7 @@ const STORYLETS = path.join(FIXTURES, "storylet-machine.ink");
 const EARLY_GRID = path.join(FIXTURES, "early-variable-grid.ink");
 const FINITE_LOOP = path.join(FIXTURES, "finite-counter-loop.ink");
 const GATED_ENDING = path.join(FIXTURES, "gated-ending.ink");
+const PROMOTION_CLI = path.join(__dirname, "..", "dist", "promotion-benchmark-cli.js");
 
 const EMPTY_TRUNCATION = {
   maxDepth: false,
@@ -132,8 +136,20 @@ test("promotion comparison keeps critical losses separate and timing observation
     depth: 30,
     seed: 7,
     storySeed: 1,
-    baseline: { elapsedMs: 12, peakRssBytes: 1000, summary: baselineSummary },
-    candidate: { elapsedMs: 15, peakRssBytes: 1200, summary: candidateSummary },
+    baseline: {
+      elapsedMs: 12,
+      peakRssBytes: 1000,
+      resourceLimits: { memoryCapBytes: 1024, timeLimitMs: null },
+      workerExit: "completed",
+      summary: baselineSummary,
+    },
+    candidate: {
+      elapsedMs: 15,
+      peakRssBytes: 1200,
+      resourceLimits: { memoryCapBytes: 2048, timeLimitMs: 60_000 },
+      workerExit: "completed",
+      summary: candidateSummary,
+    },
   });
   assert.strictEqual(pair.comparison.regressionRisk, "critical");
   assert.strictEqual(pair.comparison.baselineOnly.runtimeErrors.length, 1);
@@ -166,6 +182,73 @@ test("promotion comparison keeps critical losses separate and timing observation
   assert.ok(markdown.indexOf("Resource-unavailable cells") < markdown.indexOf("Worst-project view"));
   assert.ok(markdown.indexOf("Worst-project view") < markdown.indexOf("Matched runs"));
   assert.match(deterministic, /worker-timeout/);
+  assert.match(deterministic, /memoryCapBytes/);
+});
+
+test("resource guards expose explicit caps without choosing an efficiency stop", () => {
+  const guards = createResourceGuards({ maxMemoryMb: 512, maxTimeMs: 10_000, startedAtMs: 1_000 });
+  assert.strictEqual(guards.memoryCapBytes, 512 * 1024 * 1024);
+  assert.strictEqual(guards.deadlineMs, 11_000);
+  assert.strictEqual(typeof guards.memoryGuard, "function");
+  assert.strictEqual(typeof guards.timeGuard, "function");
+});
+
+test("shared benchmark summaries retain serialized-frontier high-water evidence", async () => {
+  const compiled = await compile(EARLY_GRID);
+  const report = exploreShared(compiled.storyJson, scanKnots(EARLY_GRID), [], { maxStates: 100 });
+  const summary = summarizeSearchResult("shared", report);
+  assert.ok(summary.stateSpace.peakPendingStates >= 1);
+  assert.ok(summary.stateSpace.peakPendingBytes >= 1);
+  assert.ok(summary.passes.some((pass) => pass.peakPendingBytes >= 1));
+});
+
+test("promotion workers return guarded partial comparisons instead of crashing", () => {
+  const proc = spawnSync(process.execPath, [
+    PROMOTION_CLI,
+    path.join(__dirname, "..", "benchmarks", "promotion-manifest.json"),
+    "--case", "deep-chain",
+    "--budget", "100",
+    "--worker-max-memory-mb", "1",
+    "--worker-timeout-ms", "30000",
+    "--deterministic",
+  ], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  assert.strictEqual(proc.status, 0, proc.stderr);
+  const report = JSON.parse(proc.stdout);
+  assert.ok(report.pairs.length > 0);
+  for (const pair of report.pairs) {
+    for (const side of ["baseline", "candidate"]) {
+      assert.strictEqual(pair.resources[side].workerExit, "completed");
+      assert.strictEqual(pair.resources[side].resourceLimits.memoryCapBytes, 1024 * 1024);
+      assert.strictEqual(pair.resources[side].resourceLimits.timeLimitMs, 27_000);
+      assert.strictEqual(pair[side].result.truncatedBy.memory, true);
+      assert.strictEqual(pair[side].result.truncatedBy.maxStates, false);
+    }
+  }
+  assert.strictEqual(report.unavailable, undefined);
+});
+
+test("pre-snapshot worker requests remain compatible without leaking undefined.tmp", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-old-worker-"));
+  try {
+    const request = path.join(tmp, "request.json");
+    fs.writeFileSync(request, JSON.stringify({
+      story: EARLY_GRID,
+      budget: 100,
+      depth: 30,
+      seed: 1,
+      storySeed: 1,
+      candidate: false,
+    }));
+    const proc = spawnSync(process.execPath, [PROMOTION_CLI, "--worker", request], {
+      cwd: tmp,
+      encoding: "utf8",
+    });
+    assert.strictEqual(proc.status, 0, proc.stderr);
+    assert.strictEqual(JSON.parse(proc.stdout).workerExit, "completed");
+    assert.strictEqual(fs.existsSync(path.join(tmp, "undefined.tmp")), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("variable vocabulary isolates rare causal changes without key-order noise", () => {

@@ -2041,7 +2041,7 @@ test("--max-memory produces a partial report instead of crashing", () => {
 test("time guard stops each engine early and reports truncatedBy.time", async () => {
   const compiled = await compile(EARLY_CHOICE_GRID);
   const knots = scanKnots(EARLY_CHOICE_GRID);
-  // A predicate that trips after a couple of checks (~1,024 states) stands in
+  // A predicate that trips after a couple of checks (~128 states) stands in
   // for a real deadline — deterministic, instant, and early enough that the
   // beam does not exhaust the small fixture before the guard fires.
   const mkGuard = () => {
@@ -2065,14 +2065,19 @@ test("portfolio time stop keeps partial results, blames only time, and advises i
   const compiled = await compile(EARLY_CHOICE_GRID);
   const knots = scanKnots(EARLY_CHOICE_GRID);
   let n = 0;
+  const snapshots = [];
   const report = explorePortfolio(compiled.storyJson, knots, [], {
     maxStates: 1_000_000,
     timeGuard: () => n++ < 14,
+    onSnapshot: (snapshot) => snapshots.push(snapshot),
   });
   assert.strictEqual(report.truncatedBy.time, true);
   assert.strictEqual(report.truncatedBy.maxStates, false, "time, not budget, was the cause");
   assert.ok(report.statesExplored < 50_000);
   assert.ok(report.endingsFound.length > 0, "partial results retained");
+  assert.strictEqual(report.schedule[0].entries.length, 1, "remaining explorers must not run after the guard binds");
+  assert.strictEqual(snapshots.length, 1);
+  assert.strictEqual(snapshots[0].truncatedBy.time, true, "the persisted scheduler-window snapshot is already usable");
   const advice = recommendNextRun(report);
   assert.strictEqual(advice.recommendation, "investigate");
   assert.match(advice.rationale, /time/);

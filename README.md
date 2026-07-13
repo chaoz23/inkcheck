@@ -179,8 +179,11 @@ Two practical rules of thumb from that:
 
 - **Budget heap, not just states.** As a worst-case estimate (no state deduplication), plan for roughly **2 GB of heap per 10M distinct states**. Stories with loops deduplicate heavily and use far less; a low-dedup story uses close to the worst case. So a 10M-state run's worst case (~2 GB) sits near Node's default heap limit: a loop-heavy story stays well under it, but a large low-dedup one can reach the memory guard before finishing even at the default budget. A 100M-state run exceeds a normal default heap and will stop at the guard unless you raise `--max-old-space-size`. Either way it stops cleanly with a partial report — the guard is what makes the high ceiling safe to point at, not a promise the run will complete.
 - **The memory guard is the real limiter, not the ceiling.** A run stops cleanly at 85% of the V8 heap (or your `--max-memory`) and returns a *partial* report with `truncatedBy.memory` rather than crashing. So setting `--max-states 100000000` is not reckless — on a normal machine the guard, not the ceiling, decides where it stops. To go further, give Node more heap: `NODE_OPTIONS=--max-old-space-size=8192 inkcheck big.ink --max-states 100000000`.
+- **Safety limits are not efficiency decisions.** State, time, and memory caps answer “how far may this job go?” They do not claim that using the whole machine is valuable or that an apparent plateau is complete. The 0.6 research path measures portfolio-new findings over time, throughput, recovery gaps, peak RSS, and retained-frontier bytes so future quick/balanced/deep policies can choose useful result windows while still reserving long-tail probes. Fixed limits remain available for CI and audit.
 
 Levers, in order of impact, when a story is too big to finish: raise `--max-old-space-size` (more headroom), pass `--no-min-repro` (drops the super-linear BFS frontier), lower `--max-states` (bounds both time and memory), or split the story and check parts separately. The `nextRun` verdict names the binding limit after each run so you know which lever applies.
+
+The measured [resource-safe deep-run evaluation](docs/resource-guard-evaluation.md) records how the guards behave on authored 5M-ceiling jobs, including shared-frontier pending-state and serialized-byte high-water evidence.
 
 ## MCP server
 
