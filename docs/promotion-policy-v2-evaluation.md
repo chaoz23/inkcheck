@@ -56,3 +56,5 @@ The complete 240-pair matrix was rerun after that correction. All 240 pairs are 
 Do not activate policy v2. #118 removes the deep-suffix regression, #117 removes the story-randomness confounder, and the fully deterministic corrected matrix shows parity rather than candidate evidence gain. The fixed production portfolio remains the default while #119 expands the corpus to consent-safe medium/large stories and future policy work demonstrates portfolio-new value rather than merely parity.
 
 The executable protocol and output modes are documented in the [promotion benchmark](promotion-benchmark.md). Raw timing-bearing output is intentionally not checked in because it is machine-specific; the manifest and deterministic comparison mode make the experiment reproducible.
+
+The later [authored-project evaluation](authored-project-promotion-evaluation.md) reaches the same policy decision from a separate pinned public tier. Completed cells are evidence-identical and policy v2 gains nothing; several practical/high-water cells are resource-unavailable under their declared worker envelopes. Synthetic parity plus limited authored parity is not a promotion case.

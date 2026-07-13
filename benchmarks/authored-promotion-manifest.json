@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "tier": "authored-project",
+  "cases": [
+    {
+      "id": "dog-ink-adventure",
+      "family": "function-and-loop-heavy",
+      "projectSize": "small",
+      "story": "authored/dog-ink-adventure/root.ink",
+      "source": {
+        "name": "Dog Ink Adventure",
+        "license": "MIT",
+        "consent": "The author published the complete source under the repository MIT license.",
+        "repository": "https://github.com/earok/dog_ink_adventure",
+        "commit": "402b47c004c40c599877ae9dc75cc0aad7db887c",
+        "licenseFile": "authored/dog-ink-adventure/LICENSE",
+        "redistributionBasis": "Vendored with its MIT license and copyright notice.",
+        "entrypoint": "source/root.ink",
+        "requiredExternals": [],
+        "randomness": "none",
+        "compileSetup": "No setup; the vendored entrypoint and seven INCLUDE files compile directly.",
+        "structuralMeasures": {
+          "authoredLines": 456,
+          "authoredBytes": 11657,
+          "compiledWords": 148,
+          "knots": 36,
+          "stitches": 0,
+          "functions": 26,
+          "choices": 15,
+          "gathers": 3,
+          "diverts": 148
+        }
+      },
+      "budgets": [1000000, 5000000],
+      "depths": [30],
+      "seeds": [1],
+      "storySeed": 1,
+      "determinismBudgets": [1000000]
+    },
+    {
+      "id": "the-intercept",
+      "family": "choice-dense-authored-story",
+      "projectSize": "medium",
+      "story": "authored/the-intercept/TheIntercept.ink",
+      "source": {
+        "name": "The Intercept",
+        "license": "MIT",
+        "consent": "inkle explicitly releases The Intercept under MIT in the source repository README.",
+        "repository": "https://github.com/inkle/the-intercept",
+        "commit": "2a816b56e61ce4bf02bec1c638074645bdd871e3",
+        "licenseFile": "authored/the-intercept/LICENSE-AND-PROVENANCE.md",
+        "redistributionBasis": "Vendored with the README's complete MIT grant and copyright notice.",
+        "entrypoint": "Assets/Ink/TheIntercept.ink",
+        "requiredExternals": [],
+        "randomness": "none",
+        "compileSetup": "No setup; the single source file compiles directly.",
+        "structuralMeasures": {
+          "authoredLines": 1686,
+          "authoredBytes": 100539,
+          "compiledWords": 14728,
+          "knots": 32,
+          "stitches": 30,
+          "functions": 2,
+          "choices": 343,
+          "gathers": 95,
+          "diverts": 230
+        }
+      },
+      "budgets": [1000000, 5000000],
+      "depths": [30],
+      "seeds": [1],
+      "storySeed": 1,
+      "determinismBudgets": [1000000]
+    },
+    {
+      "id": "heresy2",
+      "family": "stitch-heavy-random-authored-story",
+      "projectSize": "large",
+      "story": "authored/heresy2/heresy2.ink",
+      "source": {
+        "name": "Heresy II",
+        "license": "CC-BY-4.0",
+        "consent": "The author published the complete game assets under Creative Commons Attribution 4.0.",
+        "repository": "https://github.com/randall-frank/heresy2-assets",
+        "commit": "37b8a7804217bb40a9f69f6fd9c173f2017d550e",
+        "licenseFile": "authored/heresy2/LICENSE",
+        "redistributionBasis": "Vendored with attribution and the repository CC-BY-4.0 license.",
+        "entrypoint": "src/heresy2.ink",
+        "requiredExternals": [],
+        "randomness": "seeded-runtime",
+        "compileSetup": "item_globals.ink is the pinned repository build output generated from src/items.toml; all other vendored Ink files are unchanged.",
+        "structuralMeasures": {
+          "authoredLines": 2675,
+          "authoredBytes": 172001,
+          "compiledWords": 22630,
+          "knots": 38,
+          "stitches": 189,
+          "functions": 8,
+          "choices": 393,
+          "gathers": 0,
+          "diverts": 541
+        }
+      },
+      "budgets": [1000000, 5000000],
+      "depths": [30],
+      "seeds": [1],
+      "storySeed": 1,
+      "determinismBudgets": [1000000]
+    }
+  ]
+}

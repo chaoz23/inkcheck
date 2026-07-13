@@ -24,6 +24,7 @@ const {
   deterministicPromotionView,
   renderPromotionMarkdown,
   summarizePromotionFamilies,
+  summarizePromotionProjects,
   validatePromotionManifest,
 } = require("../dist/promotion-benchmark");
 
@@ -95,6 +96,20 @@ test("promotion manifest declares twenty consent-safe structural cases", () => {
   assert.ok(manifest.cases.some((entry) => entry.assertions?.length));
 });
 
+test("authored promotion manifest pins consent-safe small, medium, and large projects", () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "benchmarks", "authored-promotion-manifest.json"), "utf8"));
+  validatePromotionManifest(manifest);
+  assert.strictEqual(manifest.tier, "authored-project");
+  assert.strictEqual(manifest.cases.length, 3);
+  assert.deepStrictEqual(new Set(manifest.cases.map((entry) => entry.projectSize)), new Set(["small", "medium", "large"]));
+  for (const entry of manifest.cases) {
+    assert.ok(entry.budgets.includes(5_000_000));
+    assert.match(entry.source.commit, /^[0-9a-f]{40}$/);
+    assert.ok(fs.existsSync(path.join(__dirname, "..", "benchmarks", entry.story)));
+    assert.ok(fs.existsSync(path.join(__dirname, "..", "benchmarks", entry.source.licenseFile)));
+  }
+});
+
 test("promotion comparison keeps critical losses separate and timing observational", () => {
   const report = shadowReport(100);
   const baselineSummary = summarizeSearchResult("fixed-portfolio", {
@@ -131,10 +146,26 @@ test("promotion comparison keeps critical losses separate and timing observation
     caveat: "bounded",
     pairs: [pair],
     families: summarizePromotionFamilies([pair]),
+    projects: summarizePromotionProjects([pair]),
+    unavailable: [{
+      caseId: "critical",
+      family: "sparse-runtime-failure",
+      budget: 5_000_000,
+      depth: 30,
+      seed: 7,
+      storySeed: 1,
+      stage: "candidate",
+      reason: "worker-timeout",
+      timeoutMs: 600_000,
+    }],
   };
   const deterministic = JSON.stringify(deterministicPromotionView(promotion));
   assert.doesNotMatch(deterministic, /elapsedMs|peakRssBytes|generatedAt/);
   assert.match(renderPromotionMarkdown(promotion), /Worst-family view/);
+  const markdown = renderPromotionMarkdown(promotion);
+  assert.ok(markdown.indexOf("Resource-unavailable cells") < markdown.indexOf("Worst-project view"));
+  assert.ok(markdown.indexOf("Worst-project view") < markdown.indexOf("Matched runs"));
+  assert.match(deterministic, /worker-timeout/);
 });
 
 test("variable vocabulary isolates rare causal changes without key-order noise", () => {
