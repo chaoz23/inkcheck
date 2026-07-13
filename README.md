@@ -60,6 +60,7 @@ ci:
   maxStates: 1000000
   goalMaxStates: 250000
   seed: 1
+  storySeed: 1
   search: portfolio
   strict: true
 assertions:
@@ -217,7 +218,7 @@ The intended loop for an agent editing a story: edit `.ink` → `compile_story` 
 ```
 inkcheck capabilities [--json]
 inkcheck inspect <story.ink> [--json]
-inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--search=portfolio|shared|shared-variable] [--auto] [--profile] [--next] [--no-min-repro] [--strict] [--progress=auto|human|ndjson|off] [--human|--json|--markdown]
+inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--story-seed N] [--search=portfolio|shared|shared-variable] [--auto] [--profile] [--next] [--no-min-repro] [--strict] [--progress=auto|human|ndjson|off] [--human|--json|--markdown]
 inkcheck mcp    # start the MCP server on stdio
 ```
 
@@ -231,7 +232,7 @@ Maintainers can compare shadow recommendations across independent budget runs wi
 
 `--max-states` is a total budget for the run, not a promise that one single DFS walk will spend all states. By default the CLI divides most of that budget across three complementary DFS views of the choice tree plus a seeded random-sampling slice, and keeps a small breadth-first slice for shorter failure and ending repro paths. Use `--no-min-repro` to spend that repro slice on the DFS portfolio instead when breadth-first shortening is less important than broader search.
 
-`--seed` (default 1) controls the random-sampling slice. The same seed always samples the same walks, so CI results stay reproducible; change the seed across scheduled runs to sample different early-choice combinations over time. Each finding's `foundBy` field in `--json` output names the pass that discovered it, e.g. `dfs:last` or `random:seed=1`.
+`--seed` (default 1) controls only Inkcheck's random-sampling search slice. `--story-seed` (default 1) independently sets Ink's initial runtime RNG state for `RANDOM()` and shuffle behavior. Keep both fixed for repeatable CI and exact witness replay; change `--seed` to sample different choice walks, or deliberately change `--story-seed` to exercise another valid story-randomness sequence. Authored `SEED_RANDOM(...)` commands still take effect and can override the initial story seed. Inkcheck records both seeds and carries `storySeed` in replay instructions, but one run does not enumerate every possible story seed. Each finding's `foundBy` field in `--json` output names the pass that discovered it, e.g. `dfs:last` or `random:seed=1`.
 
 `--search=shared` selects the experimental shared-state multi-frontier engine; `--search=portfolio` is the unchanged default. Shared mode remains deterministic for a fixed seed and still honors depth, state, memory, time, progress, and repro-shortening controls.
 
@@ -286,7 +287,7 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 ## How it works
 
 - **Compilation** uses `inklecate`, the canonical compiler — found via `$INKLECATE_PATH`, then `PATH`, then auto-downloaded from the pinned official ink 1.2.1 release into `~/.cache/inkcheck` on first run. Downloaded archives are verified against pinned SHA-256 hashes before extraction. Stories are compiled with `-c` so all knot visits are counted.
-- **Exploration** runs the compiled story in [inkjs](https://github.com/y-lohse/inkjs) (the official JS runtime port), reusing pooled story instances so the compiled JSON is parsed once per pass and states rewind via `LoadJson`. States are deduplicated by content hash. Turn and RNG state are preserved whenever the source uses those features; otherwise that bookkeeping is safely canonicalized so ordinary loops can converge. `INCLUDE`s are followed.
+- **Exploration** runs the compiled story in [inkjs](https://github.com/y-lohse/inkjs) (the official JS runtime port), reusing pooled story instances so the compiled JSON is parsed once per pass and states rewind via `LoadJson`. Inkcheck initializes story randomness from `--story-seed` (default 1), then preserves Ink's RNG state in every saved branch; authored `SEED_RANDOM(...)` remains authoritative when executed. States are deduplicated by content hash. `INCLUDE`s are followed.
 - The CLI uses a bounded, adaptive portfolio search. Complementary passes — last-choice-first, first-choice-first, and inside-out DFS, a diversity-first beam, and seeded random walks — run interleaved in ten deterministic rounds. Initial weights (roughly 20/20/26/15/20%, or a shape profile's suggestion under `--auto`) are reallocated each round toward passes whose findings are still growing, with an intended 8% fractional floor per active pass. Research-only policy replay turns that intent into auditable cumulative integer service and normalizes recency to each pass's observed execution windows instead of a global state count. It requires three windows before estimating yield, expires signals after one or two measured windows without renewal, and permits experimental allocation overlays only for renewed runtime/assertion evidence or explicit goal progress; broad coverage stays with the established scheduler. The production scheduler remains unchanged until the full promotion corpus passes. The passes are complementary: the DFS orderings systematically exhaust subtrees, the beam spreads budget across variable-state lineages within a hard frontier cap, and random walks re-roll every choice point so early-choice combinations get sampled instead of repeated. Findings merge into one report, each labeled with the pass that found it, and the executed schedule appears in `--json` output.
 - Experimental `--search=shared` keeps one global state identity and exposes the pending work through deep, novelty, and seeded frontier views. A state chosen by any view is expanded once and removed lazily from the others; compact parent links preserve exact repro paths without retaining a full path on every pending state. Variable-state and variable-transition rarity are recorded as evaluation telemetry, not yet used as a search heuristic.
 - Experimental `--search=shared-variable` replaces one of every eight shared-frontier selections with a variable-rarity view. Its score combines the observed frequency of the destination variable snapshot and the rarest change on that edge; it cannot consume more than its fixed slice, so graph novelty, depth, and seeded exploration remain represented.
@@ -298,11 +299,11 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 ## Coverage limits
 
 - Exploration is bounded. A truncated report is evidence about visited states, not proof about the whole story.
-- Reports state the limits they ran under (depth, state budget, seed) and, when truncated, which limit actually cut coverage (`truncatedBy` in `--json`, including `memory`) with targeted advice on which flag to raise.
+- Reports state the limits they ran under (depth, state budget, search seed, and story seed) and, when truncated, which limit actually cut coverage (`truncatedBy` in `--json`, including `memory`) with targeted advice on which flag to raise.
 - A large run that would exhaust memory stops cleanly and returns a partial report (`truncatedBy.memory`) rather than crashing — memory footprint is dominated by the deduplication hash set (~linear in distinct states) and, on deep loop-light stories, the breadth-first repro frontier, so `--no-min-repro` and a tighter `--max-states` are the levers when a story is too big to finish.
 - Small stories often get the opposite guarantee: when a systematic pass visits every reachable state without hitting a limit, the report says so (`exhaustive`), and sampling-slice budget exhaustion no longer counts as truncation.
 - `EXTERNAL` functions are stubbed to zero because the host game is unavailable. The report names every stub; strict mode fails rather than claiming complete coverage.
-- Random behavior follows reachable RNG states but does not enumerate every possible seed. Pair inkcheck with repeated playtesting when outcome frequency matters.
+- Random behavior is repeatable for the reported story seed, but one run does not enumerate every possible story seed. Deliberately vary `--story-seed` and keep human playtesting in the loop when outcome frequency matters.
 - An unvisited knot may be intentionally dormant, engine-entered, or unreachable. The inbound-divert triage separates likely orphans from probably-limit-bound content, but it is a review prompt, not an automatic deletion instruction.
 
 ## Roadmap

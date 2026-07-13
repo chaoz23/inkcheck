@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make Ink runtime randomness reproducible under an explicit initial seed (#117). `--story-seed`, project config, MCP exploration/playtest, capabilities, reports, replay instructions, and the promotion harness now distinguish Ink's runtime RNG from the existing `--seed` search-sampling control. Both default to 1; authored `SEED_RANDOM(...)` still works, and reports remain honest that one run does not enumerate every story seed.
+
 - Preserve production allocation whenever policy-v2 replay is warming up or gated off (#118). The cumulative integer floor now begins only when a previously approved policy overlay controls a window, so replay cannot change evidence while reporting `allocationApplied: false`; policy-controlled windows retain exact floor accounting. The 100-state/depth-300 deep-chain pair now keeps all seven baseline knots for both seeds.
 
 - Add the #56 search-promotion harness and a 20-family consent/license manifest. One command runs isolated fixed-portfolio versus policy-replay matrices across budgets, depths, and seeds; passes real typed assertion rules into both strategies; records stable critical/authored/terminal identities, proof/truncation, pass/frontier telemetry, repeat determinism, elapsed time, and peak RSS; emits JSON, Markdown, or timing-free deterministic output; and highlights worst-family regressions without declaring a winner. The first 240-pair matrix is checked in as a concise evaluation: 222 pairs were neutral, assertion evidence matched, policy replay had one low-budget deep-suffix regression and no broad largest-budget gain, so default allocation remains frozen.

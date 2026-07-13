@@ -48,7 +48,7 @@ export function runtimeKind(error: RuntimeErrorReport): FindingKind {
   return "runtime.error";
 }
 
-export function enrichRuntimeError(error: RuntimeErrorReport) {
+export function enrichRuntimeError(error: RuntimeErrorReport, storySeed?: number) {
   const kind = runtimeKind(error);
   const identity = {
     message: error.message,
@@ -60,7 +60,7 @@ export function enrichRuntimeError(error: RuntimeErrorReport) {
     ...error,
     id: stableId(kind, identity),
     kind,
-    replay: { tool: "playtest_story" as const, choices: [...error.choiceIndices] },
+    replay: { tool: "playtest_story" as const, choices: [...error.choiceIndices], storySeed },
     witness: {
       choiceText: [...error.path],
       choiceIndices: [...error.choiceIndices],
@@ -71,13 +71,13 @@ export function enrichRuntimeError(error: RuntimeErrorReport) {
   };
 }
 
-export function enrichEnding(ending: EndingReport) {
+export function enrichEnding(ending: EndingReport, storySeed?: number) {
   const kind = "ending.reached" as const;
   return {
     ...ending,
     id: stableId(kind, { finalText: ending.finalText, variables: ending.variables }),
     kind,
-    replay: { tool: "playtest_story" as const, choices: [...ending.choiceIndices] },
+    replay: { tool: "playtest_story" as const, choices: [...ending.choiceIndices], storySeed },
     witness: {
       choiceText: [...ending.path],
       choiceIndices: [...ending.choiceIndices],
@@ -87,13 +87,13 @@ export function enrichEnding(ending: EndingReport) {
   };
 }
 
-export function enrichAssertionViolation(violation: AssertionViolation) {
+export function enrichAssertionViolation(violation: AssertionViolation, storySeed?: number) {
   const kind = "assertion.violation" as const;
   return {
     ...violation,
     id: stableId(kind, { ruleId: violation.ruleId }),
     kind,
-    replay: { tool: "playtest_story" as const, choices: [...violation.choiceIndices] },
+    replay: { tool: "playtest_story" as const, choices: [...violation.choiceIndices], storySeed },
     witness: {
       choiceText: [...violation.path],
       choiceIndices: [...violation.choiceIndices],
@@ -104,17 +104,17 @@ export function enrichAssertionViolation(violation: AssertionViolation) {
   };
 }
 
-function enrichAssertionResult(result: AssertionResult) {
-  return { ...result, violations: result.violations.map(enrichAssertionViolation) };
+function enrichAssertionResult(result: AssertionResult, storySeed?: number) {
+  return { ...result, violations: result.violations.map((violation) => enrichAssertionViolation(violation, storySeed)) };
 }
 
-function enrichGoalResult(result: GoalResult) {
+function enrichGoalResult(result: GoalResult, storySeed?: number) {
   const kind = "goal.reached" as const;
   const enrichWitness = (witness: NonNullable<GoalResult["witness"]>, identity: Record<string, unknown>) => ({
     ...witness,
     id: stableId(kind, { ...identity, choiceIndices: witness.choiceIndices }),
     kind,
-    replay: { operation: "playtest_story" as const, choices: witness.choiceIndices },
+    replay: { operation: "playtest_story" as const, choices: witness.choiceIndices, storySeed },
     suggestedAction: "inspect_goal_witness" as const,
     documentation: "inkcheck://findings/goal.reached",
   });
@@ -146,6 +146,8 @@ export interface EffectiveReportConfiguration {
   maxTimeSec: number | null;
   /** Explicit additional directed-goal budget; zero preserves baseline-only work. */
   goalMaxStates: number;
+  /** Initial Ink runtime RNG seed, independent of the search sampling seed. */
+  storySeed: number;
   assertions?: AssertionDefinition[];
   goals?: GoalDefinition[];
 }
@@ -210,12 +212,13 @@ interface ReportInput {
 }
 
 export function buildReportEnvelope(input: ReportInput) {
+  const storySeed = input.explore.limits.storySeed;
   const explore = {
     ...input.explore,
-    endingsFound: input.explore.endingsFound.map(enrichEnding),
-    runtimeErrors: input.explore.runtimeErrors.map(enrichRuntimeError),
-    assertionResults: input.explore.assertionResults.map(enrichAssertionResult),
-    ...(input.explore.goalResults ? { goalResults: input.explore.goalResults.map(enrichGoalResult) } : {}),
+    endingsFound: input.explore.endingsFound.map((ending) => enrichEnding(ending, storySeed)),
+    runtimeErrors: input.explore.runtimeErrors.map((error) => enrichRuntimeError(error, storySeed)),
+    assertionResults: input.explore.assertionResults.map((result) => enrichAssertionResult(result, storySeed)),
+    ...(input.explore.goalResults ? { goalResults: input.explore.goalResults.map((result) => enrichGoalResult(result, storySeed)) } : {}),
   };
   return {
     schemaVersion: REPORT_SCHEMA_VERSION,

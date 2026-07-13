@@ -71,7 +71,7 @@ test("benchmark summary separates useful outcomes from terminal-state multiplici
     truncated: false,
     truncatedBy: EMPTY_TRUNCATION,
     exhaustive: true,
-    limits: { maxDepth: 30, maxStates: 2 },
+    limits: { maxDepth: 30, maxStates: 2, storySeed: 1 },
     passes: [],
   };
   const summary = summarizeSearchResult("fixture", report);
@@ -81,6 +81,7 @@ test("benchmark summary separates useful outcomes from terminal-state multiplici
   assert.deepStrictEqual(summary.findings.visitedKnots, ["ending"]);
   assert.strictEqual(summary.findings.terminalStates.length, 2);
   assert.deepStrictEqual(summary.findings.assertionViolations, []);
+  assert.deepStrictEqual(summary.configuration, { storySeed: 1 });
 });
 
 test("promotion manifest declares twenty consent-safe structural cases", () => {
@@ -90,6 +91,7 @@ test("promotion manifest declares twenty consent-safe structural cases", () => {
   assert.ok(manifest.cases.filter((entry) => entry.ci).length >= 8);
   assert.ok(manifest.cases.some((entry) => entry.family === "host-externals"));
   assert.ok(manifest.cases.some((entry) => entry.family === "random-and-turn-state"));
+  assert.strictEqual(manifest.cases.find((entry) => entry.family === "random-and-turn-state").storySeed, 1);
   assert.ok(manifest.cases.some((entry) => entry.assertions?.length));
 });
 
@@ -114,6 +116,7 @@ test("promotion comparison keeps critical losses separate and timing observation
     budget: 100,
     depth: 30,
     seed: 7,
+    storySeed: 1,
     baseline: { elapsedMs: 12, peakRssBytes: 1000, summary: baselineSummary },
     candidate: { elapsedMs: 15, peakRssBytes: 1200, summary: candidateSummary },
   });

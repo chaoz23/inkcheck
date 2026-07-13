@@ -16,6 +16,8 @@ import {
 } from "./inklecate";
 import {
   ExploreResult,
+  DEFAULT_STORY_SEED,
+  MAX_STORY_SEED,
   PortfolioWeights,
   UnvisitedKnotReport,
   classifyUnvisitedKnots,
@@ -64,6 +66,7 @@ Options:
   --max-states <n>   Max story states to visit, 1–100000000 (default 10000000)
   --goal-states <n>  Additional directed-goal states, 1–100000000 (default 0)
   --seed <n>         Seed for the random-sampling slice, 1–4294967295 (default 1)
+  --story-seed <n>   Initial Ink runtime RNG seed, 1–2147483646 (default 1)
   --search <mode>    Search: portfolio (default), shared, or shared-variable
   --max-memory <mb>  Stop cleanly before heap use exceeds <mb> (default: 85% of the V8 heap limit)
   --max-time <s>     Stop cleanly after <s> seconds and return a partial report (default: no time limit)
@@ -157,6 +160,7 @@ async function main() {
   let maxStates: number | undefined;
   let goalMaxStates: number | undefined;
   let seed: number | undefined;
+  let storySeed: number | undefined;
   let search: "portfolio" | "shared" | "shared-variable" = "portfolio";
   let strict = false;
   let asJson = false;
@@ -185,6 +189,7 @@ async function main() {
     else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 100_000_000);
     else if (arg === "--goal-states") goalMaxStates = boundedInt(arg, args[++i], 100_000_000);
     else if (arg === "--seed") seed = boundedInt(arg, args[++i], 4_294_967_295);
+    else if (arg === "--story-seed") storySeed = boundedInt(arg, args[++i], MAX_STORY_SEED);
     else if (arg === "--search" || arg.startsWith("--search=")) {
       searchSpecified = true;
       const mode = arg === "--search" ? args[++i] : arg.slice("--search=".length);
@@ -233,7 +238,7 @@ async function main() {
 
   if (inspectMode) {
     if (asMarkdown || asHuman || profileOnly || auto || followNext || strict || !minRepro ||
-        maxDepth !== undefined || maxStates !== undefined || goalMaxStates !== undefined || seed !== undefined ||
+        maxDepth !== undefined || maxStates !== undefined || goalMaxStates !== undefined || seed !== undefined || storySeed !== undefined ||
         maxMemoryMb !== undefined || maxTimeSec !== undefined || search !== "portfolio" ||
         progressSpecified) {
       usage("inspect accepts a story path and optional --json only");
@@ -252,6 +257,8 @@ async function main() {
   maxStates ??= configDefaults?.maxStates;
   goalMaxStates ??= configDefaults?.goalMaxStates;
   seed ??= configDefaults?.seed;
+  storySeed ??= configDefaults?.storySeed;
+  storySeed ??= DEFAULT_STORY_SEED;
   maxMemoryMb ??= configDefaults?.maxMemoryMb;
   maxTimeSec ??= configDefaults?.maxTimeSec;
   if (!searchSpecified && configDefaults?.search) search = configDefaults.search;
@@ -289,6 +296,7 @@ async function main() {
     maxMemoryMb: maxMemoryMb ?? null,
     maxTimeSec: maxTimeSec ?? null,
     goalMaxStates: additionalGoalStates,
+    storySeed,
     ...(projectConfig?.config.assertions?.length ? { assertions: projectConfig.config.assertions } : {}),
     ...(projectConfig?.config.goals?.length ? { goals: projectConfig.config.goals } : {}),
   };
@@ -416,6 +424,7 @@ async function main() {
       maxDepth: bounds.maxDepth,
       maxStates: Math.max(1, portfolioStates),
       seed: bounds.seed,
+      storySeed,
       weights: profile?.suggested.weights,
       memoryGuard,
       timeGuard,
@@ -449,6 +458,7 @@ async function main() {
         maxDepth: bounds.maxDepth,
         maxStates: reproStates,
         strategy: "bfs",
+        storySeed,
         memoryGuard,
       timeGuard,
         preserveTurnState: semantics.usesTurns,
@@ -613,7 +623,7 @@ async function main() {
     }
     if (report.randomnessDetected) {
       console.log(
-        `⚠ random behavior detected; exploration follows reachable RNG states but does not enumerate every possible seed`
+        `⚠ random behavior detected; this run is reproducible with story seed ${report.limits.storySeed}, but does not enumerate every possible story seed`
       );
     }
     if (report.truncatedBy.memory) {
@@ -726,7 +736,8 @@ function renderMarkdown(
       `| Additional goal state budget | ${report.limits.goalMaxStates} |`,
       `| Total state budget | ${report.limits.totalMaxStates ?? report.limits.maxStates + report.limits.goalMaxStates} |`,
     ] : []),
-    ...(report.limits.seed !== undefined ? [`| Random seed | ${report.limits.seed} |`] : []),
+    ...(report.limits.seed !== undefined ? [`| Search sampling seed | ${report.limits.seed} |`] : []),
+    `| Story runtime seed | ${report.limits.storySeed} |`,
     `| Truncated | ${report.truncated ? "yes" : "no"} |`,
     `| Exhaustive | ${report.exhaustive ? "yes" : "no"} |`,
     `| Distinct terminal states | ${report.endingsFound.length} |`,
@@ -777,7 +788,7 @@ function renderMarkdown(
     limitations.push(`EXTERNAL functions were stubbed to zero: ${report.externalFunctionsStubbed.join(", ")}.`);
   }
   if (report.randomnessDetected) {
-    limitations.push("Random behavior was detected; every possible random seed was not enumerated.");
+    limitations.push(`Random behavior was detected; this run is reproducible with story seed ${report.limits.storySeed}, but every possible story seed was not enumerated.`);
   }
   if (advice && advice.recommendation !== "stop") {
     limitations.push(

@@ -18,6 +18,9 @@ import { GoalDefinition, GoalResult, GoalTracker, validateGoals } from "./goals"
 import { recommendShadowDecision, type ShadowDecision } from "./decision-policy";
 import { CumulativeFloorAllocator, type FloorAllocation } from "./floor-allocator";
 
+export const DEFAULT_STORY_SEED = 1;
+export const MAX_STORY_SEED = 2_147_483_646;
+
 export interface PlaytestStep {
   text: string;
   tags: string[];
@@ -26,6 +29,8 @@ export interface PlaytestStep {
 }
 
 export interface PlaytestResult {
+  /** Initial Ink runtime RNG seed used for this replay. */
+  storySeed: number;
   steps: PlaytestStep[];
   ended: boolean;
   /** Choices remaining at the point the transcript stopped (empty if the story ended). */
@@ -126,6 +131,8 @@ export interface ExploreResult {
     /** Combined configured work ceiling when goal work is enabled. */
     totalMaxStates?: number;
     seed?: number;
+    /** Initial Ink runtime RNG seed, independent of the search sampling seed. */
+    storySeed: number;
   };
   /** Portfolio runs only: the adaptive schedule that was actually executed. */
   schedule?: ScheduleRound[];
@@ -268,8 +275,22 @@ interface StorySession {
   warnings: string[];
 }
 
-function makeStory(storyJson: string, externals: string[]): StorySession {
+function normalizeStorySeed(storySeed = DEFAULT_STORY_SEED): number {
+  if (!Number.isSafeInteger(storySeed) || storySeed < 1 || storySeed > MAX_STORY_SEED) {
+    throw new RangeError(`storySeed must be an integer from 1 to ${MAX_STORY_SEED}`);
+  }
+  return storySeed;
+}
+
+function makeStory(
+  storyJson: string,
+  externals: string[],
+  storySeed = DEFAULT_STORY_SEED
+): StorySession {
   const story = new Story(storyJson);
+  const normalizedStorySeed = normalizeStorySeed(storySeed);
+  story.state.storySeed = normalizedStorySeed;
+  story.state.previousRandom = 0;
   const errors: string[] = [];
   const warnings: string[] = [];
   story.onError = (msg: string, type: number) => {
@@ -317,9 +338,11 @@ function continueMaximally(s: StorySession): PlaytestStep {
 export function playtest(
   storyJson: string,
   choices: number[],
-  externals: string[] = []
+  externals: string[] = [],
+  storySeed = DEFAULT_STORY_SEED
 ): PlaytestResult {
-  const s = makeStory(storyJson, externals);
+  const normalizedStorySeed = normalizeStorySeed(storySeed);
+  const s = makeStory(storyJson, externals, normalizedStorySeed);
   const steps: PlaytestStep[] = [];
   let pathChanged = false;
   let step = continueMaximally(s);
@@ -345,6 +368,7 @@ export function playtest(
   const ended =
     s.errors.length === 0 && !s.story.canContinue && s.story.currentChoices.length === 0;
   return {
+    storySeed: normalizedStorySeed,
     steps,
     ended,
     pendingChoices: s.story.currentChoices.map((c: { text: string }) => c.text),
@@ -439,6 +463,8 @@ export interface ExploreOptions {
   randomnessDetected?: boolean;
   /** PRNG seed for the random-sampling pass; fixed default keeps CI reproducible. */
   seed?: number;
+  /** Initial Ink runtime RNG seed; independent of search allocation. Default 1. */
+  storySeed?: number;
   /** Frontier cap per depth level for the novelty beam pass. Default 64. */
   beamWidth?: number;
   /** Relative budget weights for the portfolio passes (e.g. from a shape profile). */
@@ -870,7 +896,7 @@ function createSearchEngine(
 
   // One pooled instance: constructing Story parses the full compiled JSON,
   // so we do it once and rewind between branches with LoadJson.
-  const s = makeStory(storyJson, externals);
+  const s = makeStory(storyJson, externals, opts.storySeed);
   const resetSession = () => {
     s.errors.length = 0;
     s.warnings.length = 0;
@@ -1060,7 +1086,7 @@ function createSearchEngine(
     truncated,
     truncatedBy,
     exhaustive,
-    limits: { maxDepth, maxStates: totalGranted },
+    limits: { maxDepth, maxStates: totalGranted, storySeed: normalizeStorySeed(opts.storySeed) },
     });
   };
 
@@ -1450,7 +1476,7 @@ function createSharedEngine(
     return takeGoal() ?? takeNovelty() ?? takeVariable() ?? takeDeep() ?? takeRandom();
   };
 
-  const session = makeStory(storyJson, externals);
+  const session = makeStory(storyJson, externals, opts.storySeed);
   const resetSession = () => {
     session.errors.length = 0;
     session.warnings.length = 0;
@@ -1713,7 +1739,7 @@ function createSharedEngine(
     truncated,
     truncatedBy,
     exhaustive,
-    limits: { maxDepth, maxStates: totalGranted, seed },
+    limits: { maxDepth, maxStates: totalGranted, seed, storySeed: normalizeStorySeed(opts.storySeed) },
     });
   };
 
@@ -1936,7 +1962,7 @@ function createRandomEngine(
     }
   };
 
-  const s = makeStory(storyJson, externals);
+  const s = makeStory(storyJson, externals, opts.storySeed);
   const resetSession = () => {
     s.errors.length = 0;
     s.warnings.length = 0;
@@ -2088,7 +2114,7 @@ function createRandomEngine(
     truncatedBy,
     // Sampling can only ever disprove completeness, never prove it.
     exhaustive: false,
-    limits: { maxDepth, maxStates: totalGranted, seed },
+    limits: { maxDepth, maxStates: totalGranted, seed, storySeed: normalizeStorySeed(opts.storySeed) },
   });
 
   return {
@@ -2265,7 +2291,7 @@ function createBeamEngine(
     }
   };
 
-  const s = makeStory(storyJson, externals);
+  const s = makeStory(storyJson, externals, opts.storySeed);
   const resetSession = () => {
     s.errors.length = 0;
     s.warnings.length = 0;
@@ -2499,7 +2525,7 @@ function createBeamEngine(
     truncated,
     truncatedBy,
     exhaustive,
-    limits: { maxDepth, maxStates: totalGranted },
+    limits: { maxDepth, maxStates: totalGranted, storySeed: normalizeStorySeed(opts.storySeed) },
     });
   };
 
@@ -3022,6 +3048,11 @@ function endingKey(e: EndingReport): string {
 }
 
 export function mergeExploreResults(main: ExploreResult, other: ExploreResult): ExploreResult {
+  if (main.limits.storySeed !== other.limits.storySeed) {
+    throw new Error(
+      `cannot merge runs with different story seeds (${main.limits.storySeed} and ${other.limits.storySeed})`
+    );
+  }
   // Generic merges do not know the actual interleaving/offset timeline. A
   // caller such as the portfolio scheduler may attach its recorder afterward.
   main.discoveryCurve = undefined;
@@ -3164,6 +3195,7 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
   main.limits = {
     maxDepth: Math.max(main.limits.maxDepth, other.limits.maxDepth),
     maxStates,
+    storySeed: main.limits.storySeed,
   };
   if (goalMaxStates > 0) {
     main.limits.goalMaxStates = goalMaxStates;

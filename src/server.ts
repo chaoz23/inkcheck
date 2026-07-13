@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { compile, stats, scanKnots, scanExternals, scanInboundDiverts, scanShapeProfile, scanStorySemantics, DEFAULT_MAX_DEPTH } from "./inklecate";
-import { classifyUnvisitedKnots, playtest, explore, exploreWithGoals, mergeMinRepro, validateAssertionsForStory, validateGoalsForStory } from "./explore";
+import { DEFAULT_STORY_SEED, MAX_STORY_SEED, classifyUnvisitedKnots, playtest, explore, exploreWithGoals, mergeMinRepro, validateAssertionsForStory, validateGoalsForStory } from "./explore";
 import { recommendNextRun } from "./advice";
 import { VERSION } from "./version";
 import { capabilities, inspectProject, REPORT_SCHEMA_VERSION } from "./discovery";
@@ -99,9 +99,11 @@ server.registerTool(
       choices: z
         .array(z.number().int().min(0))
         .describe("Choice indices to take, in order (0-based)"),
+      storySeed: z.number().int().min(1).max(MAX_STORY_SEED).optional()
+        .describe(`Initial Ink runtime RNG seed (default ${DEFAULT_STORY_SEED})`),
     },
   },
-  async ({ file, choices }) => {
+  async ({ file, choices, storySeed }) => {
     const compiled = await compile(file);
     if (!compiled.success || !compiled.storyJson) {
       return err(
@@ -109,7 +111,7 @@ server.registerTool(
           compiled.issues.map((i) => i.raw).join("\n")
       );
     }
-    return json(playtest(compiled.storyJson, choices, scanExternals(file)));
+    return json(playtest(compiled.storyJson, choices, scanExternals(file), storySeed));
   }
 );
 
@@ -128,6 +130,8 @@ server.registerTool(
         .describe("Additional directed-goal states; baseline maxStates is preserved (default 0)"),
       seed: z.number().int().min(0).max(4294967295).optional()
         .describe("Seed for the reproducible random-sampling slice (default 1)"),
+      storySeed: z.number().int().min(1).max(MAX_STORY_SEED).optional()
+        .describe(`Initial Ink runtime RNG seed, independent of the search seed (default ${DEFAULT_STORY_SEED})`),
       minRepro: z.boolean().optional()
         .describe("Reserve a small breadth-first slice to shorten repro paths (default true)"),
       search: z.enum(["portfolio", "shared", "shared-variable"]).optional()
@@ -138,7 +142,7 @@ server.registerTool(
         .describe("Safe typed target conditions; goalMaxStates enables explicit additional steering work"),
     },
   },
-  async ({ file, maxDepth, maxStates, goalMaxStates, seed, minRepro, search, assertions: assertionInput, goals: goalInput }) => {
+  async ({ file, maxDepth, maxStates, goalMaxStates, seed, storySeed = DEFAULT_STORY_SEED, minRepro, search, assertions: assertionInput, goals: goalInput }) => {
     const assertionIssues: string[] = [];
     const assertions = parseAssertionDefinitions(assertionInput, "assertions", assertionIssues) ?? [];
     if (assertionIssues.length) return err(`Invalid assertions:\n${assertionIssues.map((issue) => `- ${issue}`).join("\n")}`);
@@ -160,6 +164,7 @@ server.registerTool(
       maxMemoryMb: null,
       maxTimeSec: null,
       goalMaxStates: additionalGoalStates,
+      storySeed,
       ...(assertions.length ? { assertions } : {}),
       ...(goals.length ? { goals } : {}),
     };
@@ -193,6 +198,7 @@ server.registerTool(
       maxDepth,
       maxStates: Math.max(1, portfolioStates),
       seed,
+      storySeed,
       memoryGuard,
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
@@ -207,6 +213,7 @@ server.registerTool(
         maxDepth,
         maxStates: reproStates,
         strategy: "bfs",
+        storySeed,
         memoryGuard,
         preserveTurnState: semantics.usesTurns,
         preserveRandomState: semantics.usesRandomness,

@@ -25,6 +25,8 @@ export interface InkcheckCapabilities {
     defaultMaxDepth: number;
     defaultMaxStates: number;
     defaultGoalMaxStates: number;
+    maxStorySeed: number;
+    defaultStorySeed: number;
   };
   searchModes: string[];
   features: {
@@ -55,6 +57,8 @@ export function capabilities(): InkcheckCapabilities {
       defaultMaxDepth: 100,
       defaultMaxStates: 10_000_000,
       defaultGoalMaxStates: 0,
+      maxStorySeed: 2_147_483_646,
+      defaultStorySeed: 1,
     },
     searchModes: ["portfolio", "shared", "shared-variable"],
     features: {

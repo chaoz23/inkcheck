@@ -11,6 +11,7 @@ export interface InkcheckCiConfig {
   maxDepth?: number;
   maxStates?: number;
   seed?: number;
+  storySeed?: number;
   search?: "portfolio" | "shared" | "shared-variable";
   maxMemoryMb?: number;
   maxTimeSec?: number;
@@ -98,7 +99,7 @@ export function parseProjectConfig(source: string): InkcheckProjectConfig {
     } else {
       unknownKeys(
         value.ci,
-        ["maxDepth", "maxStates", "goalMaxStates", "seed", "search", "maxMemoryMb", "maxTimeSec", "strict", "minRepro"],
+        ["maxDepth", "maxStates", "goalMaxStates", "seed", "storySeed", "search", "maxMemoryMb", "maxTimeSec", "strict", "minRepro"],
         "ci",
         issues
       );
@@ -107,6 +108,7 @@ export function parseProjectConfig(source: string): InkcheckProjectConfig {
         maxStates: boundedInteger(value.ci.maxStates, "ci.maxStates", 1, 100_000_000, issues),
         goalMaxStates: boundedInteger(value.ci.goalMaxStates, "ci.goalMaxStates", 0, 100_000_000, issues),
         seed: boundedInteger(value.ci.seed, "ci.seed", 1, 4_294_967_295, issues),
+        storySeed: boundedInteger(value.ci.storySeed, "ci.storySeed", 1, 2_147_483_646, issues),
         maxMemoryMb: boundedInteger(value.ci.maxMemoryMb, "ci.maxMemoryMb", 1, 1_000_000, issues),
         maxTimeSec: boundedInteger(value.ci.maxTimeSec, "ci.maxTimeSec", 1, 86_400, issues),
       };
