@@ -147,3 +147,9 @@ The executable promotion harness completed 240 isolated matched pairs across 20 
 Of 240 pairs, 222 had no evidence difference. Policy replay gained authored evidence in two low-budget storylet pairs, but lost seven deep-chain knots in two 100-state/depth-300 pairs. Four apparent critical losses and gains were the same content-exhaustion error receiving different approximate source-line identities (#84). All 80 largest-budget pairs were neutral except the random/turn family, where the Ink story RNG is not controlled by the search seed and both strategies failed repeat equality in 10 of 12 matrix points.
 
 Candidate runtime was 1.08x baseline at median and 1.19x at p95 on the evaluation machine; median peak RSS was essentially neutral. These results keep policy v2 inactive: it has corrected known defects but has not demonstrated a broad portfolio-new advantage. See the concise [policy v2 evaluation](promotion-policy-v2-evaluation.md) for the decision and caveats.
+
+### Gated replay parity correction (#118)
+
+The deep-suffix regression was not caused by an approved policy overlay. Every decision reported `allocationApplied: false`, but cumulative floors were still changing the schedule: random search rose from the baseline's 3 states to its 8-state floor, taking exactly seven transitions and seven knots from deep DFS. Replay now preserves baseline allocation until a prior decision actually approves policy control; floor promises and exact integer service begin with the controlled window.
+
+The full 240-pair matrix was rerun. All 228 non-random pairs are evidence-identical across critical findings, assertions, authored knots/outcomes, terminal identities, proof, and limits. The 12 remaining symmetric authored differences all come from uncontrolled Ink `RANDOM()` sequences (#117). This resolves #118 without promoting policy v2: corrected parity removes false behavior but does not demonstrate a dynamic-allocation gain.

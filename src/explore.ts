@@ -533,7 +533,8 @@ export interface PolicyReplayRound {
   allocationApplied: boolean;
   allocationGate: "applied" | "warmup" | "priority" | "not_reallocate";
   nextRoundWeights: Array<{ pass: string; share: number }>;
-  floorService: FloorAllocation;
+  /** Present only when a previously approved policy overlay controls this round. */
+  floorService?: FloorAllocation;
 }
 
 /**
@@ -2728,9 +2729,8 @@ function explorePortfolioInternal(
   }));
   const marginalCurves = engines.map(() => new DiscoveryCurveRecorder());
   let currentWeights = [...engineWeights];
-  const replayFloorAllocator = replayShadowAllocation
-    ? new CumulativeFloorAllocator(engines.map((engine) => engine.label), minShare)
-    : undefined;
+  let replayFloorAllocator: CumulativeFloorAllocator | undefined;
+  let policyControlsCurrentRound = false;
   let remaining = maxStates;
   let exhaustedEarly = false;
   let memoryStopped = false;
@@ -2751,11 +2751,12 @@ function explorePortfolioInternal(
       .map((engine, i) => ({ engine, i }))
       .filter(({ engine }) => !engine.done());
     const roundBudget = Math.min(roundSize, remaining);
-    const floorService = replayFloorAllocator?.allocate(
-      roundBudget,
-      currentWeights,
-      engines.map((engine) => !engine.done())
-    );
+    const floorService = replayShadowAllocation && policyControlsCurrentRound
+      ? (replayFloorAllocator ??= new CumulativeFloorAllocator(
+          engines.map((engine) => engine.label),
+          minShare
+        )).allocate(roundBudget, currentWeights, engines.map((engine) => !engine.done()))
+      : undefined;
     const grants = floorService
       ? active.map(({ i }) => floorService.grants[i])
       : splitBudget(roundBudget, active.map(({ i }) => currentWeights[i]));
@@ -2927,13 +2928,17 @@ function explorePortfolioInternal(
       } else {
         currentWeights = legacyWeights;
       }
+      // Floors protect policy-controlled discretionary work. Warm-up and
+      // gated-off decisions must preserve the production scheduler exactly;
+      // otherwise replay changes coverage while claiming no allocation was applied.
+      policyControlsCurrentRound = allocationApplied;
       policyReplay.push({
         round: schedule.length,
         decision,
         allocationApplied,
         allocationGate,
         nextRoundWeights: engines.map((engine, i) => ({ pass: engine.label, share: currentWeights[i] })),
-        floorService: floorService!,
+        ...(floorService ? { floorService } : {}),
       });
     } else {
       currentWeights = legacyWeights;
