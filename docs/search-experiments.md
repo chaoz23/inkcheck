@@ -139,3 +139,11 @@ Depth 100, seed 7 paired results:
 | Deceptive plateau | 100 | 1 / 1 / 7 / E | 1 / 1 / 7 / E |
 
 Cells without timing are `runtime errors / endings / visited knots / exhaustive (E) or partial (P)`. Sparse-runtime and late-recovery fixtures also match at 25/50/75/100 states, including their exhaustive proofs. The 5M runs are independent high-water reruns, not continuation prefixes or proof of completeness. This closes the known first-discovery lock-in defect, but it does not activate policy v2: the broader predeclared #56 corpus and promotion gates still apply.
+
+### Full policy v2 promotion matrix (#56)
+
+The executable promotion harness completed 240 isolated matched pairs across 20 synthetic structural families, three budgets, two depths, and two seeds. Assertion rules were active rather than inferred from story shape: baseline and candidate found the same two configured violations in all 12 assertion-family pairs.
+
+Of 240 pairs, 222 had no evidence difference. Policy replay gained authored evidence in two low-budget storylet pairs, but lost seven deep-chain knots in two 100-state/depth-300 pairs. Four apparent critical losses and gains were the same content-exhaustion error receiving different approximate source-line identities (#84). All 80 largest-budget pairs were neutral except the random/turn family, where the Ink story RNG is not controlled by the search seed and both strategies failed repeat equality in 10 of 12 matrix points.
+
+Candidate runtime was 1.08x baseline at median and 1.19x at p95 on the evaluation machine; median peak RSS was essentially neutral. These results keep policy v2 inactive: it has corrected known defects but has not demonstrated a broad portfolio-new advantage. See the concise [policy v2 evaluation](promotion-policy-v2-evaluation.md) for the decision and caveats.

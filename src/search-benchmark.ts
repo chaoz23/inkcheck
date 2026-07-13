@@ -73,8 +73,11 @@ export interface SearchBenchmarkSummary {
   statesExplored: number;
   findings: {
     runtimeErrors: string[];
+    assertionViolations: string[];
     visitedKnots: string[];
     visibleEndings: string[];
+    terminalStates: string[];
+    externalFunctionsStubbed: string[];
   };
   stateSpace: {
     terminalStates: number;
@@ -88,6 +91,7 @@ export interface SearchBenchmarkSummary {
     exhaustive: boolean;
     truncated: boolean;
     truncatedBy: ExploreResult["truncatedBy"];
+    randomnessDetected: boolean;
   };
   passes: Array<
     Pick<
@@ -108,6 +112,18 @@ export interface SearchBenchmarkSummary {
 
 function sortedUnique(values: string[]): string[] {
   return [...new Set(values)].sort();
+}
+
+function stableObject(value: Record<string, unknown>): string {
+  return JSON.stringify(Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))));
+}
+
+function assertionViolationKey(ruleId: string, observedValues: Record<string, unknown>, choiceIndices: number[]): string {
+  return `${ruleId}|${stableObject(observedValues)}|${JSON.stringify(choiceIndices)}`;
+}
+
+function terminalStateId(ending: EndingReport): string {
+  return `sha256:${createHash("sha256").update(terminalStateKey(ending)).digest("hex")}`;
 }
 
 function terminalVariableValues(
@@ -147,8 +163,15 @@ export function summarizeSearchResult(
     statesExplored: report.statesExplored,
     findings: {
       runtimeErrors: sortedUnique(report.runtimeErrors.map(runtimeErrorKey)),
+      assertionViolations: sortedUnique((report.assertionResults ?? []).flatMap((result) =>
+        result.violations.map((violation) =>
+          assertionViolationKey(violation.ruleId, violation.observedValues, violation.choiceIndices)
+        )
+      )),
       visitedKnots: sortedUnique(report.visitedKnots),
       visibleEndings: sortedUnique(report.endingsFound.map(visibleEndingKey)),
+      terminalStates: sortedUnique(report.endingsFound.map(terminalStateId)),
+      externalFunctionsStubbed: sortedUnique(report.externalFunctionsStubbed),
     },
     stateSpace: {
       terminalStates: new Set(report.endingsFound.map(terminalStateKey)).size,
@@ -174,6 +197,7 @@ export function summarizeSearchResult(
       exhaustive: report.exhaustive,
       truncated: report.truncated,
       truncatedBy: { ...report.truncatedBy },
+      randomnessDetected: report.randomnessDetected,
     },
     passes: passes.map((pass) => ({
       pass: pass.pass,
@@ -205,3 +229,4 @@ export function runSearchBenchmark(
   const elapsedMs = Number(process.hrtime.bigint() - started) / 1_000_000;
   return { elapsedMs, summary: summarizeSearchResult(strategy, report) };
 }
+import { createHash } from "crypto";

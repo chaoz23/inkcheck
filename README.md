@@ -32,9 +32,9 @@ Inkcheck's future value is planned to come from a reproducible hybrid: broad see
 | Structured specialist advantage | **2/10** | Gates, loops, boundaries, and hubs tested by bounded expert probes |
 | Anytime value per wall clock | **5/10** | Early result windows, dynamic allocation, deadlines, and long-tail work |
 | Author and agent intent | **6/10** | Safe invariants, goals, resource posture, and compact explanations |
-| Demonstrated generalization | **3/10** | Predeclared multi-project corpus, including genuinely medium/large work |
+| Demonstrated generalization | **4/10** | Predeclared multi-project corpus, including genuinely medium/large work |
 
-These are separate scores, not an average. A high trust score cannot offset a lost runtime error. The detailed [product and engineering truths scorecard](docs/product-engineering-scorecard.md) defines every 10/10 target, current evidence, engineering constraints, and the reassessment protocol used at each epic or release.
+These are separate scores, not an average. A high trust score cannot offset a lost runtime error. The detailed [product and engineering truths scorecard](docs/product-engineering-scorecard.md) defines every 10/10 target, current evidence, engineering constraints, and the reassessment protocol used at each epic or release. The first complete [policy v2 promotion evaluation](docs/promotion-policy-v2-evaluation.md) keeps dynamic allocation experimental rather than turning mixed evidence into a launch claim.
 
 ## Quick start
 
@@ -225,7 +225,7 @@ inkcheck mcp    # start the MCP server on stdio
 
 JSON checks use the versioned [report schema](docs/report-schema-v1.md). Findings have stable IDs and normalized kinds; ending and runtime-error witnesses carry both human choice text and zero-based choice indices, so duplicate labels remain exactly replayable through `playtest_story`. The envelope records the Inkcheck version, compiled-story fingerprint, effective configuration, binding limit, and an observation-only `shadowDecision` while retaining the established `compile`, `stats`, `explore`, and `nextRun` sections.
 
-Maintainers can compare shadow recommendations across independent budget runs with the manifest-driven [shadow policy evaluator](docs/shadow-policy-evaluation.md). It flags high-water-only critical evidence and family-level risks without calling a bounded larger run an oracle or changing the default policy.
+Maintainers can compare shadow recommendations across independent budget runs with the manifest-driven [shadow policy evaluator](docs/shadow-policy-evaluation.md). The separate [search promotion benchmark](docs/promotion-benchmark.md) runs matched baseline/candidate matrices across a checked-in 20-family corpus, reports resource observations and worst-family losses, and never declares a winner. Neither tool calls a bounded larger run an oracle or changes the default policy.
 
 `--max-depth` accepts 1–1,000 and `--max-states` accepts 1–100,000,000, with a **default budget of 10,000,000**. These hard ceilings prevent malformed automation inputs from accidentally disabling the exploration bounds. The default is deliberately ambitious because three things make a big budget safe rather than reckless: a fully-explorable story early-exits the moment a systematic pass proves it exhaustive (so small stories still finish in a handful of states), the memory guard stops cleanly before an out-of-memory crash, and progress reporting lets you watch and interrupt a long run. A large, non-exhaustive story will therefore *use* that budget — see [Performance and memory](#performance-and-memory) before running one in CI, and pin a smaller `--max-states` there if a bounded runtime matters more than depth of coverage.
 
