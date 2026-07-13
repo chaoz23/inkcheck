@@ -73,19 +73,25 @@ export class CumulativeFloorAllocator {
         this.floorDebt(candidate) > this.floorDebt(best) + EPSILON ? candidate : best
       );
       floorGrants[i]++;
-      grants[i]++;
       this.accounts[i].floorGranted++;
     }
 
-    const discretionary = total - floorSlots;
-    if (discretionary > 0) {
-      const nonnegative = activeIndices.map((i) => Math.max(0, desiredWeights[i] ?? 0));
-      const desiredTotal = nonnegative.reduce((sum, weight) => sum + weight, 0);
-      const normalized = nonnegative.map((weight) => desiredTotal > 0 ? weight / desiredTotal : 1 / activeIndices.length);
-      let excess = normalized.map((share) => Math.max(0, share - effectiveFloorShare));
-      if (excess.every((share) => share === 0)) excess = normalized;
-      const extra = splitInteger(discretionary, excess);
-      for (let a = 0; a < activeIndices.length; a++) grants[activeIndices[a]] += extra[a];
+    const desired = splitInteger(
+      total,
+      activeIndices.map((i) => Math.max(0, desiredWeights[i] ?? 0))
+    );
+    for (let a = 0; a < activeIndices.length; a++) grants[activeIndices[a]] = desired[a];
+    for (const recipient of activeIndices) {
+      while (grants[recipient] < floorGrants[recipient]) {
+        const donor = activeIndices
+          .filter((i) => grants[i] > floorGrants[i])
+          .sort((a, b) =>
+            (grants[b] - floorGrants[b]) - (grants[a] - floorGrants[a]) || a - b
+          )[0];
+        if (donor === undefined) throw new Error("cumulative floor grant plan is not reconcilable");
+        grants[donor]--;
+        grants[recipient]++;
+      }
     }
 
     for (let i = 0; i < grants.length; i++) this.accounts[i].granted += grants[i];

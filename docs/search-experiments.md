@@ -116,3 +116,26 @@ Paired results below use depth 100 and seed 7. Cells are `runtime errors / endin
 | Deceptive plateau | 100 | 1 / 1 / 7 / E | 1 / 1 / 7 / E |
 
 The floor defect is fixed: no explorer can silently lose its promised cumulative probe service to repeated rounding. The policy still fails the promotion gate because floor protection alone cannot counter first-discovery recency lock-in on the early-choice family. #113 must be resolved and the full predeclared matrix rerun before activation.
+
+### Scale-normalized recency replay (#113)
+
+Policy v2 removes the global 1,000-state grace period. For each pass it derives recent grant and consumption scales from up to three execution windows, converts marginal value into yield per thousand consumed states, and retains a signal for one grant window plus at most one measured recovery window. A first discovery therefore buys a bounded experiment, not indefinite ownership. Replay waits for three observed windows and applies a 10% policy overlay only when renewed runtime/assertion evidence or explicit goal progress passes the lexicographic gate; authored and terminal coverage signals remain advisory and broad allocation stays with the established scheduler. Cumulative integer floors operate independently.
+
+The allocator was also corrected to preserve the requested deterministic integer plan whenever that plan already satisfies cumulative floor debt. Transfers occur only for a genuinely under-served floor recipient. This matters on tiny exhaustive stories where a one-state rounding change can lose a proof despite finding the same visible evidence.
+
+Depth 100, seed 7 paired results:
+
+| Fixture | Budget | Fixed portfolio | Policy v2 replay |
+|---|---:|---:|---:|
+| Early-choice grid | 100 | 0 / 3 / 16 / P | 0 / 3 / 16 / P |
+| Early-choice grid | 500 | 0 / 15 / 20 / P | 0 / 15 / 20 / P |
+| Early-choice grid | 2,000 | 0 / 32 / 22 / P | 0 / 32 / 22 / P |
+| Early-choice grid | 100K | 0 / 45 / 22 / P (7.3s) | 0 / 45 / 22 / P (7.2s) |
+| Early-choice grid | 1M | 0 / 45 / 22 / P (81.1s) | 0 / 45 / 22 / P (82.1s) |
+| Early-choice grid | 5M | 0 / 45 / 22 / P (419.8s) | 0 / 45 / 22 / P (412.7s) |
+| Combination lock | 100 | 0 / 27 / 6 / E | 0 / 27 / 6 / E |
+| Storylet machine | 100 | 0 / 10 / 2 / P | 0 / 11 / 2 / P |
+| Storylet machine | 500 | 0 / 25 / 5 / P | 0 / 25 / 5 / P |
+| Deceptive plateau | 100 | 1 / 1 / 7 / E | 1 / 1 / 7 / E |
+
+Cells without timing are `runtime errors / endings / visited knots / exhaustive (E) or partial (P)`. Sparse-runtime and late-recovery fixtures also match at 25/50/75/100 states, including their exhaustive proofs. The 5M runs are independent high-water reruns, not continuation prefixes or proof of completeness. This closes the known first-discovery lock-in defect, but it does not activate policy v2: the broader predeclared #56 corpus and promotion gates still apply.

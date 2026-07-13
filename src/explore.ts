@@ -531,6 +531,7 @@ export interface PolicyReplayRound {
   round: number;
   decision: ShadowDecision;
   allocationApplied: boolean;
+  allocationGate: "applied" | "warmup" | "priority" | "not_reallocate";
   nextRoundWeights: Array<{ pass: string; share: number }>;
   floorService: FloorAllocation;
 }
@@ -2875,6 +2876,14 @@ function explorePortfolioInternal(
     }
     schedule.push({ round: schedule.length + 1, entries });
     if (memoryStopped || timeStopped) break;
+    const totalScore = scores.reduce((a, b) => a + b, 0);
+    let legacyWeights = currentWeights;
+    if (totalScore > 0) {
+      const pool = 1 - minShare * engines.length;
+      legacyWeights = currentWeights.map(
+        (_, i) => minShare + Math.max(0, pool) * (scores[i] / totalScore)
+      );
+    }
     if (replayShadowAllocation) {
       const snapshots = engines.map((engine) => engine.snapshot());
       const [firstSnapshot, ...otherSnapshots] = snapshots;
@@ -2898,26 +2907,36 @@ function explorePortfolioInternal(
         };
       });
       const decision = recommendShadowDecision(policySnapshot);
-      const allocationApplied = decision.action === "reallocate";
+      const priorityRenewed = decision.allocation.some((entry) =>
+        entry.recency.renewal === "renewed"
+          && (entry.recentValue.critical > 0 || entry.recentValue.intent > 0)
+      );
+      const allocationApplied = decision.action === "reallocate" && schedule.length >= 3 && priorityRenewed;
+      const allocationGate = allocationApplied
+        ? "applied" as const
+        : decision.action !== "reallocate"
+          ? "not_reallocate" as const
+          : schedule.length < 3
+            ? "warmup" as const
+            : "priority" as const;
       if (allocationApplied) {
         const suggested = new Map(decision.allocation.map((entry) => [entry.pass, entry.suggestedShare]));
-        currentWeights = engines.map((engine, i) => suggested.get(engine.label) ?? currentWeights[i]);
+        currentWeights = engines.map((engine, i) =>
+          legacyWeights[i] * 0.9 + (suggested.get(engine.label) ?? legacyWeights[i]) * 0.1
+        );
+      } else {
+        currentWeights = legacyWeights;
       }
       policyReplay.push({
         round: schedule.length,
         decision,
         allocationApplied,
+        allocationGate,
         nextRoundWeights: engines.map((engine, i) => ({ pass: engine.label, share: currentWeights[i] })),
         floorService: floorService!,
       });
     } else {
-      const totalScore = scores.reduce((a, b) => a + b, 0);
-      if (totalScore > 0) {
-        const pool = 1 - minShare * engines.length;
-        currentWeights = currentWeights.map(
-          (_, i) => minShare + Math.max(0, pool) * (scores[i] / totalScore)
-        );
-      }
+      currentWeights = legacyWeights;
     }
   }
 
