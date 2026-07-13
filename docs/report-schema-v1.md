@@ -9,7 +9,7 @@ Successful JSON checks contain:
 - `schemaVersion`: `1`
 - `inkcheckVersion`
 - `storyFingerprint`: SHA-256 of the compiled story used for exploration
-- `effectiveConfiguration`: strategy, repro policy, strict/resource settings, and effective search limits
+- `effectiveConfiguration`: strategy, repro policy, strict/resource settings, effective search limits, search sampling seed, and initial Ink runtime `storySeed`
 - `bindingLimit`: `null` or the resource/coverage limit that stopped the run
 - `compile`, `stats`, optional `profile`, `explore`, `nextRun`, `shadowDecision`, and optional `runs`
 
@@ -35,7 +35,7 @@ Runtime errors and endings include:
 - `path`: human-readable choice labels
 - `choiceIndices`: matching zero-based indices
 - `firstDiscoveredAtState`: transition count within the finding pass
-- `replay`: `{ "tool": "playtest_story", "choices": [...] }`
+- `replay`: `{ "tool": "playtest_story", "choices": [...], "storySeed": 1 }`
 - `witness`: choice text/indices and, for errors where available, the triggering source location
 - `foundBy`, suggested action, and an `inkcheck://findings/...` documentation identifier
 
@@ -54,6 +54,8 @@ The research-only `explorePortfolioShadowReplay` result adds `explore.policyRepl
 Value is compared lexicographically rather than collapsed into an opaque score: runtime errors/assertion violations first, then author/agent intent goals, authored coverage, terminal variants, and finally state novelty. A knee is only a shadow candidate based on the observed recovery envelope, never an exhaustive or coverage-proof claim. Critical evidence remains separately visible in `evidence.criticalEvidenceObserved`.
 
 Choice indices are authoritative for replay because authored labels need not be unique. `playtest_story.replayStatus` is `completed`, `runtime_error`, or `path_changed`; the last status means source changes invalidated the indexed path.
+
+`explore.limits.seed` controls Inkcheck's seeded search slice. `explore.limits.storySeed` independently records the initial Ink runtime RNG seed used by every pass. Reports with random behavior are repeatable when source, limits, both seeds, and engine version are fixed; they do not claim to enumerate every story seed. Authored `SEED_RANDOM(...)` may intentionally replace the initial runtime seed later in a path.
 
 ## Compatibility
 

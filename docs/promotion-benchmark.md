@@ -8,7 +8,7 @@ npm run --silent evaluate-promotion -- benchmarks/promotion-manifest.json
 npm run --silent evaluate-promotion -- benchmarks/promotion-manifest.json --markdown
 ```
 
-The checked-in manifest declares 20 structurally named synthetic cases with source, license, consent, budgets, depths, and seeds. Cases may also declare the same typed, non-executable assertion rules accepted by an Inkcheck project. It covers early choices, deep suffixes, finite locks and loops, storylets, gated endings, assertions, sparse runtime failures, random/turn state, and unavailable host externals. Depth matrices include an intentionally binding setting. The full command runs every declared point. `--ci` selects the cases marked `ci` and their smallest budget/seed at the first and last declared depth.
+The checked-in manifest declares 20 structurally named synthetic cases with source, license, consent, budgets, depths, search seeds, and an optional initial Ink runtime `storySeed` (default 1). Every matched baseline/candidate pair receives the same two seeds. Cases may also declare the same typed, non-executable assertion rules accepted by an Inkcheck project. It covers early choices, deep suffixes, finite locks and loops, storylets, gated endings, assertions, sparse runtime failures, random/turn state, and unavailable host externals. Depth matrices include an intentionally binding setting. The full command runs every declared point. `--ci` selects the cases marked `ci` and their smallest budget/search seed at the first and last declared depth.
 
 Each baseline and candidate runs in an isolated child process. Reports keep these evidence classes separate:
 
@@ -25,7 +25,7 @@ Regular JSON and Markdown include resource observations. `--deterministic` emits
 npm run --silent evaluate-promotion -- benchmarks/promotion-manifest.json --ci --deterministic
 ```
 
-Cases marked `determinismCheck` repeat both strategies in fresh workers. The report distinguishes a candidate-only determinism regression from source-level nondeterminism that affects both strategies.
+Cases marked `determinismCheck` repeat both strategies in fresh workers with the same declared story seed. The report distinguishes a candidate-only determinism regression from a defect affecting both strategies.
 
 The report highlights baseline-only and candidate-only evidence and groups regressions by structural family. Critical, authored-coverage, proof, and terminal-only differences remain distinct. It deliberately does not calculate a winner or treat a larger bounded run as an oracle.
 

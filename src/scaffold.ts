@@ -79,7 +79,7 @@ function configContent(entrypoint: string): string {
   return stringify({
     schemaVersion: CONFIG_SCHEMA_VERSION,
     entrypoint,
-    ci: { maxDepth: 100, maxStates: 1_000_000, seed: 1, search: "portfolio", strict: true },
+    ci: { maxDepth: 100, maxStates: 1_000_000, seed: 1, storySeed: 1, search: "portfolio", strict: true },
   });
 }
 
@@ -105,7 +105,7 @@ export function initProject(directory = ".", requestedEntrypoint?: string): Scaf
 }
 
 function agentInstructions(entrypoint: string): string {
-  return `# Inkcheck Agent Kit\n\nGenerated for Inkcheck ${VERSION}, config schema ${CONFIG_SCHEMA_VERSION}.\n\n- Inkcheck is a deterministic, non-AI QA engine. Do not claim bounded results prove full coverage.\n- Treat \`${entrypoint}\` and \`inkcheck.yml\` as the project contract. Explicitly ask before changing story prose.\n- Start with \`npx -y inkcheck@${VERSION} capabilities --json\`, then \`inspect ${entrypoint} --json\`.\n- Run \`npx -y inkcheck@${VERSION} --json\`; use stable finding IDs and indexed witnesses from the report.\n- Replay a witness exactly before editing. After a fix, rerun the same configured check and classify it as fixed, still failing, or path changed.\n- Keep generated reports and checkpoints under \`.inkcheck/\`; they are ignored by default.\n`;
+  return `# Inkcheck Agent Kit\n\nGenerated for Inkcheck ${VERSION}, config schema ${CONFIG_SCHEMA_VERSION}.\n\n- Inkcheck is a deterministic, non-AI QA engine. Do not claim bounded results prove full coverage.\n- Treat \`${entrypoint}\` and \`inkcheck.yml\` as the project contract. Explicitly ask before changing story prose.\n- Start with \`npx -y inkcheck@${VERSION} capabilities --json\`, then \`inspect ${entrypoint} --json\`.\n- Run \`npx -y inkcheck@${VERSION} --json\`; use stable finding IDs and indexed witnesses from the report.\n- Keep both the search \`seed\` and Ink runtime \`storySeed\` fixed when comparing runs; pass a finding's reported \`storySeed\` to \`playtest_story\`.\n- Replay a witness exactly before editing. After a fix, rerun the same configured check and classify it as fixed, still failing, or path changed.\n- Keep generated reports and checkpoints under \`.inkcheck/\`; they are ignored by default.\n`;
 }
 
 function workflow(): string {

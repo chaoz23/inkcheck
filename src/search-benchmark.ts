@@ -71,6 +71,10 @@ export function rarityWeight(previousObservations: number): number {
 export interface SearchBenchmarkSummary {
   strategy: string;
   statesExplored: number;
+  configuration: {
+    searchSeed?: number;
+    storySeed: number;
+  };
   findings: {
     runtimeErrors: string[];
     assertionViolations: string[];
@@ -161,6 +165,10 @@ export function summarizeSearchResult(
   return {
     strategy,
     statesExplored: report.statesExplored,
+    configuration: {
+      ...(report.limits.seed !== undefined ? { searchSeed: report.limits.seed } : {}),
+      storySeed: report.limits.storySeed,
+    },
     findings: {
       runtimeErrors: sortedUnique(report.runtimeErrors.map(runtimeErrorKey)),
       assertionViolations: sortedUnique((report.assertionResults ?? []).flatMap((result) =>

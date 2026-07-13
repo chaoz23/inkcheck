@@ -27,7 +27,7 @@ Inkcheck does not click one path and stop. It spends the configured state budget
 - **Unvisited knot:** review it, and read the triage hint next to it. "No authored divert points here — possible orphan" means nothing in your source leads there; "inbound divert(s) in source" means it probably just sits beyond this run's depth or state limits, so try a deeper or larger run before treating it as dead content. It may also be intentionally dormant or entered by the host game rather than another ink knot.
 - **Truncated:** the report names which limit actually cut coverage — raise that one (`--max-depth` for paths cut short, `--max-states` for an exhausted budget), run the story locally with more time, or record that the check was partial. A truncated report can still contain valuable runtime errors, endings, and unvisited-content clues.
 - **EXTERNAL stub:** test the real host-game behavior too. inkcheck used zero because it cannot know what the engine returns.
-- **Randomness detected:** inkcheck follows deterministic runtime states, but it does not try every possible seed. Keep human or repeated randomized playtesting in the loop.
+- **Randomness detected:** inkcheck fixes the initial Ink runtime RNG with `--story-seed` so a report and its witnesses can be replayed exactly. It does not try every possible story seed; deliberately vary `--story-seed` or keep repeated human playtesting in the loop when random outcomes matter.
 
 ## GitHub Actions
 

@@ -17,6 +17,8 @@ export interface PromotionManifestCase {
   budgets: number[];
   depths: number[];
   seeds: number[];
+  /** Initial Ink runtime RNG seed shared by every matched run. Default 1. */
+  storySeed?: number;
   assertions?: AssertionDefinition[];
   ci?: boolean;
   determinismCheck?: boolean;
@@ -51,6 +53,7 @@ export interface PromotionPair {
   budget: number;
   depth: number;
   seed: number;
+  storySeed: number;
   baseline: PromotionObservation;
   candidate: PromotionObservation;
   comparison: {
@@ -152,6 +155,9 @@ export function validatePromotionManifest(manifest: PromotionManifest): void {
         throw new Error(`${entry.id}: ${name} must contain positive integers`);
       }
     }
+    if (entry.storySeed !== undefined && (!Number.isSafeInteger(entry.storySeed) || entry.storySeed < 1 || entry.storySeed > 2_147_483_646)) {
+      throw new Error(`${entry.id}: storySeed must be an integer from 1 to 2147483646`);
+    }
     if (entry.assertions !== undefined && !Array.isArray(entry.assertions)) {
       throw new Error(`${entry.id}: assertions must be an array`);
     }
@@ -197,11 +203,11 @@ export function renderPromotionMarkdown(report: PromotionBenchmarkReport): strin
     "",
     "## Matched runs",
     "",
-    "| Case | Family | Budget | Depth | Seed | Baseline states | Candidate states | Regression | Gain | Baseline-only | Candidate-only | Repeat B/C | Time B/C | Peak RSS B/C |",
-    "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | ---: | ---: |",
+    "| Case | Family | Budget | Depth | Search seed | Story seed | Baseline states | Candidate states | Regression | Gain | Baseline-only | Candidate-only | Repeat B/C | Time B/C | Peak RSS B/C |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | ---: | ---: |",
   ];
   for (const pair of report.pairs) {
-    lines.push(`| ${pair.caseId} | ${pair.family} | ${pair.budget.toLocaleString("en-US")} | ${pair.depth} | ${pair.seed} | ${pair.baseline.summary.statesExplored.toLocaleString("en-US")} | ${pair.candidate.summary.statesExplored.toLocaleString("en-US")} | ${pair.comparison.regressionRisk} | ${pair.comparison.gainClass} | ${countEvidence(pair.comparison.baselineOnly)} | ${countEvidence(pair.comparison.candidateOnly)} | ${pair.baseline.deterministicRepeatMatch ?? "n/a"}/${pair.candidate.deterministicRepeatMatch ?? "n/a"} | ${pair.baseline.elapsedMs.toFixed(0)}/${pair.candidate.elapsedMs.toFixed(0)} ms | ${(pair.baseline.peakRssBytes / 1_048_576).toFixed(1)}/${(pair.candidate.peakRssBytes / 1_048_576).toFixed(1)} MiB |`);
+    lines.push(`| ${pair.caseId} | ${pair.family} | ${pair.budget.toLocaleString("en-US")} | ${pair.depth} | ${pair.seed} | ${pair.storySeed} | ${pair.baseline.summary.statesExplored.toLocaleString("en-US")} | ${pair.candidate.summary.statesExplored.toLocaleString("en-US")} | ${pair.comparison.regressionRisk} | ${pair.comparison.gainClass} | ${countEvidence(pair.comparison.baselineOnly)} | ${countEvidence(pair.comparison.candidateOnly)} | ${pair.baseline.deterministicRepeatMatch ?? "n/a"}/${pair.candidate.deterministicRepeatMatch ?? "n/a"} | ${pair.baseline.elapsedMs.toFixed(0)}/${pair.candidate.elapsedMs.toFixed(0)} ms | ${(pair.baseline.peakRssBytes / 1_048_576).toFixed(1)}/${(pair.candidate.peakRssBytes / 1_048_576).toFixed(1)} MiB |`);
   }
   lines.push(
     "",
@@ -228,6 +234,7 @@ export function deterministicPromotionView(report: PromotionBenchmarkReport): un
       budget: pair.budget,
       depth: pair.depth,
       seed: pair.seed,
+      storySeed: pair.storySeed,
       baseline: pair.baseline.summary,
       candidate: pair.candidate.summary,
       comparison: pair.comparison,

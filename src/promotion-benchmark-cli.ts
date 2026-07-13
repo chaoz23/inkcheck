@@ -23,6 +23,7 @@ interface WorkerRequest {
   budget: number;
   depth: number;
   seed: number;
+  storySeed: number;
   candidate: boolean;
   assertions?: AssertionDefinition[];
 }
@@ -39,6 +40,7 @@ async function worker(requestFile: string): Promise<void> {
     maxStates: request.budget,
     maxDepth: request.depth,
     seed: request.seed,
+    storySeed: request.storySeed,
     minimizeRepros: false,
     assertions: request.assertions,
   };
@@ -97,7 +99,8 @@ async function main(): Promise<void> {
         : entry.depths;
       const seeds = selected(entry.seeds, ci);
       for (const budget of budgets) for (const depth of depths) for (const seed of seeds) {
-        const request = { story, budget, depth, seed, assertions: entry.assertions };
+        const storySeed = entry.storySeed ?? 1;
+        const request = { story, budget, depth, seed, storySeed, assertions: entry.assertions };
         let baseline = runWorker({ ...request, candidate: false }, scratch, sequence++);
         let candidate = runWorker({ ...request, candidate: true }, scratch, sequence++);
         if (entry.determinismCheck) {
@@ -119,6 +122,7 @@ async function main(): Promise<void> {
           budget,
           depth,
           seed,
+          storySeed,
           baseline,
           candidate,
         }));

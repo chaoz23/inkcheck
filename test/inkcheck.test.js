@@ -199,6 +199,8 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.limits.maxGoalStates, 100_000_000);
   assert.strictEqual(value.limits.maxTotalStates, 100_000_000);
   assert.strictEqual(value.limits.defaultGoalMaxStates, 0);
+  assert.strictEqual(value.limits.maxStorySeed, 2_147_483_646);
+  assert.strictEqual(value.limits.defaultStorySeed, 1);
   assert.strictEqual(value.features.projectInspection, true);
   assert.strictEqual(value.schemas.report, 1);
   assert.strictEqual(value.schemas.config, CONFIG_SCHEMA_VERSION);
@@ -218,6 +220,7 @@ ci:
   maxDepth: 120
   maxStates: 50000
   seed: 7
+  storySeed: 17
   search: shared-variable
   maxMemoryMb: 512
   maxTimeSec: 60
@@ -230,6 +233,7 @@ ci:
     maxDepth: 120,
     maxStates: 50000,
     seed: 7,
+    storySeed: 17,
     maxMemoryMb: 512,
     maxTimeSec: 60,
     search: "shared-variable",
@@ -700,7 +704,7 @@ test("CLI validates config and applies its defaults with explicit flags winning"
     fs.copyFileSync(CLEAN_BRANCH, path.join(tmp, "story.ink"));
     fs.writeFileSync(
       path.join(tmp, "inkcheck.yml"),
-      "schemaVersion: 1\nentrypoint: story.ink\nci:\n  maxDepth: 4\n  maxStates: 1\n  seed: 9\n"
+      "schemaVersion: 1\nentrypoint: story.ink\nci:\n  maxDepth: 4\n  maxStates: 1\n  seed: 9\n  storySeed: 17\n"
     );
     const validated = spawnSync(process.execPath, [CLI, "validate-config", "--json"], {
       cwd: tmp,
@@ -714,6 +718,7 @@ test("CLI validates config and applies its defaults with explicit flags winning"
     assert.deepStrictEqual(JSON.parse(configured.stdout).explore.limits, {
       maxDepth: 4,
       maxStates: 1,
+      storySeed: 17,
     });
 
     const overridden = spawnSync(process.execPath, [CLI, "--json", "--max-states", "2"], {
@@ -2261,6 +2266,43 @@ test("CLI accepts --seed and reports it in the JSON limits", () => {
   });
   assert.strictEqual(invalid.status, 2);
   assert.match(invalid.stderr, /requires an integer from 1 to 4294967295/);
+});
+
+test("CLI separates reproducible story randomness from the search sampling seed", () => {
+  const story = path.join(__dirname, "..", "examples", "semantic-features.ink");
+  const run = (storySeed) => spawnSync(
+    process.execPath,
+    [CLI, story, "--max-states", "100", "--seed", "7", "--story-seed", String(storySeed), "--no-min-repro", "--json"],
+    { encoding: "utf8" }
+  );
+  const first = run(17);
+  const repeat = run(17);
+  const alternate = run(18);
+  assert.strictEqual(first.status, 0, first.stderr);
+  assert.strictEqual(repeat.status, 0, repeat.stderr);
+  assert.strictEqual(alternate.status, 0, alternate.stderr);
+  const firstReport = JSON.parse(first.stdout);
+  const repeatReport = JSON.parse(repeat.stdout);
+  const alternateReport = JSON.parse(alternate.stdout);
+  assert.deepStrictEqual(repeatReport.explore, firstReport.explore);
+  assert.deepStrictEqual(firstReport.explore.limits, {
+    maxDepth: 100,
+    maxStates: 100,
+    storySeed: 17,
+    seed: 7,
+  });
+  assert.strictEqual(firstReport.explore.endingsFound[0].replay.storySeed, 17);
+  assert.notDeepStrictEqual(
+    alternateReport.explore.endingsFound.map((ending) => ending.finalText),
+    firstReport.explore.endingsFound.map((ending) => ending.finalText)
+  );
+  assert.deepStrictEqual(
+    alternateReport.explore.passes.map(({ pass, statesExplored }) => ({ pass, statesExplored })),
+    firstReport.explore.passes.map(({ pass, statesExplored }) => ({ pass, statesExplored }))
+  );
+  const invalid = run(2_147_483_647);
+  assert.strictEqual(invalid.status, 2);
+  assert.match(invalid.stderr, /requires an integer from 1 to 2147483646/);
 });
 
 test("CLI streams versioned progress to stderr without changing the final JSON report", () => {
