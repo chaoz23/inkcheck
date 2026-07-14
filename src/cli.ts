@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import * as path from "path";
 import {
   CompileResult,
   DEFAULT_MAX_DEPTH,
@@ -41,6 +42,7 @@ import {
 } from "./report-contract";
 import {
   capabilities,
+  ARTIFACT_SCHEMA_VERSION,
   inspectProject,
   renderCapabilitiesHuman,
   renderInspectionHuman,
@@ -48,6 +50,12 @@ import {
 import { findDefaultProjectConfig, loadProjectConfig } from "./config";
 import { createAgentKit, initProject, renderScaffoldResult } from "./scaffold";
 import { createResourceGuards } from "./resource-guards";
+import {
+  artifactProjectRoot,
+  listReportArtifacts,
+  openReportArtifact,
+  saveReportArtifact,
+} from "./artifacts";
 
 function usage(message?: string): never {
   if (message) console.error(`inkcheck: ${message}\n`);
@@ -59,6 +67,8 @@ Usage: inkcheck <story.ink> [options]
        inkcheck validate-config [inkcheck.yml] [--json]
        inkcheck init [directory] [--entrypoint story.ink] [--json]
        inkcheck agent-kit --format codex [directory] [--entrypoint story.ink] [--json]
+       inkcheck artifacts list [--json]
+       inkcheck artifacts show <report-id> [--json]
        inkcheck mcp              Start the MCP server (stdio)
 
 Options:
@@ -80,6 +90,7 @@ Options:
   --human            Emit a prioritized human-readable fix list
   --json             Emit the full report as JSON
   --markdown         Emit a GitHub-friendly Markdown report
+  --save-report      Atomically save a versioned local report artifact
   --progress=<mode>  Write progress to stderr: auto, human, ndjson, or off (default auto in a terminal)
 `);
   process.exit(2);
@@ -98,6 +109,38 @@ async function main() {
     const value = capabilities();
     console.log(args.includes("--json") ? JSON.stringify(value, null, 2) : renderCapabilitiesHuman(value));
     return;
+  }
+  if (args[0] === "artifacts") {
+    const command = args[1];
+    const json = args.includes("--json");
+    const values = args.slice(2).filter((arg) => arg !== "--json");
+    if (args.slice(2).some((arg) => arg.startsWith("--") && arg !== "--json")) {
+      usage(`artifacts: unknown option: ${args.slice(2).find((arg) => arg.startsWith("--") && arg !== "--json")}`);
+    }
+    let projectRoot = process.cwd();
+    try {
+      const config = findDefaultProjectConfig();
+      if (config) projectRoot = path.dirname(config.path);
+      if (command === "list" && values.length === 0) {
+        const artifacts = listReportArtifacts(projectRoot);
+        console.log(json
+          ? JSON.stringify({ artifactSchemaVersion: ARTIFACT_SCHEMA_VERSION, artifacts }, null, 2)
+          : artifacts.length
+            ? artifacts.map((artifact) => `${artifact.id}  ${artifact.createdAt}  ${artifact.entrypoint}`).join("\n")
+            : "No saved Inkcheck report artifacts.");
+        return;
+      }
+      if (command === "show" && values.length === 1) {
+        const opened = await openReportArtifact(projectRoot, values[0]);
+        console.log(json
+          ? JSON.stringify(opened, null, 2)
+          : `${opened.artifact.id}: ${opened.artifact.freshness}\nEntrypoint: ${opened.artifact.entrypoint}\nSaved: ${opened.artifact.createdAt}`);
+        return;
+      }
+      usage("artifacts requires `list` or `show <report-id>` and optional --json");
+    } catch (error) {
+      usage(error instanceof Error ? error.message : String(error));
+    }
   }
   if (args[0] === "validate-config") {
     const values = args.slice(1).filter((arg) => arg !== "--json");
@@ -168,6 +211,7 @@ async function main() {
   let asJson = false;
   let asMarkdown = false;
   let asHuman = false;
+  let saveReport = false;
   let minRepro = true;
   let minReproSpecified = false;
   let profileOnly = false;
@@ -213,6 +257,7 @@ async function main() {
     else if (arg === "--human") asHuman = true;
     else if (arg === "--json") asJson = true;
     else if (arg === "--markdown") asMarkdown = true;
+    else if (arg === "--save-report") saveReport = true;
     else if (arg === "--no-min-repro") {
       minRepro = false;
       minReproSpecified = true;
@@ -246,7 +291,7 @@ async function main() {
     if (asMarkdown || asHuman || profileOnly || auto || followNext || strict || !minRepro ||
         maxDepth !== undefined || maxStates !== undefined || goalMaxStates !== undefined || seed !== undefined || storySeed !== undefined ||
         maxMemoryMb !== undefined || maxTimeSec !== undefined || maxFrontierStates !== undefined || maxFrontierMb !== undefined || search !== "portfolio" ||
-        progressSpecified) {
+        progressSpecified || saveReport) {
       usage("inspect accepts a story path and optional --json only");
     }
     try {
@@ -358,16 +403,25 @@ async function main() {
   const { storyJson: _compiledStoryJson, ...compileReport } = compiled;
   emitProgress("phase_end", { phase: "compile" });
 
+  const persistReport = (value: Record<string, unknown>) => {
+    const projectRoot = artifactProjectRoot(file!, projectConfig?.path);
+    const reference = saveReportArtifact(projectRoot, file!, value);
+    console.error(`saved report ${reference.id} (${reference.path})`);
+    return reference;
+  };
+
   if (!compiled.success) {
     emitProgress("phase_start", { phase: "report" });
+    const failureReport = buildCompileFailureEnvelope(
+      compileReport,
+      file,
+      reportConfiguration
+    );
+    const artifact = saveReport ? persistReport(failureReport) : undefined;
     if (asJson) {
       console.log(
         JSON.stringify(
-          buildCompileFailureEnvelope(
-            compileReport,
-            file,
-            reportConfiguration
-          ),
+          artifact ? { ...failureReport, artifact } : failureReport,
           null,
           2
         )
@@ -544,11 +598,12 @@ async function main() {
     storyJson: compiled.storyJson!,
     configuration: reportConfiguration,
   });
+  const artifact = saveReport ? persistReport(outputReport) : undefined;
   emitProgress("phase_start", { phase: "report" });
   if (asJson) {
     console.log(
       JSON.stringify(
-        outputReport,
+        artifact ? { ...outputReport, artifact } : outputReport,
         null,
         2
       )

@@ -90,6 +90,8 @@ For a late compound dependency, replace `condition` with two or more ordered `st
 
 For a new project containing one `.ink` file, `inkcheck init` creates this config. Multi-file projects must name the root with `--entrypoint`. `inkcheck agent-kit --format codex` adds the config when needed, a pinned GitHub Actions example, `.inkcheck/` artifact ignore rules, and compact version-matched agent instructions. Both commands are idempotent and preflight every target; they refuse the whole operation rather than overwrite or partially modify existing authored files.
 
+`--save-report` atomically stores a versioned report under `.inkcheck/reports/` and returns its stable content-and-entrypoint-derived ID. A later session can use `inkcheck artifacts list --json` and `inkcheck artifacts show <report-id> --json`; reopening reports whether the saved evidence is `current`, `stale`, or `path_changed` against the present entrypoint. Reports can contain story text, variables, and exact witnesses, so the agent kit ignores them by default. See [local report artifacts](docs/local-artifacts.md) for the trust, privacy, and compatibility contract. Search checkpoint resume remains future work.
+
 ## Hosted checker
 
 The repository now includes a self-hosted web interface for writers who do not want to use a terminal. Hosted mode temporarily uploads authorized `.ink` source, creates a short-lived private job, streams real phase and work-budget progress, and deletes the temporary job directory after completion, cancellation, or failure. It does not make reports public or retain story text in application logs. Optional first-party usage metrics keep only daily aggregate counts and can produce unattended weekly reports without an analytics vendor.
@@ -222,7 +224,9 @@ The intended loop for an agent editing a story: edit `.ink` → `compile_story` 
 ```
 inkcheck capabilities [--json]
 inkcheck inspect <story.ink> [--json]
-inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--story-seed N] [--search=portfolio|shared|shared-variable] [--max-frontier-states N] [--max-frontier-memory MB] [--auto] [--profile] [--next] [--no-min-repro] [--strict] [--progress=auto|human|ndjson|off] [--human|--json|--markdown]
+inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--story-seed N] [--search=portfolio|shared|shared-variable] [--max-frontier-states N] [--max-frontier-memory MB] [--auto] [--profile] [--next] [--no-min-repro] [--strict] [--save-report] [--progress=auto|human|ndjson|off] [--human|--json|--markdown]
+inkcheck artifacts list [--json]
+inkcheck artifacts show <report-id> [--json]
 inkcheck mcp    # start the MCP server on stdio
 ```
 

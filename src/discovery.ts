@@ -7,6 +7,7 @@ import { CONFIG_SCHEMA_VERSION } from "./config";
 export const CAPABILITIES_SCHEMA_VERSION = 1;
 export const PROJECT_INSPECTION_SCHEMA_VERSION = 1;
 export const REPORT_SCHEMA_VERSION = 1;
+export const ARTIFACT_SCHEMA_VERSION = 1;
 export const MAX_INSPECT_VARIABLES = 200;
 export const MAX_INSPECT_LOCATIONS = 20;
 export const MAX_INSPECT_INCLUDES = 500;
@@ -16,7 +17,7 @@ export const MAX_INSPECT_EXTERNALS = 200;
 export interface InkcheckCapabilities {
   schemaVersion: number;
   inkcheckVersion: string;
-  schemas: { report: number; config: number; projectInspection: number };
+  schemas: { report: number; config: number; projectInspection: number; artifact: number };
   limits: {
     maxDepth: number;
     maxStates: number;
@@ -36,6 +37,7 @@ export interface InkcheckCapabilities {
     goals: boolean;
     stagedGoals: boolean;
     anytimeShadowDecision: boolean;
+    localReportArtifacts: boolean;
     resumableSearch: boolean;
   };
 }
@@ -48,6 +50,7 @@ export function capabilities(): InkcheckCapabilities {
       report: REPORT_SCHEMA_VERSION,
       config: CONFIG_SCHEMA_VERSION,
       projectInspection: PROJECT_INSPECTION_SCHEMA_VERSION,
+      artifact: ARTIFACT_SCHEMA_VERSION,
     },
     limits: {
       maxDepth: 1_000,
@@ -68,6 +71,7 @@ export function capabilities(): InkcheckCapabilities {
       goals: true,
       stagedGoals: true,
       anytimeShadowDecision: true,
+      localReportArtifacts: true,
       resumableSearch: false,
     },
   };

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add opt-in source-bound local report artifacts (#128). `--save-report` writes a versioned envelope atomically under `.inkcheck/reports/` and returns a stable content-derived ID; `artifacts list/show` reopens it in a fresh session and labels the evidence `current`, `stale`, or `path_changed` against the present entrypoint. Corrupt, tampered, and incompatible artifacts fail closed. Capabilities and agent docs distinguish available report persistence from still-unavailable resumable search.
+
 - Bound shared-search retained memory without imposing a low universal cap (#98). Expanded checkpoint JSON and dead witness ancestry are released when no pending descendant needs them, stale policy views compact deterministically, and pass telemetry separates pending/active payload, ancestry, indexes, references, and findings from process heap/RSS. Optional CLI/config/MCP checkpoint count and byte envelopes preserve partial evidence and report the distinct `truncatedBy.frontier` cause. Adversarial low-dedup/deep-branching ladders and matched 64/128 MiB Intercept envelope cells document scaling, collection, and clean stops; disk spill is gated on broader evidence rather than assumed.
 
 - Make Ink runtime randomness reproducible under an explicit initial seed (#117). `--story-seed`, project config, MCP exploration/playtest, capabilities, reports, replay instructions, and the promotion harness now distinguish Ink's runtime RNG from the existing `--seed` search-sampling control. Both default to 1; authored `SEED_RANDOM(...)` still works, and reports remain honest that one run does not enumerate every story seed.
