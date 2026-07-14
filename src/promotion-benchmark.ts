@@ -305,6 +305,9 @@ export function renderPromotionMarkdown(report: PromotionBenchmarkReport): strin
     "",
     `> ${report.caveat}`,
     "",
+    `Baseline: \`${report.baseline}\`  `,
+    `Candidate: \`${report.candidate}\``,
+    "",
   ];
   if (report.unavailable?.length) {
     lines.push(
