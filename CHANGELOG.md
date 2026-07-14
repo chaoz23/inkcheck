@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add the deterministic v0.6 campaign-policy and aggregate-ledger foundation: scarce/balanced/abundant postures, protected regression and long-tail reserves, source/config binding, hard resource ceilings, partition descriptors, and explicit bounded-evidence semantics. This does not activate dynamic production allocation or add a campaign execution surface yet.
+
 ## 0.6.0-beta.1 — 2026-07-14
 
 This prerelease packages the 0.6 measurement, bounded-resource, durable-evidence, and interactive-agent foundations for public evaluation. It is published under npm's `next` tag; stable `latest` remains 0.5.1. The fixed portfolio remains the production default, and the anytime allocation policy remains shadow-only because current promotion evidence shows baseline parity rather than a broad advantage. Campaign intents, deadlines, concurrency, and specialist dispatch remain 0.6 work rather than implied beta features.
