@@ -183,6 +183,8 @@ test("promotion comparison keeps critical losses separate and timing observation
   assert.doesNotMatch(deterministic, /elapsedMs|peakRssBytes|generatedAt/);
   assert.match(renderPromotionMarkdown(promotion), /Worst-family view/);
   const markdown = renderPromotionMarkdown(promotion);
+  assert.match(markdown, /Baseline: `fixed-portfolio`/);
+  assert.match(markdown, /Candidate: `policy-v2-replay`/);
   assert.ok(markdown.indexOf("Resource-unavailable cells") < markdown.indexOf("Worst-project view"));
   assert.ok(markdown.indexOf("Worst-project view") < markdown.indexOf("Matched runs"));
   assert.match(deterministic, /worker-timeout/);
@@ -204,6 +206,32 @@ test("shared benchmark summaries retain serialized-frontier high-water evidence"
   assert.ok(summary.stateSpace.peakPendingStates >= 1);
   assert.ok(summary.stateSpace.peakPendingBytes >= 1);
   assert.ok(summary.passes.some((pass) => pass.peakPendingBytes >= 1));
+});
+
+test("promotion harness can measure shared-checkpoint resource evidence", () => {
+  const proc = spawnSync(process.execPath, [
+    PROMOTION_CLI,
+    path.join(__dirname, "..", "benchmarks", "promotion-manifest.json"),
+    "--ci",
+    "--case", "combination-lock",
+    "--budget", "100",
+    "--candidate-strategy", "shared-checkpoint",
+    "--worker-max-memory-mb", "256",
+    "--worker-timeout-ms", "30000",
+  ], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  assert.strictEqual(proc.status, 0, proc.stderr);
+  const report = JSON.parse(proc.stdout);
+  assert.strictEqual(report.baseline, "fixed-portfolio");
+  assert.strictEqual(report.candidate, "shared-checkpoint");
+  assert.ok(report.pairs.length > 0);
+  for (const pair of report.pairs) {
+    assert.strictEqual(pair.candidate.summary.strategy, "shared-checkpoint");
+    assert.ok(pair.candidate.summary.passes.some((pass) => pass.sharedMemory));
+    assert.ok(Number.isFinite(pair.candidate.elapsedMs));
+    assert.ok(pair.candidate.peakRssBytes > 0);
+    assert.strictEqual(pair.candidate.resourceLimits.memoryCapBytes, 256 * 1024 * 1024);
+    assert.strictEqual(pair.candidate.resourceLimits.timeLimitMs, 27_000);
+  }
 });
 
 test("promotion workers return guarded partial comparisons instead of crashing", () => {

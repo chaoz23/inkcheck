@@ -14,6 +14,17 @@ The authored-project tier is separate and manual. Its vendored, pinned sources a
 npm run --silent evaluate-promotion -- benchmarks/authored-promotion-manifest.json --case the-intercept --budget 5000000 --markdown
 ```
 
+The candidate defaults to `policy-v2-replay`. Resource research can instead select the experimental shared/checkpoint engine without changing Inkcheck's production default or treating the result as a promotion:
+
+```sh
+npm run --silent evaluate-promotion -- benchmarks/authored-promotion-manifest.json \
+  --case the-intercept --budget 5000000 \
+  --candidate-strategy shared-checkpoint \
+  --worker-timeout-ms 900000 --worker-max-memory-mb 8192 --markdown
+```
+
+This matched lane records shared retained-memory accounting alongside wall time and peak process RSS. Its baseline remains `fixed-portfolio`, and its candidate label is explicit in JSON and Markdown so checkpoint evidence cannot be confused with the policy-v2 promotion matrix.
+
 The runner writes cell start/finish progress to stderr while preserving machine-readable stdout. `--worker-timeout-ms` gives a manual evaluation an explicit per-process envelope. The worker installs an internal time guard with serialization headroom and atomically persists one evidence snapshot per deterministic scheduler window, so an ordinary deadline returns a partial comparison with `truncatedBy.time` instead of losing the run. Only a worker killed before any usable snapshot remains `unavailable`; that cell is never interpreted as a search result, determinism failure, or evidence match. `--worker-max-memory-mb` optionally sets an explicit evaluation heap watermark; otherwise the worker uses the same 85%-of-V8-heap guard as the CLI and MCP server. The authored manifest predeclares 1M and 5M rungs; a genuinely unavailable cell must be reported as unavailable, not omitted or inferred from a smaller run.
 
 The worker report keeps safety limits separate from efficiency observations. Memory and time caps are user/environment backstops, not automatic knee decisions. Matched rows record the configured caps, guard or hard-timeout exit, elapsed time, peak RSS, and serialized-frontier high-water counts/bytes. Future allocation policy may use marginal discovery yield, throughput, recovery gaps, and resource growth, but this harness does not stop merely because a run appears inefficient.
@@ -22,7 +33,7 @@ The first authored 5M-ceiling guard probes and the scheduler overshoot defect th
 
 The checked-in manifest declares 20 structurally named synthetic cases with source, license, consent, budgets, depths, search seeds, and an optional initial Ink runtime `storySeed` (default 1). Every matched baseline/candidate pair receives the same two seeds. Cases may also declare the same typed, non-executable assertion rules accepted by an Inkcheck project. It covers early choices, deep suffixes, finite locks and loops, storylets, gated endings, assertions, sparse runtime failures, random/turn state, and unavailable host externals. Depth matrices include an intentionally binding setting. The full command runs every declared point. `--ci` selects the cases marked `ci` and their smallest budget/search seed at the first and last declared depth.
 
-Each baseline and candidate runs in an isolated child process. Reports keep these evidence classes separate:
+Each baseline and candidate runs in an isolated child process. `--candidate-strategy` accepts `policy-v2-replay` or `shared-checkpoint`; omitted means `policy-v2-replay`. Reports keep these evidence classes separate:
 
 - Stable runtime-error and assertion-violation identities
 - Authored knots and visible ending outcomes
