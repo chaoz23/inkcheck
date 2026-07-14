@@ -79,6 +79,7 @@ export interface InkcheckCapabilities {
     interactiveSearchSessions: boolean;
     sessionWitnessReplay: boolean;
     sessionRegressionPins: boolean;
+    sessionGoalProbes: boolean;
   };
 }
 
@@ -134,6 +135,7 @@ export function capabilities(): InkcheckCapabilities {
       interactiveSearchSessions: true,
       sessionWitnessReplay: true,
       sessionRegressionPins: true,
+      sessionGoalProbes: true,
     },
   };
 }

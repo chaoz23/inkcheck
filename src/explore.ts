@@ -2566,6 +2566,41 @@ export function exploreWithGoals(
   return merged;
 }
 
+/**
+ * Spend one explicit additive budget on goal-directed shared search. This
+ * starts at the story root and intentionally does not consume or mutate a
+ * resumable base-search checkpoint.
+ */
+export function exploreGoalProbe(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[],
+  opts: ExploreOptions
+): ExploreResult {
+  const goalMaxStates = opts.goalMaxStates ?? 0;
+  if (!Number.isSafeInteger(goalMaxStates) || goalMaxStates < 1 || goalMaxStates > 100_000_000) {
+    throw new RangeError("goalMaxStates must be an integer from 1 to 100000000");
+  }
+  if (!opts.goals?.length) throw new RangeError("goalMaxStates requires at least one goal");
+  const directed = exploreShared(storyJson, knots, externals, {
+    ...opts,
+    maxStates: goalMaxStates,
+    goalMaxStates: undefined,
+    sharedVariableAware: false,
+    sharedGoalAware: true,
+  });
+  directed.limits.maxStates = 0;
+  directed.limits.goalMaxStates = goalMaxStates;
+  directed.limits.totalMaxStates = goalMaxStates;
+  directed.goalBudget = {
+    generalGranted: 0,
+    generalConsumed: 0,
+    directedGranted: goalMaxStates,
+    directedConsumed: directed.statesExplored,
+  };
+  return directed;
+}
+
 /** Deterministic PRNG (mulberry32) so random exploration stays reproducible in CI. */
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;

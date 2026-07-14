@@ -192,6 +192,10 @@
         "description": "Continue the exact saved frontier to a larger cumulative grant, adding at most 5M states per synchronous call."
       },
       {
+        "name": "add_goal",
+        "description": "Spend an explicit additive directed budget on one safe typed goal from the story root without mutating the exact base frontier."
+      },
+      {
         "name": "cancel_search",
         "description": "Cancel between result windows, retaining recoverability by default or explicitly forgetting session metadata."
       },
@@ -209,5 +213,5 @@
       }
     ]
   },
-  "agentLoop": "inspect/compile → start_search or explore_story → inspect one finding → replay_witness → pin_regression for a confirmed runtime failure → edit → check_regression → begin a fresh broader search after the fix. Never infer that a truncated, randomized, or externally driven story was completely verified."
+  "agentLoop": "inspect/compile → start_search or explore_story → inspect evidence → optionally add_goal with explicit additional budget → replay_witness → pin_regression for a confirmed runtime failure → edit → check_regression → begin a fresh broader search after the fix. add_goal starts from the story root and never replaces exact base-search work. Never infer that a truncated, randomized, or externally driven story was completely verified."
 }

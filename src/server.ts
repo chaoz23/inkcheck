@@ -16,6 +16,7 @@ import { parseAssertionDefinitions } from "./assertions";
 import { parseGoalDefinitions } from "./goals";
 import { createResourceGuards } from "./resource-guards";
 import {
+  addSessionGoal,
   cancelSearchSession,
   checkSessionRegression,
   continueSearchSession,
@@ -369,6 +370,29 @@ server.registerTool(
   async (input) => {
     try {
       return json(await continueSearchSession(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
+
+server.registerTool(
+  "add_goal",
+  {
+    description:
+      "Run one safe typed goal as an explicit additive directed probe on an existing session. The probe starts at the story root and preserves the exact base checkpoint/report and base budget; it does not resume or reprioritize that frontier.",
+    inputSchema: {
+      file: z.string().describe("The same root .ink file used to start the session"),
+      sessionCapability: z.string().describe("Opaque bearer capability returned by start_search"),
+      revision: z.number().int().min(1).describe("Last observed session revision"),
+      goal: z.unknown().describe("One safe typed goal definition using condition or ordered stages"),
+      maxStates: z.number().int().min(1).max(MAX_MCP_SESSION_WINDOW_STATES)
+        .describe("Explicit additional directed grant for this root-started probe (max 5000000)"),
+    },
+  },
+  async (input) => {
+    try {
+      return json(await addSessionGoal(input));
     } catch (error) {
       return err(error instanceof Error ? error.message : String(error));
     }

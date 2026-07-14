@@ -30,6 +30,7 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 - Save an unfinished exact local frontier: `npx -y inkcheck story.ink --search=shared --no-min-repro --max-states 100000 --save-checkpoint --json`
 - Resume it to a larger total grant: `npx -y inkcheck resume <checkpoint-id> --max-states 1000000 --json`; require current freshness and treat checkpoint files as sensitive story data.
 - MCP long jobs use `start_search` then `inspect_search` / `continue_search` with the returned bearer capability and revision. Each synchronous window adds at most 5M states; `cancel_search` acts between windows and retains exact recoverability unless `discard: true`.
+- `add_goal` spends up to 5M explicit additional states on one safe typed goal from the story root. It leaves the exact base report/checkpoint untouched and reports base, directed, and total campaign budgets separately; it is not resumed-frontier reprioritization.
 - Human fix list: `npx -y inkcheck <story.ink> --human`
 - Human-readable CI output: `npx -y inkcheck <story.ink> --markdown`
 - CI: `npx -y inkcheck story/main.ink --strict`
@@ -65,6 +66,7 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 - start_search — start one durable exact base-shared result window (1M default) and return a bearer capability
 - inspect_search — bounded session status and privacy-minimal saved finding summaries; no full report/frontier
 - continue_search — continue the exact frontier to a larger cumulative grant, adding at most 5M per call
+- add_goal — run one safe typed or staged goal as an explicit additive root-started probe without mutating the exact base frontier
 - cancel_search — cancel between synchronous windows; retained by default, explicitly forget with `discard: true`
 - replay_witness — explicitly execute one stable latest-report finding against current source; returns transcript/choices/variables, advances revision, and keeps only opaque audit metadata
 - pin_regression — preserve one confirmed current runtime failure as a private idempotent pin; runtime errors only in this first slice
