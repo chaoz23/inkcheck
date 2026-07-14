@@ -121,7 +121,8 @@
     },
     "jsonSchema": {
       "reportEnvelope": "{ schemaVersion: 1, inkcheckVersion, storyFingerprint: {algorithm, source, value}, effectiveConfiguration, bindingLimit, compile, stats?, profile?, explore?, nextRun?, runs?, checkpoint?: {saved, id?, path?, pruned?, resumedFrom?, reason?} }",
-      "capabilities": "{ schemaVersion, inkcheckVersion, schemas: {report, config, projectInspection, artifact, checkpointArtifact}, limits: {..., maxReportBytes, maxProjectReportBytes, maxReportPrunePerRun}, searchModes, resumableSearchSurfaces, features: {projectInspection, indexedWitnesses, assertions, goals, localReportArtifacts, savedFindingLookup, resumableSearch} }",
+      "capabilities": "{ schemaVersion, inkcheckVersion, schemas: {report, config, projectInspection, artifact, checkpointArtifact, searchSession}, limits: {..., defaultMcpSessionWindowStates, maxMcpSessionWindowStates, maxMcpSessionTotalStates, maxMcpSessionFiles, maxMcpSessionEvents}, searchModes, resumableSearchSurfaces, features: {projectInspection, indexedWitnesses, assertions, goals, localReportArtifacts, savedFindingLookup, resumableSearch, interactiveSearchSessions} }",
+      "searchSession": "{ schemaVersion, inkcheckVersion, sessionCapability?: bearer-secret, session: {revision, status, recoverable, totalGranted, statesExplored, latestReportId, latestCheckpointId?, bindingLimit, findings, events, droppedEventCount}, savedFindings, nextOperation }",
       "savedFindings": "{ artifact: {id, entrypoint, freshness}, findings: [{id, kind, section, hasWitness, hasReplay, sourceLocation?}], page: {limit, returned, total, nextCursor} }; fetch returns one summary plus complete finding; replay returns summary plus playtest result",
       "artifactLifecycle": "{ operation: 'delete'|'prune', applied, keepPerEntrypoint?, candidateCount, selectedCount, remainingCandidates, bytes, candidates: [{id, path, entrypoint, createdAt, sizeBytes}] }",
       "inspection": "{ schemaVersion, inkcheckVersion, entrypoint, includes, shape, semantics, externals, knots, variables, truncation, recommendedNextOperation }",
@@ -176,6 +177,22 @@
       {
         "name": "explore_story",
         "description": "Bounded systematic walk: terminal states, error repro paths, knot coverage, and explicit coverage limits."
+      },
+      {
+        "name": "start_search",
+        "description": "Start one synchronous durable base-shared result window; returns a bearer capability and exact checkpoint when work remains."
+      },
+      {
+        "name": "inspect_search",
+        "description": "Inspect bounded durable session status and privacy-minimal saved finding summaries between windows."
+      },
+      {
+        "name": "continue_search",
+        "description": "Continue the exact saved frontier to a larger cumulative grant, adding at most 5M states per synchronous call."
+      },
+      {
+        "name": "cancel_search",
+        "description": "Cancel between result windows, retaining recoverability by default or explicitly forgetting session metadata."
       }
     ]
   },

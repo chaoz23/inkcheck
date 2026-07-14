@@ -92,7 +92,7 @@ For a new project containing one `.ink` file, `inkcheck init` creates this confi
 
 `--save-report` atomically stores a versioned report under `.inkcheck/reports/` and returns its stable content-and-entrypoint-derived ID. A later session can use `inkcheck artifacts list --json` and `inkcheck artifacts show <report-id> --json`; reopening reports whether the saved evidence is `current`, `stale`, or `path_changed` against the present entrypoint. Reports can contain story text, variables, and exact witnesses, so the agent kit ignores them by default. See [local report artifacts](docs/local-artifacts.md) for the trust, privacy, and compatibility contract.
 
-Long base-shared runs can also persist their exact live frontier locally. Start with `--search=shared --no-min-repro --save-checkpoint`, then continue later with `inkcheck resume <checkpoint-id> --max-states N`; `N` is the larger total grant, not extra hidden work. `inkcheck checkpoints list/show` reports bounded metadata and source freshness. Checkpoint files are private, atomic, source/config-bound, ignored by default, and retention-capped; they may contain authored text and runtime state. See [local resumable checkpoints](docs/local-checkpoints.md). Portfolio, shared-variable, assertions, goals, hosted jobs, and MCP do not resume yet.
+Long base-shared runs can also persist their exact live frontier locally. Start with `--search=shared --no-min-repro --save-checkpoint`, then continue later with `inkcheck resume <checkpoint-id> --max-states N`; `N` is the larger total grant, not extra hidden work. `inkcheck checkpoints list/show` reports bounded metadata and source freshness. Checkpoint files are private, atomic, source/config-bound, ignored by default, and retention-capped; they may contain authored text and runtime state. See [local resumable checkpoints](docs/local-checkpoints.md). MCP agents can use the same exact foundation through durable [`start_search` / `inspect_search` / `continue_search` / `cancel_search` result windows](docs/mcp-search-sessions.md). Portfolio, shared-variable, assertions, goals, and hosted jobs do not use this checkpoint contract yet.
 
 ## Hosted checker
 
@@ -194,7 +194,7 @@ The measured [resource-safe deep-run evaluation](docs/resource-guard-evaluation.
 
 ## MCP server
 
-Four tools for AI agents working on ink stories:
+Tools for AI agents working on ink stories:
 
 | Tool | What it does |
 | --- | --- |
@@ -204,6 +204,10 @@ Four tools for AI agents working on ink stories:
 | `story_stats` | Word/knot/choice counts + full knot list with locations |
 | `playtest_story` | Play one scripted choice path headlessly; returns transcript, tags, variables, errors |
 | `explore_story` | Bounded systematic walk: terminal states, error repro paths, knot coverage, limitations |
+| `start_search` | Start one durable exact shared-search result window and receive a bearer capability |
+| `inspect_search` | Reopen bounded session status and privacy-minimal saved findings |
+| `continue_search` | Raise the cumulative grant by up to 5M and continue the exact frontier |
+| `cancel_search` | Cancel between windows, retaining recoverability unless explicitly discarded |
 
 Add to Claude Code:
 
@@ -221,7 +225,7 @@ or to any MCP client config:
 }
 ```
 
-The intended loop for an agent editing a story: edit `.ink` → `compile_story` → `explore_story` → fix what it reports → repeat. The agent never has to guess whether a story graph is sound.
+The compact loop is edit `.ink` → `compile_story` → `explore_story` → fix confirmed findings → repeat. For long jobs, replace the one-shot exploration with result-window sessions. Start/continue are synchronous calls, so cancellation is trustworthy at returned durable boundaries, not mid-window preemption. See [MCP result-window sessions](docs/mcp-search-sessions.md).
 
 ## CLI
 

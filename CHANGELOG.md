@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add durable MCP result-window sessions (#138/#66). `start_search`, `inspect_search`, `continue_search`, and `cancel_search` let agents spend base-shared work in synchronous windows, reopen bounded privacy-minimal evidence in a fresh MCP process, and continue the exact source/config-bound frontier without replay. The first window defaults to 1M states, each call may add at most 5M, and the cumulative ceiling is 100M. High-entropy bearer capabilities, revision checks, private atomic metadata, bounded events/files, explicit retained-versus-discarded cancellation, and fail-closed source/capability checks keep this first slice honest; mid-window preemption and assertion/goal/variable-aware sessions remain later #66 work.
+
 - Complete the local report-storage lifecycle (#136/#63): report directories/files are private, durable atomic writes sync before and after rename, and new saves fail cleanly above 256 MiB per report or 1 GiB per project without deleting stable evidence. `artifacts delete` and per-entrypoint `artifacts prune --keep N` are preview-first, require `--apply`, and cap each deterministic cleanup batch at 100 reports. Capabilities expose every ceiling.
 
 - Add bounded saved-finding lookup and exact CLI witness replay (#134). `artifacts findings` pages through privacy-minimal summaries without story prose, variables, or witness paths; `artifacts finding` fetches one complete stable finding; and `artifacts replay` recompiles current source and follows the saved indexed choices with the recorded story seed. Cursors are report-bound, duplicate IDs fail closed, and stale/path-changed reports cannot execute historical witnesses.
