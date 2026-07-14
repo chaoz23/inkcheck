@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.6.0-beta.1 — 2026-07-14
+
+This prerelease packages the 0.6 measurement, bounded-resource, durable-evidence, and interactive-agent foundations for public evaluation. It is published under npm's `next` tag; stable `latest` remains 0.5.1. The fixed portfolio remains the production default, and the anytime allocation policy remains shadow-only because current promotion evidence shows baseline parity rather than a broad advantage. Campaign intents, deadlines, concurrency, and specialist dispatch remain 0.6 work rather than implied beta features.
+
 - Add transactional MCP `add_goal` probes (#144/#66). An agent can attach one safe typed or staged goal to a current result-window session and spend up to 5M explicit additional states from the story root. The exact base checkpoint, report, grant, and evidence remain untouched; inspection exposes separate base/directed/total accounting plus bounded opaque probe summaries. Full goal conditions and witnesses live only in the private source-bound goal report and explicit content-revealing response. Base plus cumulative directed grants retain the 100M campaign ceiling. Search-session schema v4 adds goal audit/accounting fields while reading v1-v3 sessions; persisted directed frontiers and in-frontier reprioritization remain deferred.
 
 - Add private MCP runtime regression pins (#142/#66). `pin_regression` turns one current replayable runtime finding into an idempotent session-bound artifact containing indexed choices, story seed, and hashes of the expected runtime errors; `check_regression` replays it after edits without spending search states and returns `fixed`, `still_failing`, or `path_changed`. Pins and audit events omit runtime text, labels, transcript, variables, and prose; storage is private, atomic, capped at 1 MiB per pin and 100 pins per project. Search-session schema v3 adds pin/check audit events while reading v1/v2 sessions. Ending and assertion pins remain explicitly unsupported until they have truthful domain-specific replay contracts.
