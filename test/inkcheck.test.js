@@ -232,7 +232,8 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.limits.maxReportBytes, DEFAULT_MAX_REPORT_BYTES);
   assert.strictEqual(value.limits.maxProjectReportBytes, DEFAULT_MAX_PROJECT_REPORT_BYTES);
   assert.strictEqual(value.limits.maxReportPrunePerRun, MAX_REPORT_PRUNE_PER_RUN);
-  assert.strictEqual(value.schemas.searchSession, 4);
+  assert.strictEqual(value.schemas.searchSession, 5);
+  assert.strictEqual(value.schemas.campaignPolicy, 1);
   assert.strictEqual(value.schemas.regressionArtifact, 1);
   assert.strictEqual(value.limits.defaultMcpSessionWindowStates, 1_000_000);
   assert.strictEqual(value.limits.maxMcpSessionWindowStates, 5_000_000);
@@ -253,6 +254,7 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.features.sessionWitnessReplay, true);
   assert.strictEqual(value.features.sessionRegressionPins, true);
   assert.strictEqual(value.features.sessionGoalProbes, true);
+  assert.strictEqual(value.features.campaignResultWindows, true);
 });
 
 test("config schema v1 validates bounded executable project defaults", () => {

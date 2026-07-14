@@ -1,6 +1,6 @@
 # Campaign policy foundation
 
-Inkcheck 0.6 is building toward project-level campaigns that spend a large shared budget across many useful result windows. The first foundation is a pure, deterministic policy and ledger in `campaign-policy.ts`; it is not yet a CLI, MCP, hosted, concurrent, or default search mode.
+Inkcheck 0.6 is building toward project-level campaigns that spend a large shared budget across many useful result windows. The deterministic policy and ledger in `campaign-policy.ts` now has a first MCP execution surface over exact shared-search checkpoints. It is not a CLI, hosted, concurrent, multi-strategy, or default search mode.
 
 ## Contract
 
@@ -20,7 +20,9 @@ All values can be bounded explicitly by a future expert surface. The planner nev
 
 A knee or plateau is a bounded observation, never proof of coverage, unreachability, or absence of later discovery peaks. Once protected probes are satisfied, a knee recommendation may stop a campaign with unused budget. Source/configuration changes invalidate the campaign rather than silently mixing evidence from different revisions.
 
-The module accepts deterministic partitions by strategy, seed, indexed path prefix, checkpoint/frontier, approved goal, or depth policy. It does not yet execute those partitions, merge child reports, or persist the ledger. Those are follow-up slices of #93. MCP policy inputs and explanations remain #95; human deadline and result-window UX remains #96.
+The module accepts deterministic partitions by strategy, seed, indexed path prefix, checkpoint/frontier, approved goal, or depth policy. `start_campaign` executes the first bounded shared-search window and returns the same opaque capability model as ordinary MCP sessions. `continue_campaign` resumes that exact checkpoint under the persisted aggregate policy; `inspect_search` and `cancel_search` understand both surfaces. Metadata stores a canonical ledger digest, compact marginal yield, measured elapsed/heap/disk evidence, and immutable report/checkpoint IDs, but never the capability or frontier payload.
+
+This first execution slice intentionally uses one exact shared frontier with concurrency fixed at one. It does not yet dispatch independent portfolio/seed/goal children, merge or deduplicate findings across child runs, integrate a cost provider, or automatically apply knee recommendations. Those remain #93/#94 work. Named MCP policy selection and compact forecasts remain #95; human deadline and result-window UX remains #96.
 
 ## Promotion rule
 

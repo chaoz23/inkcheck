@@ -26,12 +26,12 @@ Inkcheck's future value is planned to come from a reproducible hybrid: broad see
 
 | Dimension | Current | 10/10 direction |
 | --- | ---: | --- |
-| Actionable, repeatable QA | **7/10** | Stable findings and exact replay across edit/CI/agent campaigns |
+| Actionable, repeatable QA | **8/10** | Stable findings and exact replay across edit/CI/agent campaigns |
 | Honest bounded evidence | **8/10** | Facts, estimates, limits, uncertainty, and proof always separated |
 | Robust unknown-shape exploration | **6/10** | Broad cross-family value without traversal or fixture overfitting |
 | Structured specialist advantage | **2/10** | Gates, loops, boundaries, and hubs tested by bounded expert probes |
-| Anytime value per wall clock | **5/10** | Early result windows, dynamic allocation, deadlines, and long-tail work |
-| Author and agent intent | **6/10** | Safe invariants, goals, resource posture, and compact explanations |
+| Anytime value per wall clock | **6/10** | Early result windows, dynamic allocation, deadlines, and long-tail work |
+| Author and agent intent | **7/10** | Safe invariants, goals, resource posture, and compact explanations |
 | Demonstrated generalization | **4/10** | Predeclared multi-project corpus, including genuinely medium/large work |
 
 These are separate scores, not an average. A high trust score cannot offset a lost runtime error. The detailed [product and engineering truths scorecard](docs/product-engineering-scorecard.md) defines every 10/10 target, current evidence, engineering constraints, and the reassessment protocol used at each epic or release. The first complete [policy v2 promotion evaluation](docs/promotion-policy-v2-evaluation.md) keeps dynamic allocation experimental rather than turning mixed evidence into a launch claim.
@@ -204,6 +204,8 @@ Tools for AI agents working on ink stories:
 | `story_stats` | Word/knot/choice counts + full knot list with locations |
 | `playtest_story` | Play one scripted choice path headlessly; returns transcript, tags, variables, errors |
 | `explore_story` | Bounded systematic walk: terminal states, error repro paths, knot coverage, limitations |
+| `start_campaign` | Start a durable policy-bound campaign and execute its first exact result window |
+| `continue_campaign` | Execute the next campaign-allocated exact window under aggregate limits |
 | `start_search` | Start one durable exact shared-search result window and receive a bearer capability |
 | `inspect_search` | Reopen bounded session status and privacy-minimal saved findings |
 | `continue_search` | Raise the cumulative grant by up to 5M and continue the exact frontier |
@@ -229,7 +231,7 @@ or to any MCP client config:
 }
 ```
 
-The compact loop is edit `.ink` → `compile_story` → `explore_story` → fix confirmed findings → repeat. For long jobs, replace the one-shot exploration with result-window sessions. Start/continue are synchronous calls, so cancellation is trustworthy at returned durable boundaries, not mid-window preemption. `inspect_search` stays privacy-minimal; `add_goal` can spend a separately reported directed budget without weakening the exact base search, and `replay_witness` is the explicit boundary that returns one current transcript, choice trail, and variable state. For runtime failures, `pin_regression` before editing and `check_regression` afterward provide a deterministic fixed/still-failing/path-changed verdict without another search run. See [MCP result-window sessions](docs/mcp-search-sessions.md).
+The compact loop is edit `.ink` → `compile_story` → `explore_story` → fix confirmed findings → repeat. For long jobs, replace the one-shot exploration with result-window sessions. `start_campaign` / `continue_campaign` add a durable aggregate policy and measured spend/provenance around the same exact shared frontier; ordinary `start_search` / `continue_search` retain explicit cumulative-grant control. Calls are synchronous, so cancellation is trustworthy at returned durable boundaries, not mid-window preemption. `inspect_search` stays privacy-minimal; `add_goal` can spend a separately reported directed budget without weakening the exact base search, and `replay_witness` is the explicit boundary that returns one current transcript, choice trail, and variable state. For runtime failures, `pin_regression` before editing and `check_regression` afterward provide a deterministic fixed/still-failing/path-changed verdict without another search run. See [MCP result-window sessions](docs/mcp-search-sessions.md).
 
 ## CLI
 

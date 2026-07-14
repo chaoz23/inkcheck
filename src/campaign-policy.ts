@@ -16,6 +16,8 @@ export type CampaignStopReason =
   | "disk_ceiling"
   | "cost_ceiling"
   | "concurrency_ceiling"
+  | "frontier_ceiling"
+  | "cancelled"
   | "source_changed";
 
 export interface CampaignPolicyInput {
@@ -84,6 +86,13 @@ export interface CampaignAllocation {
     authoredCoverage: number;
     terminalVariants: number;
   };
+  provenance?: {
+    reportId: string;
+    checkpointId?: string;
+    elapsedMs: number;
+    peakMemoryBytes: number;
+    diskBytes: number;
+  };
 }
 
 export interface CampaignLedger {
@@ -133,6 +142,9 @@ export interface CommitCampaignRunInput {
   costMicrounits?: number;
   stopReason: string;
   yield?: CampaignAllocation["yield"];
+  reportId?: string;
+  checkpointId?: string;
+  windowElapsedMs?: number;
 }
 
 export type CampaignPlan =
@@ -174,6 +186,10 @@ function clone<T>(value: T): T {
 
 function stableHash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+export function campaignLedgerDigest(ledger: CampaignLedger): string {
+  return stableHash(ledger);
 }
 
 function validatePartition(partition: CampaignPartition): CampaignPartition {
@@ -427,6 +443,10 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
   if (input.yield) {
     for (const [key, value] of Object.entries(input.yield)) integer(value, `yield.${key}`, 0);
   }
+  if (input.reportId !== undefined && !/^report-[0-9a-f]{24}$/.test(input.reportId)) throw new Error("reportId is invalid");
+  if (input.checkpointId !== undefined && !/^checkpoint-[0-9a-f]{24}$/.test(input.checkpointId)) throw new Error("checkpointId is invalid");
+  if (input.checkpointId !== undefined && input.reportId === undefined) throw new Error("checkpointId requires reportId provenance");
+  if (input.windowElapsedMs !== undefined) integer(input.windowElapsedMs, "windowElapsedMs", 0);
   if (input.consumedStates > allocation.grantedStates) throw new Error("child run consumed more states than its allocation");
   const elapsedMs = elapsed(ledger, input.now);
   if (elapsedMs > ledger.policy.ceilings.maxElapsedMs) throw new Error("child result crossed the campaign elapsed-time ceiling");
@@ -447,6 +467,15 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
   target.completedAt = new Date(input.now).toISOString();
   target.stopReason = input.stopReason;
   if (input.yield) target.yield = clone(input.yield);
+  if (input.reportId) {
+    target.provenance = {
+      reportId: input.reportId,
+      ...(input.checkpointId ? { checkpointId: input.checkpointId } : {}),
+      elapsedMs: input.windowElapsedMs ?? elapsedMs,
+      peakMemoryBytes: input.peakMemoryBytes,
+      diskBytes: input.currentDiskBytes,
+    };
+  }
   next.spend = {
     states: next.spend.states + input.consumedStates,
     elapsedMs,
@@ -464,4 +493,18 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
     reason: input.stopReason,
   });
   return next;
+}
+
+export function finishCampaignLedger(
+  ledger: CampaignLedger,
+  input: { now: string; bindingFingerprint: string; reason: Exclude<CampaignStopReason, "concurrency_ceiling" | "source_changed">; message: string }
+): CampaignLedger {
+  if (ledger.status !== "active") throw new Error(`campaign is ${ledger.status}`);
+  positiveFingerprint(input.bindingFingerprint);
+  if (input.bindingFingerprint !== ledger.bindingFingerprint) throw new Error("source/config fingerprint changed; invalidate the campaign instead");
+  if (activeAllocations(ledger).length > 0) throw new Error("campaign cannot finish while a run allocation is active");
+  if (!/^[\x20-\x7e]{1,256}$/.test(input.message)) throw new Error("campaign finish message must be compact printable text");
+  const result = stop(ledger, input.now, input.reason, input.message);
+  if (result.action !== "stop") throw new Error("campaign finish did not produce a terminal ledger");
+  return result.ledger;
 }
