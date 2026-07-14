@@ -22,6 +22,7 @@ import {
   inspectSearchSession,
   MAX_MCP_SESSION_TOTAL_STATES,
   MAX_MCP_SESSION_WINDOW_STATES,
+  replaySessionWitness,
   startSearchSession,
 } from "./search-sessions";
 
@@ -345,6 +346,27 @@ server.registerTool(
   async (input) => {
     try {
       return json(await cancelSearchSession(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
+
+server.registerTool(
+  "replay_witness",
+  {
+    description:
+      "Explicitly replay one stable finding from the session's latest report against current source. This execution boundary returns transcript, choice text, and variables; ordinary inspect_search responses remain privacy-minimal. Successful replay advances the session revision and records only a bounded opaque audit event.",
+    inputSchema: {
+      file: z.string().describe("The same root .ink file used to start the session"),
+      sessionCapability: z.string().describe("Opaque bearer capability returned by start_search"),
+      revision: z.number().int().min(1).describe("Last observed session revision"),
+      findingId: z.string().min(1).max(256).describe("Stable finding ID returned by inspect_search.savedFindings"),
+    },
+  },
+  async (input) => {
+    try {
+      return json(await replaySessionWitness(input));
     } catch (error) {
       return err(error instanceof Error ? error.message : String(error));
     }

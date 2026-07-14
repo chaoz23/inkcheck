@@ -70,6 +70,7 @@ export interface InkcheckCapabilities {
     savedFindingLookup: boolean;
     resumableSearch: boolean;
     interactiveSearchSessions: boolean;
+    sessionWitnessReplay: boolean;
   };
 }
 
@@ -120,6 +121,7 @@ export function capabilities(): InkcheckCapabilities {
       savedFindingLookup: true,
       resumableSearch: true,
       interactiveSearchSessions: true,
+      sessionWitnessReplay: true,
     },
   };
 }

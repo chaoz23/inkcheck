@@ -208,6 +208,7 @@ Tools for AI agents working on ink stories:
 | `inspect_search` | Reopen bounded session status and privacy-minimal saved findings |
 | `continue_search` | Raise the cumulative grant by up to 5M and continue the exact frontier |
 | `cancel_search` | Cancel between windows, retaining recoverability unless explicitly discarded |
+| `replay_witness` | Explicitly replay one stable session finding against current source |
 
 Add to Claude Code:
 
@@ -225,7 +226,7 @@ or to any MCP client config:
 }
 ```
 
-The compact loop is edit `.ink` → `compile_story` → `explore_story` → fix confirmed findings → repeat. For long jobs, replace the one-shot exploration with result-window sessions. Start/continue are synchronous calls, so cancellation is trustworthy at returned durable boundaries, not mid-window preemption. See [MCP result-window sessions](docs/mcp-search-sessions.md).
+The compact loop is edit `.ink` → `compile_story` → `explore_story` → fix confirmed findings → repeat. For long jobs, replace the one-shot exploration with result-window sessions. Start/continue are synchronous calls, so cancellation is trustworthy at returned durable boundaries, not mid-window preemption. `inspect_search` stays privacy-minimal; `replay_witness` is the explicit boundary that returns one current transcript, choice trail, and variable state. See [MCP result-window sessions](docs/mcp-search-sessions.md).
 
 ## CLI
 
