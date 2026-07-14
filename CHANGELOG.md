@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Complete the local report-storage lifecycle (#136/#63): report directories/files are private, durable atomic writes sync before and after rename, and new saves fail cleanly above 256 MiB per report or 1 GiB per project without deleting stable evidence. `artifacts delete` and per-entrypoint `artifacts prune --keep N` are preview-first, require `--apply`, and cap each deterministic cleanup batch at 100 reports. Capabilities expose every ceiling.
+
 - Add bounded saved-finding lookup and exact CLI witness replay (#134). `artifacts findings` pages through privacy-minimal summaries without story prose, variables, or witness paths; `artifacts finding` fetches one complete stable finding; and `artifacts replay` recompiles current source and follows the saved indexed choices with the recorded story seed. Cursors are report-bound, duplicate IDs fail closed, and stale/path-changed reports cannot execute historical witnesses.
 
 - Persist and resume exact base-shared CLI checkpoints (#132). `--save-checkpoint` writes a private, atomic, source/config-bound artifact when live work remains; `resume <id> --max-states N` continues to a larger total grant in a fresh process and automatically saves the next generation. `checkpoints list/show` exposes bounded freshness metadata, corrupt/stale/incompatible artifacts fail closed, and deterministic retention keeps three generations per entrypoint under 512 MiB single-file and 1 GiB project ceilings. Capabilities advertise schema v1 and the CLI-only resume surface; unsupported search modes and tracker state are rejected rather than approximated. Shared search now also uses the documented global default depth of 100 instead of its stale internal value of 30.

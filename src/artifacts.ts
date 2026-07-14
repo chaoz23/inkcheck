@@ -3,7 +3,14 @@ import * as fs from "fs";
 import * as path from "path";
 import { compile, scanExternals } from "./inklecate";
 import { playtest, type PlaytestResult } from "./explore";
-import { ARTIFACT_SCHEMA_VERSION, REPORT_SCHEMA_VERSION } from "./discovery";
+import {
+  ARTIFACT_SCHEMA_VERSION,
+  DEFAULT_MAX_PROJECT_REPORT_BYTES,
+  DEFAULT_MAX_REPORT_BYTES,
+  MAX_REPORT_PRUNE_PER_RUN,
+  REPORT_SCHEMA_VERSION,
+} from "./discovery";
+export { DEFAULT_MAX_PROJECT_REPORT_BYTES, DEFAULT_MAX_REPORT_BYTES, MAX_REPORT_PRUNE_PER_RUN } from "./discovery";
 import { VERSION } from "./version";
 
 export type ArtifactFreshness = "current" | "stale" | "path_changed";
@@ -40,10 +47,26 @@ export interface ReportArtifactSummary extends ArtifactReference {
   inkcheckVersion: string;
   reportSchemaVersion: number;
   entrypoint: string;
+  sizeBytes: number;
 }
 
 export const DEFAULT_FINDING_PAGE_SIZE = 20;
 export const MAX_FINDING_PAGE_SIZE = 100;
+export interface ReportStorageLimits {
+  maxReportBytes?: number;
+  maxProjectBytes?: number;
+}
+
+export interface ReportLifecycleResult {
+  operation: "delete" | "prune";
+  applied: boolean;
+  keepPerEntrypoint?: number;
+  candidateCount: number;
+  selectedCount: number;
+  remainingCandidates: number;
+  bytes: number;
+  candidates: ReportArtifactSummary[];
+}
 
 export interface SavedFindingSummary {
   id: string;
@@ -163,6 +186,56 @@ function loadArtifact(projectRoot: string, id: string): ReportArtifact {
   return parseArtifact(fs.readFileSync(file, "utf8"), id);
 }
 
+function artifactSummary(projectRoot: string, artifact: ReportArtifact): ReportArtifactSummary {
+  return {
+    id: artifact.id,
+    path: artifactRelativePath(artifact.id),
+    artifactType: "report",
+    createdAt: artifact.createdAt,
+    inkcheckVersion: artifact.inkcheckVersion,
+    reportSchemaVersion: artifact.reportSchemaVersion,
+    entrypoint: artifact.source.entrypoint,
+    sizeBytes: fs.statSync(artifactFile(projectRoot, artifact.id)).size,
+  };
+}
+
+function reportRecords(projectRoot: string): Array<ReportArtifactSummary & { file: string }> {
+  const directory = reportsDirectory(projectRoot);
+  if (!fs.existsSync(directory)) return [];
+  return fs.readdirSync(directory)
+    .filter((name) => /^report-[0-9a-f]{24}\.json$/.test(name))
+    .map((name) => {
+      const id = name.slice(0, -5);
+      const artifact = loadArtifact(projectRoot, id);
+      return { ...artifactSummary(projectRoot, artifact), file: artifactFile(projectRoot, id) };
+    });
+}
+
+function reportStorageLimits(input: ReportStorageLimits): Required<ReportStorageLimits> {
+  const limits = {
+    maxReportBytes: input.maxReportBytes ?? DEFAULT_MAX_REPORT_BYTES,
+    maxProjectBytes: input.maxProjectBytes ?? DEFAULT_MAX_PROJECT_REPORT_BYTES,
+  };
+  for (const [name, value] of Object.entries(limits)) {
+    if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive safe integer`);
+  }
+  return limits;
+}
+
+function syncDirectory(directory: string): void {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(directory, "r");
+    fs.fsyncSync(fd);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EISDIR"
+      && code !== "EPERM" && code !== "EACCES" && code !== "EBADF") throw error;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
 function recordsFromReport(report: Record<string, unknown>): SavedFindingRecord[] {
   const records: SavedFindingRecord[] = [];
   const push = (value: unknown, section: string) => {
@@ -266,7 +339,8 @@ export function artifactProjectRoot(entrypoint: string, configFile?: string): st
 export function saveReportArtifact(
   projectRoot: string,
   entrypoint: string,
-  report: Record<string, unknown>
+  report: Record<string, unknown>,
+  inputLimits: ReportStorageLimits = {}
 ): ArtifactReference {
   const root = path.resolve(projectRoot);
   const absoluteSource = path.resolve(entrypoint);
@@ -275,9 +349,12 @@ export function saveReportArtifact(
   const id = reportId(relativeSource, report);
   const directory = reportsDirectory(root);
   const destination = artifactFile(root, id);
-  fs.mkdirSync(directory, { recursive: true });
+  const limits = reportStorageLimits(inputLimits);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") fs.chmodSync(directory, 0o700);
   if (fs.existsSync(destination)) {
     parseArtifact(fs.readFileSync(destination, "utf8"), id);
+    if (process.platform !== "win32") fs.chmodSync(destination, 0o600);
     return { id, path: artifactRelativePath(id) };
   }
   const fingerprint = fingerprintFromReport(report);
@@ -293,35 +370,86 @@ export function saveReportArtifact(
     effectiveConfiguration: report.effectiveConfiguration,
     report,
   };
+  const serialized = `${JSON.stringify(artifact, null, 2)}\n`;
+  const bytes = Buffer.byteLength(serialized, "utf8");
+  if (bytes > limits.maxReportBytes) {
+    throw new Error(`report is ${bytes} bytes, above the ${limits.maxReportBytes}-byte single-report limit`);
+  }
+  const existingBytes = reportRecords(root).reduce((total, item) => total + item.sizeBytes, 0);
+  if (existingBytes + bytes > limits.maxProjectBytes) {
+    throw new Error(`saving this report would use ${existingBytes + bytes} bytes, above the ${limits.maxProjectBytes}-byte project report quota; delete or prune reports explicitly`);
+  }
   const temporary = path.join(directory, `.${id}.${process.pid}.${randomUUID()}.tmp`);
+  let fd: number | undefined;
   try {
-    fs.writeFileSync(temporary, `${JSON.stringify(artifact, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    fd = fs.openSync(temporary, "wx", 0o600);
+    fs.writeFileSync(fd, serialized, "utf8");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
     fs.renameSync(temporary, destination);
+    syncDirectory(directory);
   } finally {
+    if (fd !== undefined) fs.closeSync(fd);
     fs.rmSync(temporary, { force: true });
   }
   return { id, path: artifactRelativePath(id) };
 }
 
 export function listReportArtifacts(projectRoot: string): ReportArtifactSummary[] {
-  const directory = reportsDirectory(projectRoot);
-  if (!fs.existsSync(directory)) return [];
-  return fs.readdirSync(directory)
-    .filter((name) => /^report-[0-9a-f]{24}\.json$/.test(name))
-    .map((name) => {
-      const id = name.slice(0, -5);
-      const artifact = loadArtifact(projectRoot, id);
-      return {
-        id,
-        path: artifactRelativePath(id),
-        artifactType: "report" as const,
-        createdAt: artifact.createdAt,
-        inkcheckVersion: artifact.inkcheckVersion,
-        reportSchemaVersion: artifact.reportSchemaVersion,
-        entrypoint: artifact.source.entrypoint,
-      };
-    })
+  return reportRecords(projectRoot)
+    .map(({ file: _file, ...artifact }) => artifact)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
+}
+
+export function deleteReportArtifact(projectRoot: string, id: string, apply = false): ReportLifecycleResult {
+  const artifact = artifactSummary(projectRoot, loadArtifact(projectRoot, id));
+  if (apply) {
+    fs.rmSync(artifactFile(projectRoot, id));
+    syncDirectory(reportsDirectory(projectRoot));
+  }
+  return {
+    operation: "delete",
+    applied: apply,
+    candidateCount: 1,
+    selectedCount: 1,
+    remainingCandidates: 0,
+    bytes: artifact.sizeBytes,
+    candidates: [artifact],
+  };
+}
+
+export function pruneReportArtifacts(
+  projectRoot: string,
+  keepPerEntrypoint: number,
+  apply = false
+): ReportLifecycleResult {
+  if (!Number.isSafeInteger(keepPerEntrypoint) || keepPerEntrypoint < 0) {
+    throw new RangeError("keepPerEntrypoint must be a non-negative safe integer");
+  }
+  const records = reportRecords(projectRoot);
+  const entrypoints = [...new Set(records.map((record) => record.entrypoint))].sort();
+  const candidates = entrypoints.flatMap((entrypoint) => records
+    .filter((record) => record.entrypoint === entrypoint)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id))
+    .slice(keepPerEntrypoint))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt)
+      || a.entrypoint.localeCompare(b.entrypoint) || a.id.localeCompare(b.id));
+  const selected = candidates.slice(0, MAX_REPORT_PRUNE_PER_RUN);
+  if (apply && selected.length > 0) {
+    for (const artifact of selected) fs.rmSync(artifact.file);
+    syncDirectory(reportsDirectory(projectRoot));
+  }
+  return {
+    operation: "prune",
+    applied: apply,
+    keepPerEntrypoint,
+    candidateCount: candidates.length,
+    selectedCount: selected.length,
+    remainingCandidates: candidates.length - selected.length,
+    bytes: selected.reduce((total, artifact) => total + artifact.sizeBytes, 0),
+    candidates: selected.map(({ file: _file, ...artifact }) => artifact),
+  };
 }
 
 export async function openReportArtifact(projectRoot: string, id: string): Promise<{
@@ -353,13 +481,7 @@ export async function openReportArtifact(projectRoot: string, id: string): Promi
   }
   return {
     artifact: {
-      id: artifact.id,
-      path: artifactRelativePath(artifact.id),
-      artifactType: "report",
-      createdAt: artifact.createdAt,
-      inkcheckVersion: artifact.inkcheckVersion,
-      reportSchemaVersion: artifact.reportSchemaVersion,
-      entrypoint: artifact.source.entrypoint,
+      ...artifactSummary(projectRoot, artifact),
       freshness,
       ...(currentFingerprint ? { currentFingerprint } : {}),
     },
