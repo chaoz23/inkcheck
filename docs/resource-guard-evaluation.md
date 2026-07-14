@@ -29,6 +29,36 @@ Expanded shared nodes now release state JSON immediately. Their compact parent m
 
 These probes show that expanded payload and dead ancestry are collectible while a large live frontier remains available for continued search. They do not establish a universal frontier size, a complete 5M run, or an optimal stopping point.
 
+## Adversarial scaling fixtures
+
+Two checked-in fixtures isolate the growth modes behind the original failure. `low-dedup-wide.ink` is a ternary depth-14 tree whose path code keeps every state distinct. `deep-branching.ink` is a binary depth-100 tree whose string witness prefix makes both state payload and ancestry depth explicit. Both produced zero dedupe hits in these cells.
+
+| Fixture | Budget | Unique states | Peak pending | Peak accounted bytes | Nodes released | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| low-dedup wide | 500 | 351 | 184 | 440,481 | 69 | clean `maxStates` stop |
+| low-dedup wide | 2,000 | 1,245 | 578 | 1,560,209 | 352 | clean `maxStates` stop |
+| deep branching | 500 | 493 | 243 | 565,854 | 5 | clean `maxStates` stop |
+| deep branching | 2,000 | 1,589 | 589 | 2,235,754 | 402 | clean `maxStates` stop |
+
+The regression suite verifies the direction of growth rather than freezing machine timing. A 64-checkpoint count envelope stopped the wide fixture at 114 transitions while preserving 12 terminal findings. A 128 KiB checkpoint-payload envelope stopped the deep fixture at 230 transitions with 130,718 live pending JSON/variable bytes. Both reported only `truncatedBy.frontier`, stayed inside their configured envelope, and did not pretend the state budget was exhausted.
+
+## Matched Intercept checkpoint envelopes
+
+The original failure class now also has a real-story envelope test. Both cells used depth 100, seed 1, a 5,000,000-state ceiling, no repro slice, and a 120-second time backstop that did not bind.
+
+| Pending payload envelope | States reached | Terminal states | Knots | Unique states | Peak pending payload | Peak accounted bytes | Nodes released | Result |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 64 MiB | 71,971 | 299 | 29 | 48,929 | 67,105,965 | 76,655,622 | 16,465 | clean `frontier` stop |
+| 128 MiB | 151,324 | 461 | 29 | 100,562 | 134,216,791 | 152,911,941 | 36,403 | clean `frontier` stop |
+
+Doubling the pending payload envelope produced 162 more terminal-state variants but no additional authored-knot coverage or critical findings. The shadow curve still observed terminal/state novelty near the 128 MiB stop, so the long tail is real; this comparison does not establish that every additional terminal-state variant has equivalent author value.
+
+### Spill decision
+
+Disk spill remains deferred, not assumed. The in-memory envelope already turns the former OOM class into predictable partial evidence, and authors with available RAM can raise one explicit limit. A disk-backed shared frontier would add random-access I/O, ordering, schema/checksum, cleanup, and corruption-recovery contracts while dedupe and semantic indexes would still grow in memory.
+
+A spill prototype becomes justified when a predeclared matched evaluation shows that, under a fixed total memory ceiling, it recovers critical findings, assertion/goal progress, authored coverage, or independently validated ending diversity that the in-memory envelope loses, with acceptable wall-clock and deterministic-report cost across more than one story family. Intercept terminal multiplicity alone is not that evidence. Compact durable replay belongs with #63; aggregate ceilings across concurrent workers remain an acceptance condition of #94.
+
 The Dog promotion cell previously became `unavailable` when its worker was hard-killed. It now returns a matched partial comparison with explicit limits. Promotion workers persist one atomic evidence snapshot per deterministic scheduler window; a hard timeout can recover the latest complete snapshot, while a worker that dies before its first snapshot remains honestly unavailable.
 
 ## What this establishes
@@ -42,4 +72,4 @@ The Dog promotion cell previously became `unavailable` when its worker was hard-
 
 ## What remains in issue #98
 
-Disk spill, compact replay recipes, and multi-worker global memory accounting remain open. Those require evidence that in-memory envelopes are insufficient before adding I/O complexity, and they remain prerequisites for durable checkpoint campaigns and #94 concurrency. Safety caps are backstops rather than the v0.6 efficiency policy: choosing a useful result window still requires marginal discovery yield, throughput, recovery-gap, and resource-growth evidence.
+The direct single-worker #98 failure class now has component accounting, collection, adversarial scaling characterization, and explicit count/byte envelopes proven on The Intercept. Disk spill is gated by the evidence rule above rather than treated as mandatory. Compact durable replay remains #63 work, and multi-worker aggregate ceilings remain with #94 because no concurrent production engine exists yet. Safety caps are backstops rather than the v0.6 efficiency policy: choosing a useful result window still requires marginal discovery yield, throughput, recovery-gap, and resource-growth evidence.

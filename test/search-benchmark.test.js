@@ -38,6 +38,8 @@ const STORYLETS = path.join(FIXTURES, "storylet-machine.ink");
 const EARLY_GRID = path.join(FIXTURES, "early-variable-grid.ink");
 const FINITE_LOOP = path.join(FIXTURES, "finite-counter-loop.ink");
 const GATED_ENDING = path.join(FIXTURES, "gated-ending.ink");
+const LOW_DEDUP_WIDE = path.join(FIXTURES, "low-dedup-wide.ink");
+const DEEP_BRANCHING = path.join(FIXTURES, "deep-branching.ink");
 const PROMOTION_CLI = path.join(__dirname, "..", "dist", "promotion-benchmark-cli.js");
 
 const EMPTY_TRUNCATION = {
@@ -270,10 +272,68 @@ test("variable vocabulary isolates rare causal changes without key-order noise",
 });
 
 test("all adversarial search fixtures compile", async () => {
-  for (const fixture of [LOCK, PLATEAU, STORYLETS, EARLY_GRID, FINITE_LOOP, GATED_ENDING]) {
+  for (const fixture of [LOCK, PLATEAU, STORYLETS, EARLY_GRID, FINITE_LOOP, GATED_ENDING, LOW_DEDUP_WIDE, DEEP_BRANCHING]) {
     const compiled = await compile(fixture);
     assert.strictEqual(compiled.success, true, path.basename(fixture));
   }
+});
+
+test("shared retained-memory ladders characterize low-dedup and deep-branching growth", async () => {
+  for (const fixture of [LOW_DEDUP_WIDE, DEEP_BRANCHING]) {
+    const compiled = await compile(fixture);
+    const knots = scanKnots(fixture);
+    const observations = [500, 2_000].map((maxStates) => {
+      const report = exploreShared(compiled.storyJson, knots, [], {
+        maxDepth: 150,
+        maxStates,
+        seed: 7,
+      });
+      const pass = report.passes[0];
+      assert.strictEqual(pass.dedupeHits, 0, path.basename(fixture));
+      assert.strictEqual(report.truncatedBy.maxStates, true, path.basename(fixture));
+      assert.ok(pass.sharedMemory.releasedNodes > 0, path.basename(fixture));
+      return {
+        uniqueStates: pass.uniqueStates,
+        peakPendingStates: pass.peakPendingStates,
+        peakAccountedBytes: pass.sharedMemory.peak.totalAccountedBytes,
+      };
+    });
+    assert.ok(observations[1].uniqueStates > observations[0].uniqueStates, path.basename(fixture));
+    assert.ok(observations[1].peakPendingStates > observations[0].peakPendingStates, path.basename(fixture));
+    assert.ok(observations[1].peakAccountedBytes > observations[0].peakAccountedBytes, path.basename(fixture));
+  }
+});
+
+test("shared checkpoint envelopes bind cleanly on adversarial growth shapes", async () => {
+  const wideCompiled = await compile(LOW_DEDUP_WIDE);
+  const countBound = exploreShared(wideCompiled.storyJson, scanKnots(LOW_DEDUP_WIDE), [], {
+    maxDepth: 150,
+    maxStates: 5_000,
+    seed: 7,
+    sharedMaxPendingStates: 64,
+  });
+  const countMemory = countBound.passes[0].sharedMemory;
+  assert.strictEqual(countBound.truncatedBy.frontier, true);
+  assert.strictEqual(countBound.truncatedBy.maxStates, false);
+  assert.ok(countBound.statesExplored < 5_000);
+  assert.ok(countBound.endingsFound.length > 0);
+  assert.ok(countMemory.peak.pendingStates <= 64);
+  assert.strictEqual(countMemory.limits.maxPendingStates, 64);
+
+  const deepCompiled = await compile(DEEP_BRANCHING);
+  const byteLimit = 128 * 1024;
+  const byteBound = exploreShared(deepCompiled.storyJson, scanKnots(DEEP_BRANCHING), [], {
+    maxDepth: 150,
+    maxStates: 5_000,
+    seed: 7,
+    sharedMaxPendingBytes: byteLimit,
+  });
+  const byteMemory = byteBound.passes[0].sharedMemory;
+  assert.strictEqual(byteBound.truncatedBy.frontier, true);
+  assert.strictEqual(byteBound.truncatedBy.maxStates, false);
+  assert.ok(byteBound.statesExplored < 5_000);
+  assert.ok(byteMemory.peak.pendingStateBytes + byteMemory.peak.pendingVariableBytes <= byteLimit);
+  assert.strictEqual(byteMemory.limits.maxPendingBytes, byteLimit);
 });
 
 test("finite lock benchmark preserves exact states and proves the graph exhaustive", async () => {
