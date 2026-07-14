@@ -20,6 +20,7 @@ import {
   cancelSearchSession,
   checkSessionRegression,
   continueSearchSession,
+  continueCampaign,
   DEFAULT_MCP_SESSION_WINDOW_STATES,
   inspectSearchSession,
   MAX_MCP_SESSION_TOTAL_STATES,
@@ -27,6 +28,7 @@ import {
   pinSessionRegression,
   replaySessionWitness,
   startSearchSession,
+  startCampaign,
 } from "./search-sessions";
 
 const server = new McpServer({ name: "inkcheck", version: VERSION });
@@ -300,6 +302,62 @@ server.registerTool(
 );
 
 server.registerTool(
+  "start_campaign",
+  {
+    description:
+      "Start one durable source-bound campaign and execute its first exact shared-search result window. Campaign policy enforces aggregate limits and protected reserves; dynamic knee stopping remains inactive.",
+    inputSchema: {
+      file: z.string().describe("Path to the root .ink file"),
+      intent: z.enum(["scarce", "balanced", "abundant"]).describe("Resource posture controlling conservative window and reserve defaults"),
+      totalStates: z.number().int().min(10).max(MAX_MCP_SESSION_TOTAL_STATES).describe("Aggregate campaign state ceiling"),
+      windowStates: z.number().int().min(1).max(MAX_MCP_SESSION_WINDOW_STATES).optional().describe("Optional explicit per-window grant"),
+      maxElapsedSeconds: z.number().int().min(1).max(604800).describe("Aggregate elapsed-time ceiling, up to seven days"),
+      maxMemoryMb: z.number().int().min(1).max(1000000).optional().describe("Campaign heap ceiling; defaults to Inkcheck's safe V8 watermark"),
+      maxDiskMb: z.number().int().min(1).max(1000000).describe("Aggregate ceiling for campaign-referenced report and checkpoint artifacts"),
+      deadlineAt: z.string().datetime().optional().describe("Optional absolute ISO-8601 deadline"),
+      longTailShare: z.number().min(0).max(0.9).optional().describe("Protected state share for later-peak probes"),
+      minLongTailProbes: z.number().int().min(0).max(1000000).optional(),
+      regressionReserveStates: z.number().int().min(0).max(MAX_MCP_SESSION_TOTAL_STATES).optional(),
+      maxDepth: z.number().int().min(1).max(1000).optional(),
+      seed: z.number().int().min(1).max(4294967295).optional(),
+      storySeed: z.number().int().min(1).max(MAX_STORY_SEED).optional(),
+      maxFrontierStates: z.number().int().min(1).max(100000000).optional(),
+      maxFrontierMb: z.number().int().min(1).max(1000000).optional(),
+      findingLimit: z.number().int().min(1).max(100).optional(),
+    },
+  },
+  async (input) => {
+    try {
+      return json(await startCampaign(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
+
+server.registerTool(
+  "continue_campaign",
+  {
+    description:
+      "Execute the next policy-allocated exact campaign window from its durable checkpoint. Returns measured spend/yield and the latest immutable report window; stale revisions and changed source fail closed.",
+    inputSchema: {
+      file: z.string().describe("The same root .ink file used to start the campaign"),
+      sessionCapability: z.string().describe("Opaque bearer capability returned by start_campaign"),
+      revision: z.number().int().min(1).describe("Last observed campaign session revision"),
+      findingLimit: z.number().int().min(1).max(100).optional(),
+      findingCursor: z.string().optional(),
+    },
+  },
+  async (input) => {
+    try {
+      return json(await continueCampaign(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
+
+server.registerTool(
   "start_search",
   {
     description:
@@ -335,7 +393,7 @@ server.registerTool(
   "inspect_search",
   {
     description:
-      "Inspect a durable MCP result-window session between windows. Returns bounded session evidence and privacy-minimal saved finding summaries, never the full report or sensitive frontier payload.",
+      "Inspect a durable MCP result-window session or campaign between windows. Returns bounded session/campaign evidence and privacy-minimal saved finding summaries, never the full report or sensitive frontier payload.",
     inputSchema: {
       file: z.string().describe("The same root .ink file used to start the session"),
       sessionCapability: z.string().describe("Opaque bearer capability returned by start_search"),
@@ -403,7 +461,7 @@ server.registerTool(
   "cancel_search",
   {
     description:
-      "Cancel a durable MCP search between result windows. By default the exact checkpoint is retained and can be continued later; discard=true forgets the session metadata and bearer capability. This cannot interrupt a start_search or continue_search call already running.",
+      "Cancel a durable MCP search or campaign between result windows. Ordinary sessions retain their exact checkpoint by default; campaigns become terminal but retain the latest report/checkpoint provenance. discard=true forgets metadata and the bearer capability.",
     inputSchema: {
       file: z.string().describe("The same root .ink file used to start the session"),
       sessionCapability: z.string().describe("Opaque bearer capability returned by start_search"),

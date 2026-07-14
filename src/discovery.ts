@@ -15,6 +15,7 @@ import {
   MAX_MCP_SESSION_FILES,
   MAX_MCP_SESSION_TOTAL_STATES,
   MAX_MCP_SESSION_WINDOW_STATES,
+  MAX_MCP_CAMPAIGN_WINDOWS,
   SEARCH_SESSION_SCHEMA_VERSION,
 } from "./search-session-contract";
 import {
@@ -22,6 +23,7 @@ import {
   MAX_REGRESSION_PINS_PER_PROJECT,
   REGRESSION_ARTIFACT_SCHEMA_VERSION,
 } from "./regression-contract";
+import { CAMPAIGN_POLICY_SCHEMA_VERSION } from "./campaign-policy";
 
 export const CAPABILITIES_SCHEMA_VERSION = 1;
 export const PROJECT_INSPECTION_SCHEMA_VERSION = 1;
@@ -39,7 +41,7 @@ export const MAX_INSPECT_EXTERNALS = 200;
 export interface InkcheckCapabilities {
   schemaVersion: number;
   inkcheckVersion: string;
-  schemas: { report: number; config: number; projectInspection: number; artifact: number; checkpointArtifact: number; searchSession: number; regressionArtifact: number };
+  schemas: { report: number; config: number; projectInspection: number; artifact: number; checkpointArtifact: number; searchSession: number; regressionArtifact: number; campaignPolicy: number };
   limits: {
     maxDepth: number;
     maxStates: number;
@@ -61,6 +63,7 @@ export interface InkcheckCapabilities {
     maxMcpSessionTotalStates: number;
     maxMcpSessionFiles: number;
     maxMcpSessionEvents: number;
+    maxMcpCampaignWindows: number;
     maxRegressionPinBytes: number;
     maxRegressionPinsPerProject: number;
   };
@@ -80,6 +83,7 @@ export interface InkcheckCapabilities {
     sessionWitnessReplay: boolean;
     sessionRegressionPins: boolean;
     sessionGoalProbes: boolean;
+    campaignResultWindows: boolean;
   };
 }
 
@@ -95,6 +99,7 @@ export function capabilities(): InkcheckCapabilities {
       checkpointArtifact: CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
       searchSession: SEARCH_SESSION_SCHEMA_VERSION,
       regressionArtifact: REGRESSION_ARTIFACT_SCHEMA_VERSION,
+      campaignPolicy: CAMPAIGN_POLICY_SCHEMA_VERSION,
     },
     limits: {
       maxDepth: 1_000,
@@ -117,6 +122,7 @@ export function capabilities(): InkcheckCapabilities {
       maxMcpSessionTotalStates: MAX_MCP_SESSION_TOTAL_STATES,
       maxMcpSessionFiles: MAX_MCP_SESSION_FILES,
       maxMcpSessionEvents: MAX_MCP_SESSION_EVENTS,
+      maxMcpCampaignWindows: MAX_MCP_CAMPAIGN_WINDOWS,
       maxRegressionPinBytes: MAX_REGRESSION_PIN_BYTES,
       maxRegressionPinsPerProject: MAX_REGRESSION_PINS_PER_PROJECT,
     },
@@ -136,6 +142,7 @@ export function capabilities(): InkcheckCapabilities {
       sessionWitnessReplay: true,
       sessionRegressionPins: true,
       sessionGoalProbes: true,
+      campaignResultWindows: true,
     },
   };
 }

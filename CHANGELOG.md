@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add the deterministic v0.6 campaign-policy and aggregate-ledger foundation: scarce/balanced/abundant postures, protected regression and long-tail reserves, source/config binding, hard resource ceilings, partition descriptors, and explicit bounded-evidence semantics. This does not activate dynamic production allocation or add a campaign execution surface yet.
+- Add durable MCP campaign result windows with `start_campaign` and `continue_campaign`. Campaigns reuse the exact shared frontier, survive fresh processes, enforce aggregate state/time/deadline/memory/disk limits between windows, retain immutable report/checkpoint provenance, invalidate safely on source edits, and preserve the latest partial report on cancellation or a hard boundary. Independent child strategies, concurrency, cross-run finding merge, and dynamic knee stopping remain unavailable.
 
 ## 0.6.0-beta.1 — 2026-07-14
 

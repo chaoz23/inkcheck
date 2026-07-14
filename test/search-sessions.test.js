@@ -12,11 +12,14 @@ const {
   cancelSearchSession,
   checkSessionRegression,
   continueSearchSession,
+  continueCampaign,
   inspectSearchSession,
   pinSessionRegression,
   replaySessionWitness,
   startSearchSession,
+  startCampaign,
 } = require("../dist/search-sessions");
+const { campaignLedgerDigest } = require("../dist/campaign-policy");
 
 const FIXTURE = path.join(__dirname, "fixtures", "search", "low-dedup-wide.ink");
 
@@ -61,6 +64,226 @@ test("MCP result-window continuation equals one uninterrupted shared run", async
   } finally {
     fs.rmSync(split.root, { recursive: true, force: true });
     fs.rmSync(full.root, { recursive: true, force: true });
+  }
+});
+
+test("campaign result-window continuation equals one uninterrupted shared run", async () => {
+  const split = project();
+  const full = project();
+  try {
+    const first = await startCampaign({
+      file: split.file,
+      intent: "balanced",
+      totalStates: 1_000,
+      windowStates: 73,
+      maxElapsedSeconds: 60,
+      maxDiskMb: 100,
+      maxDepth: 150,
+      seed: 7,
+      longTailShare: 0,
+      minLongTailProbes: 0,
+      regressionReserveStates: 0,
+    });
+    assert.strictEqual(first.session.status, "paused");
+    assert.strictEqual(first.campaign.windows, 1);
+    assert.strictEqual(first.campaign.unusedStates, 1_000 - first.session.statesExplored);
+    await assert.rejects(
+      () => continueSearchSession({
+        file: split.file,
+        sessionCapability: first.sessionCapability,
+        revision: first.session.revision,
+        maxStates: 146,
+      }),
+      /must use continue_campaign/
+    );
+    await assert.rejects(
+      () => addSessionGoal({
+        file: split.file,
+        sessionCapability: first.sessionCapability,
+        revision: first.session.revision,
+        maxStates: 10,
+        goal: { id: "forbidden", condition: { left: { variable: "depth" }, operator: ">=", right: { literal: 1 } } },
+      }),
+      /not available inside a campaign/
+    );
+    const resumed = await continueCampaign({
+      file: split.file,
+      sessionCapability: first.sessionCapability,
+      revision: first.session.revision,
+    });
+    const uninterrupted = await startSearchSession({ file: full.file, maxStates: 146, maxDepth: 150, seed: 7 });
+    const splitReport = await openReportArtifact(split.root, resumed.session.latestReportId);
+    const fullReport = await openReportArtifact(full.root, uninterrupted.session.latestReportId);
+    assert.deepStrictEqual(splitReport.report, fullReport.report);
+    assert.strictEqual(resumed.session.latestReportId, uninterrupted.session.latestReportId);
+    assert.strictEqual(resumed.campaign.windows, 2);
+    assert.strictEqual(resumed.campaign.spend.states, resumed.session.statesExplored);
+    assert.ok(resumed.campaign.spend.peakMemoryBytes > 0);
+    assert.ok(resumed.campaign.spend.currentDiskBytes > 0);
+    assert.strictEqual(resumed.campaign.latestWindow.reportId, resumed.session.latestReportId);
+    assert.strictEqual(resumed.campaign.latestWindow.checkpointId, resumed.session.latestCheckpointId);
+    assert.strictEqual(resumed.nextOperation.tool, "continue_campaign");
+  } finally {
+    fs.rmSync(split.root, { recursive: true, force: true });
+    fs.rmSync(full.root, { recursive: true, force: true });
+  }
+});
+
+test("campaign policies are bounded by the durable metadata window quota", async () => {
+  const { root, file } = project();
+  try {
+    await assert.rejects(
+      () => startCampaign({
+        file,
+        intent: "balanced",
+        totalStates: 1_000,
+        windowStates: 1,
+        maxElapsedSeconds: 60,
+        maxDiskMb: 100,
+        longTailShare: 0,
+        minLongTailProbes: 0,
+        regressionReserveStates: 0,
+      }),
+      /more than 512 durable windows/
+    );
+    assert.strictEqual(fs.existsSync(path.join(root, ".inkcheck", "sessions")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("campaign metadata is private, restart-safe, provenance-bound, and digest checked", async () => {
+  const { root, file } = project();
+  try {
+    const started = await startCampaign({
+      file,
+      intent: "scarce",
+      totalStates: 1_000,
+      windowStates: 73,
+      maxElapsedSeconds: 60,
+      maxDiskMb: 100,
+      longTailShare: 0,
+      minLongTailProbes: 0,
+      regressionReserveStates: 0,
+    });
+    const inspected = await inspectSearchSession({ file, sessionCapability: started.sessionCapability });
+    assert.strictEqual(inspected.campaign.campaignId, started.campaign.campaignId);
+    assert.strictEqual(inspected.sessionCapability, undefined);
+    const directory = path.join(root, ".inkcheck", "sessions");
+    const metadata = path.join(directory, fs.readdirSync(directory)[0]);
+    const raw = fs.readFileSync(metadata, "utf8");
+    assert.strictEqual(raw.includes(started.sessionCapability), false);
+    for (const sensitive of ["stateJson", "choicePath", "transcript", "variables", "frontier", "nodes"]) {
+      assert.strictEqual(raw.includes(sensitive), false, `campaign metadata leaked ${sensitive}`);
+    }
+    const value = JSON.parse(raw);
+    const allocation = value.campaign.ledger.allocations[0];
+    assert.match(allocation.provenance.reportId, /^report-[0-9a-f]{24}$/);
+    assert.match(allocation.provenance.checkpointId, /^checkpoint-[0-9a-f]{24}$/);
+    assert.ok(allocation.provenance.elapsedMs >= 0);
+    value.campaign.ledger.spend.states += 1;
+    fs.writeFileSync(metadata, JSON.stringify(value));
+    await assert.rejects(
+      () => inspectSearchSession({ file, sessionCapability: started.sessionCapability }),
+      /missing required bounded fields/
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("campaign stale revisions and source changes fail closed while retaining prior evidence", async () => {
+  const { root, file } = project();
+  try {
+    const started = await startCampaign({
+      file,
+      intent: "balanced",
+      totalStates: 1_000,
+      windowStates: 73,
+      maxElapsedSeconds: 60,
+      maxDiskMb: 100,
+      longTailShare: 0,
+      minLongTailProbes: 0,
+      regressionReserveStates: 0,
+    });
+    await assert.rejects(
+      () => continueCampaign({ file, sessionCapability: started.sessionCapability, revision: 99 }),
+      /revision is 1, not 99/
+    );
+    const priorReport = started.session.latestReportId;
+    const priorCheckpoint = started.session.latestCheckpointId;
+    fs.appendFileSync(file, "\nChanged after campaign window.\n");
+    const invalidated = await continueCampaign({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: 1,
+    });
+    assert.strictEqual(invalidated.campaign.status, "invalidated");
+    assert.strictEqual(invalidated.campaign.stopReason, "source_changed");
+    assert.strictEqual(invalidated.session.latestReportId, priorReport);
+    assert.strictEqual(invalidated.session.recoverable, false);
+    assert.strictEqual(invalidated.session.latestCheckpointId, undefined);
+    const metadata = JSON.parse(fs.readFileSync(path.join(root, ".inkcheck", "sessions", fs.readdirSync(path.join(root, ".inkcheck", "sessions"))[0]), "utf8"));
+    assert.strictEqual(metadata.campaign.ledger.allocations[0].provenance.checkpointId, priorCheckpoint);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("campaign cancellation and persisted hard boundaries retain the latest partial report", async () => {
+  const cancelledProject = project();
+  const boundedProject = project();
+  try {
+    const cancelledStart = await startCampaign({
+      file: cancelledProject.file,
+      intent: "scarce",
+      totalStates: 1_000,
+      windowStates: 73,
+      maxElapsedSeconds: 60,
+      maxDiskMb: 100,
+      longTailShare: 0,
+      minLongTailProbes: 0,
+      regressionReserveStates: 0,
+    });
+    const cancelled = await cancelSearchSession({
+      file: cancelledProject.file,
+      sessionCapability: cancelledStart.sessionCapability,
+      revision: 1,
+    });
+    assert.strictEqual(cancelled.campaign.status, "complete");
+    assert.strictEqual(cancelled.campaign.stopReason, "cancelled");
+    assert.strictEqual(cancelled.session.recoverable, false);
+    assert.strictEqual(cancelled.session.latestReportId, cancelledStart.session.latestReportId);
+    assert.strictEqual(cancelled.nextOperation.tool, "start_campaign");
+
+    const bounded = await startCampaign({
+      file: boundedProject.file,
+      intent: "balanced",
+      totalStates: 1_000,
+      windowStates: 73,
+      maxElapsedSeconds: 60,
+      maxDiskMb: 100,
+      longTailShare: 0,
+      minLongTailProbes: 0,
+      regressionReserveStates: 0,
+    });
+    const directory = path.join(boundedProject.root, ".inkcheck", "sessions");
+    const metadata = path.join(directory, fs.readdirSync(directory)[0]);
+    const value = JSON.parse(fs.readFileSync(metadata, "utf8"));
+    value.campaign.ledger.spend.currentDiskBytes = value.campaign.ledger.policy.ceilings.maxDiskBytes;
+    value.campaign.digest = campaignLedgerDigest(value.campaign.ledger);
+    fs.writeFileSync(metadata, JSON.stringify(value));
+    const stopped = await continueCampaign({
+      file: boundedProject.file,
+      sessionCapability: bounded.sessionCapability,
+      revision: 1,
+    });
+    assert.strictEqual(stopped.campaign.stopReason, "disk_ceiling");
+    assert.strictEqual(stopped.session.latestReportId, bounded.session.latestReportId);
+    assert.strictEqual(stopped.campaign.windows, 1);
+  } finally {
+    fs.rmSync(cancelledProject.root, { recursive: true, force: true });
+    fs.rmSync(boundedProject.root, { recursive: true, force: true });
   }
 });
 
@@ -187,7 +410,7 @@ test("MCP session metadata rejects incompatible versions and one recoverable ses
     });
     assert.strictEqual(upgraded.session.revision, 2);
     value = JSON.parse(fs.readFileSync(metadata, "utf8"));
-    assert.strictEqual(value.schemaVersion, 4);
+    assert.strictEqual(value.schemaVersion, 5);
     value.schemaVersion = 3;
     delete value.directedGranted;
     delete value.directedStatesExplored;

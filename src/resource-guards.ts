@@ -11,6 +11,7 @@ export interface ResourceGuards {
   deadlineMs?: number;
   memoryGuard: () => boolean;
   timeGuard?: () => boolean;
+  peakMemoryBytes: () => number;
 }
 
 /** Build the same pre-OOM and wall-clock guards for every execution surface. */
@@ -21,10 +22,20 @@ export function createResourceGuards(options: ResourceGuardOptions = {}): Resour
   const deadlineMs = options.maxTimeMs === undefined
     ? undefined
     : (options.startedAtMs ?? Date.now()) + options.maxTimeMs;
+  let peakMemoryBytes = process.memoryUsage().heapUsed;
+  const sampleMemory = (): number => {
+    const current = process.memoryUsage().heapUsed;
+    peakMemoryBytes = Math.max(peakMemoryBytes, current);
+    return current;
+  };
   return {
     memoryCapBytes,
     ...(deadlineMs === undefined ? {} : { deadlineMs }),
-    memoryGuard: () => process.memoryUsage().heapUsed < memoryCapBytes,
+    memoryGuard: () => sampleMemory() < memoryCapBytes,
     ...(deadlineMs === undefined ? {} : { timeGuard: () => Date.now() < deadlineMs }),
+    peakMemoryBytes: () => {
+      sampleMemory();
+      return peakMemoryBytes;
+    },
   };
 }
