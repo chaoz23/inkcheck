@@ -5,6 +5,7 @@ import { recommendNextRun } from "./advice";
 import {
   artifactProjectRoot,
   listReportFindings,
+  replayReportFinding,
   saveReportArtifact,
   type FindingPage,
 } from "./artifacts";
@@ -50,7 +51,7 @@ export {
 } from "./search-session-contract";
 
 type SessionStatus = "paused" | "complete" | "stopped" | "cancelled";
-type SessionEventType = "started" | "continued" | "cancelled";
+type SessionEventType = "started" | "continued" | "cancelled" | "replayed";
 
 interface SearchSessionEvent {
   sequence: number;
@@ -60,10 +61,12 @@ interface SearchSessionEvent {
   statesExplored: number;
   reportId: string;
   checkpointId?: string;
+  findingId?: string;
+  replayStatus?: "completed" | "runtime_error" | "path_changed";
 }
 
 interface SearchSessionRecord {
-  schemaVersion: 1;
+  schemaVersion: 2;
   artifactType: "mcp-search-session";
   inkcheckVersion: string;
   capabilityHash: string;
@@ -157,6 +160,24 @@ export interface CancelSearchInput {
   discard?: boolean;
 }
 
+export interface ReplayWitnessInput {
+  file: string;
+  sessionCapability: string;
+  revision: number;
+  findingId: string;
+}
+
+export interface ReplayWitnessResponse {
+  schemaVersion: number;
+  inkcheckVersion: string;
+  session: SearchSessionResponse["session"];
+  reportId: string;
+  finding: Awaited<ReturnType<typeof replayReportFinding>>["finding"];
+  replay: Awaited<ReturnType<typeof replayReportFinding>>["replay"];
+  disclosure: string;
+  nextOperation: { tool: "inspect_search"; reason: string };
+}
+
 function sessionsDirectory(projectRoot: string): string {
   return path.join(path.resolve(projectRoot), ".inkcheck", "sessions");
 }
@@ -194,7 +215,8 @@ function parseRecord(raw: string, expectedHash?: string): SearchSessionRecord {
   }
   if (!value || typeof value !== "object") throw new Error("search session metadata must be a JSON object");
   const record = value as Partial<SearchSessionRecord>;
-  if (record.schemaVersion !== SEARCH_SESSION_SCHEMA_VERSION) {
+  const sourceSchema = (record as { schemaVersion?: unknown }).schemaVersion;
+  if (sourceSchema !== 1 && sourceSchema !== SEARCH_SESSION_SCHEMA_VERSION) {
     throw new Error(`unsupported search session schema ${String(record.schemaVersion)}; use a compatible Inkcheck version or start a new session`);
   }
   const findings = record.findings as Partial<SearchSessionRecord["findings"]> | undefined;
@@ -205,16 +227,21 @@ function parseRecord(raw: string, expectedHash?: string): SearchSessionRecord {
   const validEvent = (event: unknown): boolean => {
     if (!event || typeof event !== "object" || Array.isArray(event)) return false;
     const item = event as Partial<SearchSessionEvent>;
-    const allowed = ["checkpointId", "reportId", "revision", "sequence", "statesExplored", "totalGranted", "type"];
+    const allowed = ["checkpointId", "findingId", "replayStatus", "reportId", "revision", "sequence", "statesExplored", "totalGranted", "type"];
     if (Object.keys(item).some((key) => !allowed.includes(key))) return false;
+    const replayEvent = item.type === "replayed";
     return Number.isSafeInteger(item.sequence) && (item.sequence as number) >= 1
-      && ["started", "continued", "cancelled"].includes(String(item.type))
+      && ["started", "continued", "cancelled", "replayed"].includes(String(item.type))
       && Number.isSafeInteger(item.revision) && (item.revision as number) >= 1
       && Number.isSafeInteger(item.totalGranted) && (item.totalGranted as number) >= 1
       && Number.isSafeInteger(item.statesExplored) && (item.statesExplored as number) >= 0
       && typeof item.reportId === "string" && /^report-[0-9a-f]{24}$/.test(item.reportId)
       && (item.checkpointId === undefined
-        || (typeof item.checkpointId === "string" && /^checkpoint-[0-9a-f]{24}$/.test(item.checkpointId)));
+        || (typeof item.checkpointId === "string" && /^checkpoint-[0-9a-f]{24}$/.test(item.checkpointId)))
+      && (replayEvent && sourceSchema === SEARCH_SESSION_SCHEMA_VERSION
+        ? typeof item.findingId === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(item.findingId)
+          && ["completed", "runtime_error", "path_changed"].includes(String(item.replayStatus))
+        : item.findingId === undefined && item.replayStatus === undefined);
   };
   if (record.artifactType !== "mcp-search-session" || typeof record.inkcheckVersion !== "string"
     || typeof record.capabilityHash !== "string" || !/^[0-9a-f]{64}$/.test(record.capabilityHash)
@@ -247,7 +274,7 @@ function parseRecord(raw: string, expectedHash?: string): SearchSessionRecord {
     || (record.status === "stopped" && record.recoverable)) {
     throw new Error("search session recoverability does not match its status and checkpoint metadata");
   }
-  return record as SearchSessionRecord;
+  return { ...(record as Omit<SearchSessionRecord, "schemaVersion">), schemaVersion: SEARCH_SESSION_SCHEMA_VERSION };
 }
 
 function syncDirectory(directory: string): void {
@@ -600,4 +627,45 @@ export async function cancelSearchSession(input: CancelSearchInput): Promise<Can
   });
   writeRecord(projectRoot, updated, record.revision);
   return sessionResponse(projectRoot, updated, {});
+}
+
+export async function replaySessionWitness(input: ReplayWitnessInput): Promise<ReplayWitnessResponse> {
+  const { projectRoot, record } = loadSession(input.file, input.sessionCapability);
+  if (record.revision !== input.revision) {
+    throw new Error(`search session revision is ${record.revision}, not ${input.revision}; inspect it before retrying`);
+  }
+  if (!/^[A-Za-z0-9._:-]{1,256}$/.test(input.findingId)) {
+    throw new Error("findingId must be a stable Inkcheck finding ID");
+  }
+  const replayed = await replayReportFinding(projectRoot, record.latestReportId, input.findingId);
+  const nextRevision = record.revision + 1;
+  const updated: SearchSessionRecord = {
+    ...record,
+    updatedAt: new Date().toISOString(),
+    revision: nextRevision,
+  };
+  appendEvent(updated, {
+    type: "replayed",
+    revision: nextRevision,
+    totalGranted: updated.totalGranted,
+    statesExplored: updated.statesExplored,
+    reportId: updated.latestReportId,
+    ...(updated.latestCheckpointId ? { checkpointId: updated.latestCheckpointId } : {}),
+    findingId: replayed.finding.id,
+    replayStatus: replayed.replay.replayStatus,
+  });
+  writeRecord(projectRoot, updated, record.revision);
+  return {
+    schemaVersion: SEARCH_SESSION_SCHEMA_VERSION,
+    inkcheckVersion: VERSION,
+    session: responseSession(updated),
+    reportId: updated.latestReportId,
+    finding: replayed.finding,
+    replay: replayed.replay,
+    disclosure: "Explicit witness replay includes story transcript, choice text, and final variables. Session inspection and metadata remain privacy-minimal.",
+    nextOperation: {
+      tool: "inspect_search",
+      reason: "Inspect the updated revision before continuing, cancelling, or replaying another finding.",
+    },
+  };
 }

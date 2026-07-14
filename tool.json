@@ -121,7 +121,7 @@
     },
     "jsonSchema": {
       "reportEnvelope": "{ schemaVersion: 1, inkcheckVersion, storyFingerprint: {algorithm, source, value}, effectiveConfiguration, bindingLimit, compile, stats?, profile?, explore?, nextRun?, runs?, checkpoint?: {saved, id?, path?, pruned?, resumedFrom?, reason?} }",
-      "capabilities": "{ schemaVersion, inkcheckVersion, schemas: {report, config, projectInspection, artifact, checkpointArtifact, searchSession}, limits: {..., defaultMcpSessionWindowStates, maxMcpSessionWindowStates, maxMcpSessionTotalStates, maxMcpSessionFiles, maxMcpSessionEvents}, searchModes, resumableSearchSurfaces, features: {projectInspection, indexedWitnesses, assertions, goals, localReportArtifacts, savedFindingLookup, resumableSearch, interactiveSearchSessions} }",
+      "capabilities": "{ schemaVersion, inkcheckVersion, schemas: {report, config, projectInspection, artifact, checkpointArtifact, searchSession}, limits: {..., defaultMcpSessionWindowStates, maxMcpSessionWindowStates, maxMcpSessionTotalStates, maxMcpSessionFiles, maxMcpSessionEvents}, searchModes, resumableSearchSurfaces, features: {projectInspection, indexedWitnesses, assertions, goals, localReportArtifacts, savedFindingLookup, resumableSearch, interactiveSearchSessions, sessionWitnessReplay} }",
       "searchSession": "{ schemaVersion, inkcheckVersion, sessionCapability?: bearer-secret, session: {revision, status, recoverable, totalGranted, statesExplored, latestReportId, latestCheckpointId?, bindingLimit, findings, events, droppedEventCount}, savedFindings, nextOperation }",
       "savedFindings": "{ artifact: {id, entrypoint, freshness}, findings: [{id, kind, section, hasWitness, hasReplay, sourceLocation?}], page: {limit, returned, total, nextCursor} }; fetch returns one summary plus complete finding; replay returns summary plus playtest result",
       "artifactLifecycle": "{ operation: 'delete'|'prune', applied, keepPerEntrypoint?, candidateCount, selectedCount, remainingCandidates, bytes, candidates: [{id, path, entrypoint, createdAt, sizeBytes}] }",
@@ -193,6 +193,10 @@
       {
         "name": "cancel_search",
         "description": "Cancel between result windows, retaining recoverability by default or explicitly forgetting session metadata."
+      },
+      {
+        "name": "replay_witness",
+        "description": "Explicitly replay one stable latest-report finding against current source; returns transcript, choice text, and variables and advances the session revision."
       }
     ]
   },

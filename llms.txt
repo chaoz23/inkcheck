@@ -66,6 +66,7 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 - inspect_search — bounded session status and privacy-minimal saved finding summaries; no full report/frontier
 - continue_search — continue the exact frontier to a larger cumulative grant, adding at most 5M per call
 - cancel_search — cancel between synchronous windows; retained by default, explicitly forget with `discard: true`
+- replay_witness — explicitly execute one stable latest-report finding against current source; returns transcript/choices/variables, advances revision, and keeps only opaque audit metadata
 
 ## Intended agent loop
 
