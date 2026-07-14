@@ -10,7 +10,7 @@ Successful JSON checks contain:
 - `inkcheckVersion`
 - `storyFingerprint`: SHA-256 of the compiled story used for exploration
 - `effectiveConfiguration`: strategy, repro policy, strict/resource settings, effective search limits, search sampling seed, and initial Ink runtime `storySeed`
-- `bindingLimit`: `null` or the resource/coverage limit that stopped the run
+- `bindingLimit`: `null` or the resource/coverage limit that stopped the run, including an explicit shared `frontier` envelope
 - `compile`, `stats`, optional `profile`, `explore`, `nextRun`, `shadowDecision`, and optional `runs`
 
 Compile-failure reports use the same schema/version fields and fingerprint the entry source because no compiled story exists.
@@ -42,6 +42,8 @@ Runtime errors and endings include:
 Search goals may contain ordered `stages`. Each stage reports `reached`, `not_reached_within_limits`, `proven_unreachable`, or `blocked_by_stage`. Reached stages carry the same indexed replay metadata as a reached top-level goal. A later stage is cumulative: its witness satisfies that stage and every earlier stage on one path.
 
 Each `explore.passes` entry includes a deterministic `discoveryCurve`, bounded to at most 64 samples. Samples record pass-local state count; cumulative and marginal exact terminals, fallback visible outcomes, runtime errors, assertion violations, reached goals/stages, authored knots, and unique-state novelty; plus the gap from the immediately preceding discovery event. Portfolio reports also carry a merged curve recorded in actual scheduler order (cross-pass unique-state novelty is zero because independent pass hashes are not globally comparable). When compaction occurs, early and latest samples are retained while intermediate samples are deterministically downsampled. Wall-clock time remains observational in progress `elapsedMs`, outside the deterministic curve. These are measured yield facts, not an asymptote estimate, stopping recommendation, or coverage proof.
+
+Shared-search pass telemetry includes `sharedMemory.current`, per-component `peak` values, configured pending-state/byte `limits`, `releasedNodes`, and `frontierCompactions`. Components cover pending and active state JSON/variable snapshots, retained witness ancestry, dedupe keys, semantic indexes, frontier references, and findings. Serialized strings use UTF-8 byte counts; structural bytes are documented estimates. `totalAccountedBytes` is deterministic retained-payload accounting, not process heap or RSS.
 
 Portfolio pass telemetry additionally contains `portfolioMarginalCurve` and `portfolioMarginalSummary`. The pass-local curve answers “what did this explorer find itself?”; the marginal curve answers “which findings did this explorer add first to the combined portfolio?” Runtime and assertion credit uses stable identities, approximate runtime locations are conservatively normalized for allocation credit, and every exact ending, visible outcome, authored knot, goal/stage, or critical finding is paid once. Cross-pass state novelty remains zero because independent pass hashes are not comparable. Shadow allocation reads this marginal curve when present; diagnostics retain both.
 

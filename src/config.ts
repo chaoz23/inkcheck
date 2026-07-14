@@ -15,6 +15,10 @@ export interface InkcheckCiConfig {
   search?: "portfolio" | "shared" | "shared-variable";
   maxMemoryMb?: number;
   maxTimeSec?: number;
+  /** Shared search only: explicit retained-checkpoint count envelope. */
+  maxFrontierStates?: number;
+  /** Shared search only: explicit retained-checkpoint payload envelope in MiB. */
+  maxFrontierMb?: number;
   strict?: boolean;
   minRepro?: boolean;
   /** Additional directed-goal work; ordinary maxStates remains unchanged. */
@@ -99,7 +103,7 @@ export function parseProjectConfig(source: string): InkcheckProjectConfig {
     } else {
       unknownKeys(
         value.ci,
-        ["maxDepth", "maxStates", "goalMaxStates", "seed", "storySeed", "search", "maxMemoryMb", "maxTimeSec", "strict", "minRepro"],
+        ["maxDepth", "maxStates", "goalMaxStates", "seed", "storySeed", "search", "maxMemoryMb", "maxTimeSec", "maxFrontierStates", "maxFrontierMb", "strict", "minRepro"],
         "ci",
         issues
       );
@@ -111,6 +115,8 @@ export function parseProjectConfig(source: string): InkcheckProjectConfig {
         storySeed: boundedInteger(value.ci.storySeed, "ci.storySeed", 1, 2_147_483_646, issues),
         maxMemoryMb: boundedInteger(value.ci.maxMemoryMb, "ci.maxMemoryMb", 1, 1_000_000, issues),
         maxTimeSec: boundedInteger(value.ci.maxTimeSec, "ci.maxTimeSec", 1, 86_400, issues),
+        maxFrontierStates: boundedInteger(value.ci.maxFrontierStates, "ci.maxFrontierStates", 1, 100_000_000, issues),
+        maxFrontierMb: boundedInteger(value.ci.maxFrontierMb, "ci.maxFrontierMb", 1, 1_000_000, issues),
       };
       if (value.ci.search !== undefined) {
         if (!["portfolio", "shared", "shared-variable"].includes(value.ci.search as string)) {
@@ -124,6 +130,9 @@ export function parseProjectConfig(source: string): InkcheckProjectConfig {
       }
       for (const key of Object.keys(ci) as Array<keyof InkcheckCiConfig>) {
         if (ci[key] === undefined) delete ci[key];
+      }
+      if ((ci.maxFrontierStates !== undefined || ci.maxFrontierMb !== undefined) && (ci.search ?? "portfolio") === "portfolio") {
+        issues.push("ci.maxFrontierStates/ci.maxFrontierMb: require search: shared or shared-variable");
       }
     }
   }

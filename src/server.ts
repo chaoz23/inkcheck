@@ -136,13 +136,17 @@ server.registerTool(
         .describe("Reserve a small breadth-first slice to shorten repro paths (default true)"),
       search: z.enum(["portfolio", "shared", "shared-variable"]).optional()
         .describe("Search engine: portfolio (default), shared, or variable-aware shared"),
+      maxFrontierStates: z.number().int().min(1).max(100000000).optional()
+        .describe("Shared search only: maximum pending checkpoints retained (default unlimited)"),
+      maxFrontierMb: z.number().int().min(1).max(1000000).optional()
+        .describe("Shared search only: maximum pending checkpoint payload in MiB (default unlimited)"),
       assertions: z.array(z.unknown()).optional()
         .describe("Safe typed assertion definitions using comparisons plus all, any, and not"),
       goals: z.array(z.unknown()).optional()
         .describe("Safe typed target conditions; goalMaxStates enables explicit additional steering work"),
     },
   },
-  async ({ file, maxDepth, maxStates, goalMaxStates, seed, storySeed = DEFAULT_STORY_SEED, minRepro, search, assertions: assertionInput, goals: goalInput }) => {
+  async ({ file, maxDepth, maxStates, goalMaxStates, seed, storySeed = DEFAULT_STORY_SEED, minRepro, search, maxFrontierStates, maxFrontierMb, assertions: assertionInput, goals: goalInput }) => {
     const assertionIssues: string[] = [];
     const assertions = parseAssertionDefinitions(assertionInput, "assertions", assertionIssues) ?? [];
     if (assertionIssues.length) return err(`Invalid assertions:\n${assertionIssues.map((issue) => `- ${issue}`).join("\n")}`);
@@ -155,6 +159,9 @@ server.registerTool(
     if (baselineMaxStates + additionalGoalStates > 100_000_000) {
       return err("maxStates + goalMaxStates must not exceed 100000000");
     }
+    if ((maxFrontierStates !== undefined || maxFrontierMb !== undefined) && (search ?? "portfolio") === "portfolio") {
+      return err("maxFrontierStates/maxFrontierMb require shared or shared-variable search");
+    }
     const compiled = await compile(file);
     const { storyJson: _compiledStoryJson, ...compileReport } = compiled;
     const configuration = {
@@ -163,6 +170,8 @@ server.registerTool(
       strict: false,
       maxMemoryMb: null,
       maxTimeSec: null,
+      maxFrontierStates: maxFrontierStates ?? null,
+      maxFrontierMb: maxFrontierMb ?? null,
       goalMaxStates: additionalGoalStates,
       storySeed,
       ...(assertions.length ? { assertions } : {}),
@@ -202,6 +211,8 @@ server.registerTool(
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
+      sharedMaxPendingStates: maxFrontierStates,
+      sharedMaxPendingBytes: maxFrontierMb === undefined ? undefined : maxFrontierMb * 1024 * 1024,
       assertions,
       goals,
       goalMaxStates: additionalGoalStates,

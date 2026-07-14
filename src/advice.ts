@@ -106,6 +106,18 @@ export function recommendNextRun(
     };
   }
 
+  if (report.truncatedBy.frontier) {
+    return {
+      recommendation: "investigate",
+      stop: true,
+      flags: sameFlags,
+      rationale:
+        "truncatedBy.frontier is true: shared search reached its explicit pending-checkpoint envelope, so a larger state budget would not pass that safety bound.",
+      expectedGain:
+        "none from a larger state run alone — raise the configured shared frontier state/byte envelope if the machine has headroom, or use the portfolio search",
+    };
+  }
+
   const passes = report.passes ?? [];
   const systematicLate = passes.some((p) => p.systematic && discoveredLate(p));
   const randomPass = passes.find((p) => p.pass.startsWith("random:"));

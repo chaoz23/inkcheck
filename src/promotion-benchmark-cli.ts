@@ -125,6 +125,7 @@ function runWorker(
         recovered.summary.result.truncatedBy = {
           ...recovered.summary.result.truncatedBy,
           maxStates: false,
+          frontier: recovered.summary.result.truncatedBy.frontier ?? false,
           time: true,
         };
       }
