@@ -13,12 +13,14 @@ MCP: `inkcheck_capabilities`
 The response is deterministic for an installed Inkcheck version and reports:
 
 - `schemaVersion` and `inkcheckVersion`
-- report, configuration, and project-inspection schema versions
+- report, configuration, project-inspection, and local-artifact schema versions
 - default and maximum state/depth limits
 - supported search modes
 - explicit feature flags, including `false` for features not yet available
 
 Agents should check a feature flag instead of inferring support from missing documentation. Schema version `0` means that contract is not yet available.
+
+`localReportArtifacts: true` means the CLI can save and reopen source-bound reports by stable ID. `resumableSearch: false` remains separate: saved reports do not yet contain a runnable frontier checkpoint.
 
 ## Project inspection
 

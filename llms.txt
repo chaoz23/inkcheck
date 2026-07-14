@@ -22,6 +22,8 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 - Machine reports: schema v1 with stable finding IDs, normalized kinds, story fingerprint, effective configuration, binding limit, and indexed replay witnesses
 - CLI: `npx -y inkcheck <story.ink>`
 - CLI machine output: `npx -y inkcheck <story.ink> --json`
+- Save a source-bound local report: `npx -y inkcheck <story.ink> --save-report --json`
+- Reopen saved evidence by stable ID: `npx -y inkcheck artifacts show <report-id> --json` and require `artifact.freshness == "current"` before treating it as current evidence
 - Human fix list: `npx -y inkcheck <story.ink> --human`
 - Human-readable CI output: `npx -y inkcheck <story.ink> --markdown`
 - CI: `npx -y inkcheck story/main.ink --strict`

@@ -15,6 +15,8 @@ Successful JSON checks contain:
 
 Compile-failure reports use the same schema/version fields and fingerprint the entry source because no compiled story exists.
 
+When the explicit CLI `--save-report` option is used, emitted JSON additionally contains `artifact: { id, path }`. The saved report payload itself remains the ordinary schema-v1 envelope, avoiding a circular content-derived ID. See [local report artifacts](local-artifacts.md) for freshness and compatibility semantics.
+
 ## Findings
 
 Compile issues, runtime errors, and endings have deterministic IDs derived from their normalized kind and stable identity fields. IDs do not depend on report formatting or array position.

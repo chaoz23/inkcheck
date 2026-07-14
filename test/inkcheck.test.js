@@ -1,6 +1,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
@@ -204,11 +205,13 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.features.projectInspection, true);
   assert.strictEqual(value.schemas.report, 1);
   assert.strictEqual(value.schemas.config, CONFIG_SCHEMA_VERSION);
+  assert.strictEqual(value.schemas.artifact, 1);
   assert.strictEqual(value.limits.defaultMaxDepth, 100);
   assert.strictEqual(value.features.indexedWitnesses, true);
   assert.strictEqual(value.features.assertions, true);
   assert.strictEqual(value.features.goals, true);
   assert.strictEqual(value.features.stagedGoals, true);
+  assert.strictEqual(value.features.localReportArtifacts, true);
   assert.strictEqual(value.features.resumableSearch, false);
 });
 
@@ -965,6 +968,101 @@ test("versioned JSON reports have stable identities and exact replay instruction
   const compileFailure = JSON.parse(broken.stdout);
   assert.strictEqual(compileFailure.schemaVersion, 1);
   assert.ok(compileFailure.compile.issues.every((issue) => issue.id && issue.kind));
+});
+
+test("CLI saves, lists, and reopens source-bound report artifacts by stable ID", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-report-artifact-"));
+  const story = path.join(tmp, "story.ink");
+  const args = [CLI, "story.ink", "--max-states", "100", "--no-min-repro", "--progress=off", "--json"];
+  try {
+    fs.writeFileSync(story, "Start\n* [One]\n  -> END\n* [Two]\n  -> END\n");
+    const ordinary = spawnSync(process.execPath, args, { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(ordinary.status, 0, ordinary.stderr);
+    const savedRun = spawnSync(process.execPath, [...args, "--save-report"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(savedRun.status, 0, savedRun.stderr);
+    const saved = JSON.parse(savedRun.stdout);
+    assert.match(saved.artifact.id, /^report-[0-9a-f]{24}$/);
+    assert.strictEqual(saved.artifact.path, `.inkcheck/reports/${saved.artifact.id}.json`);
+    assert.match(savedRun.stderr, new RegExp(`saved report ${saved.artifact.id}`));
+    const artifactFile = path.join(tmp, ...saved.artifact.path.split("/"));
+    assert.strictEqual(fs.existsSync(artifactFile), true);
+    const withoutReference = { ...saved };
+    delete withoutReference.artifact;
+    assert.deepStrictEqual(withoutReference, JSON.parse(ordinary.stdout));
+
+    const repeated = spawnSync(process.execPath, [...args, "--save-report"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(JSON.parse(repeated.stdout).artifact.id, saved.artifact.id);
+    assert.deepStrictEqual(
+      fs.readdirSync(path.dirname(artifactFile)).filter((name) => name.endsWith(".json")),
+      [`${saved.artifact.id}.json`]
+    );
+    assert.strictEqual(fs.readdirSync(path.dirname(artifactFile)).some((name) => name.endsWith(".tmp")), false);
+
+    fs.copyFileSync(story, path.join(tmp, "copy.ink"));
+    const copiedRun = spawnSync(process.execPath, [
+      CLI, "copy.ink", "--max-states", "100", "--no-min-repro", "--progress=off", "--save-report", "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(copiedRun.status, 0, copiedRun.stderr);
+    const copiedId = JSON.parse(copiedRun.stdout).artifact.id;
+    assert.notStrictEqual(copiedId, saved.artifact.id, "identical reports from different entrypoints stay source-bound");
+
+    const listed = spawnSync(process.execPath, [CLI, "artifacts", "list", "--json"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(listed.status, 0, listed.stderr);
+    assert.deepStrictEqual(
+      new Set(JSON.parse(listed.stdout).artifacts.map((item) => item.id)),
+      new Set([saved.artifact.id, copiedId])
+    );
+    const current = spawnSync(process.execPath, [CLI, "artifacts", "show", saved.artifact.id, "--json"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(current.status, 0, current.stderr);
+    assert.strictEqual(JSON.parse(current.stdout).artifact.freshness, "current");
+
+    fs.writeFileSync(story, "Changed\n* [One]\n  -> END\n* [Two]\n  -> END\n");
+    const stale = spawnSync(process.execPath, [CLI, "artifacts", "show", saved.artifact.id, "--json"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(stale.status, 0, stale.stderr);
+    assert.strictEqual(JSON.parse(stale.stdout).artifact.freshness, "stale");
+
+    fs.renameSync(story, path.join(tmp, "moved.ink"));
+    const moved = spawnSync(process.execPath, [CLI, "artifacts", "show", saved.artifact.id, "--json"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(moved.status, 0, moved.stderr);
+    assert.strictEqual(JSON.parse(moved.stdout).artifact.freshness, "path_changed");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("report artifacts fail closed on tampering, incompatible versions, and corruption", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-report-artifact-invalid-"));
+  try {
+    fs.writeFileSync(path.join(tmp, "story.ink"), "Hello\n-> END\n");
+    const savedRun = spawnSync(process.execPath, [
+      CLI, "story.ink", "--max-states", "10", "--no-min-repro", "--progress=off", "--save-report", "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(savedRun.status, 0, savedRun.stderr);
+    const reference = JSON.parse(savedRun.stdout).artifact;
+    const artifactFile = path.join(tmp, ...reference.path.split("/"));
+    const original = fs.readFileSync(artifactFile, "utf8");
+
+    const tampered = JSON.parse(original);
+    tampered.report.inkcheckVersion = "tampered";
+    fs.writeFileSync(artifactFile, JSON.stringify(tampered));
+    const mismatch = spawnSync(process.execPath, [CLI, "artifacts", "show", reference.id, "--json"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(mismatch.status, 2);
+    assert.match(mismatch.stderr, /content does not match its stable ID/);
+
+    const incompatible = JSON.parse(original);
+    incompatible.artifactSchemaVersion = 999;
+    fs.writeFileSync(artifactFile, JSON.stringify(incompatible));
+    const version = spawnSync(process.execPath, [CLI, "artifacts", "show", reference.id, "--json"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(version.status, 2);
+    assert.match(version.stderr, /compatible Inkcheck version or migrate/);
+
+    fs.writeFileSync(artifactFile, "{not-json");
+    const corrupt = spawnSync(process.execPath, [CLI, "artifacts", "show", reference.id, "--json"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(corrupt.status, 2);
+    assert.match(corrupt.stderr, /corrupt JSON/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("shared search exhausts a finite variable-state lock with bounded telemetry", async () => {
