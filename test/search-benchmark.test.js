@@ -6,7 +6,14 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const { compile, scanKnots } = require("../dist/inklecate");
-const { explore, explorePortfolio, exploreRandom, exploreShared } = require("../dist/explore");
+const {
+  SHARED_SEARCH_CHECKPOINT_SCHEMA_VERSION,
+  explore,
+  explorePortfolio,
+  exploreRandom,
+  exploreShared,
+  exploreSharedResumable,
+} = require("../dist/explore");
 const { createResourceGuards } = require("../dist/resource-guards");
 const {
   runSearchBenchmark,
@@ -362,6 +369,123 @@ test("shared checkpoint envelopes bind cleanly on adversarial growth shapes", as
   assert.ok(byteBound.statesExplored < 5_000);
   assert.ok(byteMemory.peak.pendingStateBytes + byteMemory.peak.pendingVariableBytes <= byteLimit);
   assert.strictEqual(byteMemory.limits.maxPendingBytes, byteLimit);
+});
+
+test("base shared search resumes from JSON with the exact uninterrupted result", async () => {
+  const compiled = await compile(LOW_DEDUP_WIDE);
+  const knots = scanKnots(LOW_DEDUP_WIDE);
+  const options = {
+    maxDepth: 150,
+    maxStates: 500,
+    seed: 7,
+    preserveTurnState: false,
+    preserveRandomState: false,
+  };
+  const uninterrupted = exploreSharedResumable(compiled.storyJson, knots, [], options);
+  assert.deepStrictEqual(uninterrupted.result, exploreShared(compiled.storyJson, knots, [], options));
+  const first = exploreSharedResumable(compiled.storyJson, knots, [], {
+    ...options,
+    maxStates: 73,
+  });
+
+  assert.strictEqual(first.checkpoint.schemaVersion, SHARED_SEARCH_CHECKPOINT_SCHEMA_VERSION);
+  assert.strictEqual(first.checkpoint.state.totalGranted, 73);
+  assert.ok(first.checkpoint.state.current.cursor > 0, "fixture should pause partway through a choice list");
+  assert.strictEqual(first.checkpoint.state.truncatedBy.maxStates, false);
+  assert.strictEqual(first.result.truncatedBy.maxStates, true);
+
+  const serialized = JSON.parse(JSON.stringify(first.checkpoint));
+  const resumed = exploreSharedResumable(compiled.storyJson, knots, [], options, serialized);
+  assert.deepStrictEqual(resumed, uninterrupted);
+  assert.strictEqual(resumed.checkpoint.state.totalGranted, 500);
+});
+
+test("shared checkpoints fail closed on incompatible source, options, budget, and state", async () => {
+  const compiled = await compile(LOW_DEDUP_WIDE);
+  const knots = scanKnots(LOW_DEDUP_WIDE);
+  const options = { maxDepth: 150, maxStates: 73, seed: 7 };
+  const first = exploreSharedResumable(compiled.storyJson, knots, [], options);
+  const checkpoint = first.checkpoint;
+  const clone = () => structuredClone(checkpoint);
+
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], { ...options, maxStates: 72 }, checkpoint),
+    /cannot be lower than the checkpoint's total grant/
+  );
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], { ...options, maxStates: 100, seed: 8 }, checkpoint),
+    /source, strategy, limits, seeds/
+  );
+  for (const [changedOptions, changedExternals] of [
+    [{ maxDepth: 149 }, []],
+    [{ storySeed: 2 }, []],
+    [{ preserveTurnState: false }, []],
+    [{ preserveRandomState: false }, []],
+    [{ randomnessDetected: true }, []],
+    [{ sharedMaxPendingStates: 1_000 }, []],
+    [{}, ["HOST_FUNCTION"]],
+  ]) {
+    assert.throws(
+      () => exploreSharedResumable(
+        compiled.storyJson,
+        knots,
+        changedExternals,
+        { ...options, maxStates: 100, ...changedOptions },
+        checkpoint
+      ),
+      /source, strategy, limits, seeds/
+    );
+  }
+  const other = await compile(DEEP_BRANCHING);
+  assert.throws(
+    () => exploreSharedResumable(other.storyJson, scanKnots(DEEP_BRANCHING), [], { ...options, maxStates: 100 }, checkpoint),
+    /source, strategy, limits, seeds/
+  );
+
+  const wrongSchema = clone();
+  wrongSchema.schemaVersion = 999;
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], { ...options, maxStates: 100 }, wrongSchema),
+    /unsupported schema 999/
+  );
+  const badFrontier = clone();
+  badFrontier.state.deep.push(badFrontier.state.nodes.length);
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], { ...options, maxStates: 100 }, badFrontier),
+    /deep frontier contains an invalid node reference/
+  );
+  const badParent = clone();
+  const child = badParent.state.nodes.find((node) => node && node.parent !== null);
+  child.parent = badParent.state.nodes.length;
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], { ...options, maxStates: 100 }, badParent),
+    /invalid parent reference/
+  );
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], { ...options, assertions: [{}] }),
+    /only the base shared strategy/
+  );
+});
+
+test("shared resumable runs export only live frontiers", async () => {
+  const wide = await compile(LOW_DEDUP_WIDE);
+  const stopped = exploreSharedResumable(wide.storyJson, scanKnots(LOW_DEDUP_WIDE), [], {
+    maxDepth: 150,
+    maxStates: 2_000,
+    memoryGuard: () => false,
+  });
+  assert.strictEqual(stopped.checkpoint, undefined);
+  assert.strictEqual(stopped.result.truncatedBy.memory, true);
+  assert.strictEqual(stopped.result.truncatedBy.maxStates, false);
+
+  const finite = await compile(LOCK);
+  const complete = exploreSharedResumable(finite.storyJson, scanKnots(LOCK), [], {
+    maxDepth: 20,
+    maxStates: 1_000,
+  });
+  assert.strictEqual(complete.checkpoint, undefined);
+  assert.strictEqual(complete.result.exhaustive, true);
+  assert.strictEqual(complete.result.truncated, false);
 });
 
 test("finite lock benchmark preserves exact states and proves the graph exhaustive", async () => {

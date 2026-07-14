@@ -697,6 +697,17 @@ export interface DiscoveryCurveSummary {
 
 const MAX_DISCOVERY_CURVE_SAMPLES = 64;
 
+export interface DiscoveryCurveCheckpoint {
+  samples: DiscoveryCurveSample[];
+  previousTotal: number;
+  previousState: number | null;
+  firstState: number | null;
+  eventCount: number;
+  latestGap: number | null;
+  longestGap: number | null;
+  previousCounts: DiscoveryCounts;
+}
+
 export class DiscoveryCurveRecorder {
   private samples: DiscoveryCurveSample[] = [];
   private previousTotal = 0;
@@ -715,6 +726,18 @@ export class DiscoveryCurveRecorder {
     stagesReached: 0,
     uniqueStatesObserved: 0,
   };
+
+  constructor(checkpoint?: DiscoveryCurveCheckpoint) {
+    if (!checkpoint) return;
+    this.samples = checkpoint.samples.map((sample) => ({ ...sample }));
+    this.previousTotal = checkpoint.previousTotal;
+    this.previousState = checkpoint.previousState;
+    this.firstState = checkpoint.firstState;
+    this.eventCount = checkpoint.eventCount;
+    this.latestGap = checkpoint.latestGap;
+    this.longestGap = checkpoint.longestGap;
+    this.previousCounts = { ...checkpoint.previousCounts };
+  }
 
   observe(state: number, counts: DiscoveryCounts): boolean {
     const total = counts.endingsFound + counts.runtimeErrorsFound + counts.knotsVisited
@@ -752,6 +775,19 @@ export class DiscoveryCurveRecorder {
 
   result(): DiscoveryCurveSample[] {
     return this.samples.map((sample) => ({ ...sample }));
+  }
+
+  checkpoint(): DiscoveryCurveCheckpoint {
+    return {
+      samples: this.samples.map((sample) => ({ ...sample })),
+      previousTotal: this.previousTotal,
+      previousState: this.previousState,
+      firstState: this.firstState,
+      eventCount: this.eventCount,
+      latestGap: this.latestGap,
+      longestGap: this.longestGap,
+      previousCounts: { ...this.previousCounts },
+    };
   }
 
   summary(statesExplored: number): DiscoveryCurveSummary {
@@ -1223,7 +1259,9 @@ export function explore(
   return runEngineToBudget(engine, maxStates, opts);
 }
 
-interface SharedNode {
+export const SHARED_SEARCH_CHECKPOINT_SCHEMA_VERSION = 1;
+
+export interface SharedCheckpointNode {
   stateJson?: string;
   variables?: Record<string, unknown>;
   parent: number | null;
@@ -1237,24 +1275,107 @@ interface SharedNode {
   ancestryBytes: number;
 }
 
-interface SharedHeapItem {
+interface SharedChoice {
+  index: number;
+  text: string;
+  sourcePath?: string;
+}
+
+interface SharedActiveCursor {
+  nodeId: number;
+  choices: SharedChoice[];
+  cursor: number;
+}
+
+export interface SharedCheckpointHeapItem {
   id: number;
   score: number;
   order: number;
 }
 
+export interface SharedSearchCheckpoint {
+  schemaVersion: 1;
+  engine: "shared:deep-novelty-v1";
+  configuration: {
+    storySha256: string;
+    knotsSha256: string;
+    maxDepth: number;
+    seed: number;
+    storySeed: number;
+    preserveTurnState: boolean;
+    preserveRandomState: boolean;
+    randomnessDetected: boolean;
+    maxPendingStates: number | null;
+    maxPendingBytes: number | null;
+    externals: string[];
+  };
+  state: {
+    endings: Array<[string, EndingReport]>;
+    visibleOutcomes: string[];
+    runtimeErrors: Array<[string, RuntimeErrorReport]>;
+    runtimeWarnings: string[];
+    visitedKnots: string[];
+    seenStates: string[];
+    seenChoiceSets: string[];
+    variableStateCounts: Array<[string, number]>;
+    variableTransitionCounts: Array<[string, number]>;
+    nodes: Array<SharedCheckpointNode | null>;
+    deep: number[];
+    random: number[];
+    novelty: SharedCheckpointHeapItem[];
+    rngState: number;
+    policyCursor: number;
+    insertionOrder: number;
+    current: SharedActiveCursor | null;
+    pendingStates: number;
+    pendingBytes: number;
+    pendingVariableBytes: number;
+    activeStateBytes: number;
+    activeVariableBytes: number;
+    peakPendingStates: number;
+    peakPendingBytes: number;
+    retainedNodes: number;
+    dedupeBytes: number;
+    semanticIndexBytes: number;
+    releasedNodes: number;
+    frontierCompactions: number;
+    guardChecksSinceLast: number;
+    statesExplored: number;
+    totalGranted: number;
+    dedupeHits: number;
+    maxDepthReached: number;
+    deepestStateDiscovered: number;
+    lastDiscoveryAtState: number | null;
+    discoveryCurve: DiscoveryCurveCheckpoint;
+    truncated: boolean;
+    truncatedBy: TruncationCauses;
+    finished: boolean;
+    findingBytes: number;
+    ancestryPayloadBytes: number;
+    peakRetainedMemory: SharedRetainedMemory;
+  };
+}
+
+interface SharedPassEngine extends PassEngine {
+  checkpoint(): SharedSearchCheckpoint;
+}
+
 class SharedMaxHeap {
-  private readonly items: SharedHeapItem[] = [];
+  private items: SharedCheckpointHeapItem[];
+
+  constructor(items: SharedCheckpointHeapItem[] = []) {
+    this.items = items.map((item) => ({ ...item }));
+  }
 
   get size(): number {
     return this.items.length;
   }
 
-  private higher(a: SharedHeapItem, b: SharedHeapItem): boolean {
+  private higher(a: SharedCheckpointHeapItem, b: SharedCheckpointHeapItem): boolean {
     return a.score > b.score || (a.score === b.score && a.order < b.order);
   }
 
-  push(item: SharedHeapItem): void {
+  push(item: SharedCheckpointHeapItem): void {
     const items = this.items;
     items.push(item);
     let index = items.length - 1;
@@ -1267,7 +1388,7 @@ class SharedMaxHeap {
     items[index] = item;
   }
 
-  pop(): SharedHeapItem | undefined {
+  pop(): SharedCheckpointHeapItem | undefined {
     const items = this.items;
     if (items.length === 0) return undefined;
     const first = items[0];
@@ -1294,6 +1415,27 @@ class SharedMaxHeap {
     this.items.length = 0;
     for (const item of retained) this.push(item);
   }
+
+  checkpoint(): SharedCheckpointHeapItem[] {
+    return this.items.map((item) => ({ ...item }));
+  }
+}
+
+class CheckpointMulberry32 {
+  constructor(private state: number) {
+    this.state >>>= 0;
+  }
+
+  next(): number {
+    this.state = (this.state + 0x6d2b79f5) | 0;
+    let t = Math.imul(this.state ^ (this.state >>> 15), 1 | this.state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+
+  checkpoint(): number {
+    return this.state >>> 0;
+  }
 }
 
 /**
@@ -1303,12 +1445,132 @@ class SharedMaxHeap {
  * frontier drains without a depth/resource cut, but remains opt-in while the
  * benchmark corpus establishes where it complements the default portfolio.
  */
+function validateSharedCheckpoint(
+  checkpoint: SharedSearchCheckpoint,
+  expected: SharedSearchCheckpoint["configuration"]
+): void {
+  const fail = (message: string): never => {
+    throw new RangeError(`Invalid shared checkpoint: ${message}`);
+  };
+  if (!checkpoint || typeof checkpoint !== "object") fail("expected an object");
+  if (checkpoint.schemaVersion !== SHARED_SEARCH_CHECKPOINT_SCHEMA_VERSION) {
+    fail(`unsupported schema ${String(checkpoint.schemaVersion)}; use a compatible Inkcheck version or migrate the checkpoint`);
+  }
+  if (checkpoint.engine !== "shared:deep-novelty-v1") fail(`unsupported engine ${String(checkpoint.engine)}`);
+  if (JSON.stringify(checkpoint.configuration) !== JSON.stringify(expected)) {
+    fail("source, strategy, limits, seeds, state sensitivity, randomness, frontier envelope, or external bindings changed");
+  }
+  const state = checkpoint.state;
+  if (!state || typeof state !== "object" || !Array.isArray(state.nodes)) fail("state and nodes are required");
+  const arrays: Array<[unknown, string]> = [
+    [state.endings, "endings"], [state.visibleOutcomes, "visible outcomes"],
+    [state.runtimeErrors, "runtime errors"], [state.runtimeWarnings, "runtime warnings"],
+    [state.visitedKnots, "visited knots"], [state.seenStates, "seen states"],
+    [state.seenChoiceSets, "seen choice sets"], [state.variableStateCounts, "variable state counts"],
+    [state.variableTransitionCounts, "variable transition counts"], [state.deep, "deep frontier"],
+    [state.random, "random frontier"], [state.novelty, "novelty frontier"],
+  ];
+  for (const [value, label] of arrays) {
+    if (!Array.isArray(value)) fail(`${label} must be an array`);
+  }
+  const nonNegative = [
+    state.policyCursor, state.insertionOrder, state.pendingStates, state.pendingBytes,
+    state.pendingVariableBytes, state.activeStateBytes, state.activeVariableBytes,
+    state.peakPendingStates, state.peakPendingBytes, state.retainedNodes,
+    state.dedupeBytes, state.semanticIndexBytes, state.releasedNodes,
+    state.frontierCompactions, state.guardChecksSinceLast, state.statesExplored, state.totalGranted,
+    state.dedupeHits, state.maxDepthReached, state.deepestStateDiscovered,
+    state.findingBytes, state.ancestryPayloadBytes,
+  ];
+  if (nonNegative.some((value) => !Number.isSafeInteger(value) || value < 0)) fail("counters must be non-negative safe integers");
+  if (state.statesExplored > state.totalGranted) fail("statesExplored cannot exceed totalGranted");
+  if (!Number.isSafeInteger(state.rngState) || state.rngState < 0 || state.rngState > 0xffffffff) fail("RNG state is malformed");
+  if (state.finished || state.truncatedBy?.maxStates || state.truncatedBy?.frontier || state.truncatedBy?.memory || state.truncatedBy?.time) {
+    fail("completed or resource-stopped state is not resumable");
+  }
+  for (let id = 0; id < state.nodes.length; id++) {
+    const node = state.nodes[id];
+    if (node === null) continue;
+    if (!node || !Number.isSafeInteger(node.depth) || node.depth < 0
+      || !Number.isSafeInteger(node.childRefs) || node.childRefs < 0
+      || !Number.isSafeInteger(node.stateBytes) || node.stateBytes < 0
+      || !Number.isSafeInteger(node.variableBytes) || node.variableBytes < 0
+      || !Number.isSafeInteger(node.ancestryBytes) || node.ancestryBytes < 0) {
+      fail(`node ${id} is malformed`);
+    }
+    if (node.parent !== null
+      && (!Number.isSafeInteger(node.parent) || node.parent < 0 || node.parent >= state.nodes.length || state.nodes[node.parent] === null)) {
+      fail(`node ${id} has an invalid parent reference`);
+    }
+    if (node.active && (typeof node.stateJson !== "string" || !node.variables || typeof node.variables !== "object")) {
+      fail(`active node ${id} is missing serialized state`);
+    }
+  }
+  const childCounts = new Array<number>(state.nodes.length).fill(0);
+  for (const node of state.nodes) {
+    if (node?.parent !== null && node?.parent !== undefined) childCounts[node.parent]++;
+  }
+  for (let id = 0; id < state.nodes.length; id++) {
+    const node = state.nodes[id];
+    if (node && node.childRefs !== childCounts[id]) fail(`node ${id} child reference count is inconsistent`);
+  }
+  const ancestryStatus = new Uint8Array(state.nodes.length);
+  for (let start = 0; start < state.nodes.length; start++) {
+    if (!state.nodes[start] || ancestryStatus[start] === 2) continue;
+    const trail: number[] = [];
+    let id: number | null = start;
+    while (id !== null && ancestryStatus[id] === 0) {
+      ancestryStatus[id] = 1;
+      trail.push(id);
+      id = state.nodes[id]!.parent;
+    }
+    if (id !== null && ancestryStatus[id] === 1) fail("witness ancestry contains a cycle");
+    for (const visited of trail) ancestryStatus[visited] = 2;
+  }
+  const validateIds = (ids: number[], label: string) => {
+    if (!Array.isArray(ids) || ids.some((id) => !Number.isSafeInteger(id) || id < 0 || id >= state.nodes.length)) {
+      fail(`${label} contains an invalid node reference`);
+    }
+  };
+  validateIds(state.deep, "deep frontier");
+  validateIds(state.random, "random frontier");
+  if (state.novelty.some((item) => !item || !Number.isSafeInteger(item.id)
+    || !Number.isFinite(item.score) || !Number.isSafeInteger(item.order) || item.order < 0)) {
+    fail("novelty frontier contains a malformed item");
+  }
+  validateIds(state.novelty.map((item) => item.id), "novelty frontier");
+  if (state.current) {
+    const node = state.nodes[state.current.nodeId];
+    if (!Number.isSafeInteger(state.current.nodeId) || !node?.active
+      || !Array.isArray(state.current.choices) || !Number.isSafeInteger(state.current.cursor)
+      || state.current.cursor < 0 || state.current.cursor >= state.current.choices.length
+      || state.current.choices.some((choice) => !choice || !Number.isSafeInteger(choice.index)
+        || choice.index < 0 || typeof choice.text !== "string"
+        || (choice.sourcePath !== undefined && typeof choice.sourcePath !== "string"))) {
+      fail("active cursor is malformed or references an inactive node");
+    }
+  }
+  const active = state.nodes.filter((node) => node?.active && node.stateJson !== undefined).length;
+  if (active !== state.pendingStates + (state.current ? 1 : 0)) fail("pending-state count does not match the retained frontier");
+  const referenced = new Set<number>([
+    ...state.deep,
+    ...state.random,
+    ...state.novelty.map((item) => item.id),
+  ]);
+  for (let id = 0; id < state.nodes.length; id++) {
+    if (state.nodes[id]?.active && id !== state.current?.nodeId && !referenced.has(id)) {
+      fail(`pending node ${id} is absent from every frontier view`);
+    }
+  }
+}
+
 function createSharedEngine(
   storyJson: string,
   knots: KnotInfo[],
   externals: string[],
-  opts: ExploreOptions
-): PassEngine {
+  opts: ExploreOptions,
+  checkpoint?: SharedSearchCheckpoint
+): SharedPassEngine {
   const maxDepth = opts.maxDepth ?? 30;
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
     throw new RangeError("maxDepth must be an integer from 1 to 1000");
@@ -1327,6 +1589,9 @@ function createSharedEngine(
   }
   const variableAware = opts.sharedVariableAware ?? false;
   const goalAware = opts.sharedGoalAware ?? false;
+  if (checkpoint && (variableAware || goalAware || opts.assertions?.length || opts.goals?.length)) {
+    throw new RangeError("Invalid shared checkpoint: this schema supports only base shared search without assertions or goals");
+  }
   const foundBy = goalAware
     ? `shared:goal-directed-v1:seed=${seed}`
     : variableAware
@@ -1336,53 +1601,70 @@ function createSharedEngine(
     turns: opts.preserveTurnState ?? true,
     randomness: opts.preserveRandomState ?? true,
   };
+  const checkpointConfiguration: SharedSearchCheckpoint["configuration"] = {
+    storySha256: createHash("sha256").update(storyJson).digest("hex"),
+    knotsSha256: createHash("sha256").update(JSON.stringify(knots)).digest("hex"),
+    maxDepth,
+    seed,
+    storySeed: normalizeStorySeed(opts.storySeed),
+    preserveTurnState: stateSensitivity.turns,
+    preserveRandomState: stateSensitivity.randomness,
+    randomnessDetected: opts.randomnessDetected ?? false,
+    maxPendingStates: maxPendingStates ?? null,
+    maxPendingBytes: maxPendingBytes ?? null,
+    externals: [...externals],
+  };
+  if (checkpoint) validateSharedCheckpoint(checkpoint, checkpointConfiguration);
+  const restored = checkpoint
+    ? JSON.parse(JSON.stringify(checkpoint.state)) as SharedSearchCheckpoint["state"]
+    : undefined;
 
-  const endings = new Map<string, EndingReport>();
-  const visibleOutcomes = new Set<string>();
-  const runtimeErrors = new Map<string, RuntimeErrorReport>();
-  const runtimeWarnings = new Set<string>();
-  const visitedKnots = new Set<string>();
-  const seenStates = new Set<string>();
-  const seenChoiceSets = new Set<string>();
-  const variableStateCounts = new Map<string, number>();
-  const variableTransitionCounts = new Map<string, number>();
+  const endings = new Map<string, EndingReport>(restored?.endings ?? []);
+  const visibleOutcomes = new Set<string>(restored?.visibleOutcomes ?? []);
+  const runtimeErrors = new Map<string, RuntimeErrorReport>(restored?.runtimeErrors ?? []);
+  const runtimeWarnings = new Set<string>(restored?.runtimeWarnings ?? []);
+  const visitedKnots = new Set<string>(restored?.visitedKnots ?? []);
+  const seenStates = new Set<string>(restored?.seenStates ?? []);
+  const seenChoiceSets = new Set<string>(restored?.seenChoiceSets ?? []);
+  const variableStateCounts = new Map<string, number>(restored?.variableStateCounts ?? []);
+  const variableTransitionCounts = new Map<string, number>(restored?.variableTransitionCounts ?? []);
   const nonFunctionKnots = knots.filter((k) => !k.isFunction);
-  const nodes: Array<SharedNode | undefined> = [];
-  const deep: number[] = [];
-  const random: number[] = [];
-  const novelty = new SharedMaxHeap();
+  const nodes: Array<SharedCheckpointNode | undefined> = restored?.nodes.map((node) => node ?? undefined) ?? [];
+  const deep: number[] = restored?.deep ?? [];
+  const random: number[] = restored?.random ?? [];
+  const novelty = new SharedMaxHeap(restored?.novelty);
   const variablePriority = new SharedMaxHeap();
   const goalPriority = new SharedMaxHeap();
-  const rng = mulberry32(seed);
+  const rng = new CheckpointMulberry32(restored?.rngState ?? seed);
   const policies: Array<"novelty" | "deep" | "variable" | "goal" | "random"> = goalAware
     ? ["novelty", "deep", "goal", "random", "novelty", "deep", "goal", "random"]
     : variableAware
     ? ["novelty", "deep", "deep", "random", "novelty", "deep", "variable", "random"]
     : ["novelty", "deep", "deep", "random"];
-  let policyCursor = 0;
-  let insertionOrder = 0;
-  let pendingStates = 0;
-  let pendingBytes = 0;
-  let pendingVariableBytes = 0;
-  let activeStateBytes = 0;
-  let activeVariableBytes = 0;
-  let peakPendingStates = 0;
-  let peakPendingBytes = 0;
-  let retainedNodes = 0;
-  let dedupeBytes = 0;
-  let semanticIndexBytes = 0;
-  let releasedNodes = 0;
-  let frontierCompactions = 0;
+  let policyCursor = restored?.policyCursor ?? 0;
+  let insertionOrder = restored?.insertionOrder ?? 0;
+  let pendingStates = restored?.pendingStates ?? 0;
+  let pendingBytes = restored?.pendingBytes ?? 0;
+  let pendingVariableBytes = restored?.pendingVariableBytes ?? 0;
+  let activeStateBytes = restored?.activeStateBytes ?? 0;
+  let activeVariableBytes = restored?.activeVariableBytes ?? 0;
+  let peakPendingStates = restored?.peakPendingStates ?? 0;
+  let peakPendingBytes = restored?.peakPendingBytes ?? 0;
+  let retainedNodes = restored?.retainedNodes ?? 0;
+  let dedupeBytes = restored?.dedupeBytes ?? 0;
+  let semanticIndexBytes = restored?.semanticIndexBytes ?? 0;
+  let releasedNodes = restored?.releasedNodes ?? 0;
+  let frontierCompactions = restored?.frontierCompactions ?? 0;
   let frontierStopped = false;
-  let statesExplored = 0;
-  let totalGranted = 0;
-  let dedupeHits = 0;
-  let maxDepthReached = 0;
-  let deepestStateDiscovered = 0;
-  let lastDiscoveryAtState: number | null = null;
-  const discoveryCurve = new DiscoveryCurveRecorder();
-  let truncated = false;
-  const truncatedBy: TruncationCauses = {
+  let statesExplored = restored?.statesExplored ?? 0;
+  let totalGranted = restored?.totalGranted ?? 0;
+  let dedupeHits = restored?.dedupeHits ?? 0;
+  let maxDepthReached = restored?.maxDepthReached ?? 0;
+  let deepestStateDiscovered = restored?.deepestStateDiscovered ?? 0;
+  let lastDiscoveryAtState: number | null = restored?.lastDiscoveryAtState ?? null;
+  const discoveryCurve = new DiscoveryCurveRecorder(restored?.discoveryCurve);
+  let truncated = restored?.truncated ?? false;
+  const truncatedBy: TruncationCauses = restored?.truncatedBy ?? {
     maxDepth: false,
     maxStates: false,
     beamWidth: false,
@@ -1390,14 +1672,16 @@ function createSharedEngine(
     memory: false,
     time: false,
   };
-  let finished = false;
+  let finished = restored?.finished ?? false;
   let memoryStopped = false;
   let timeStopped = false;
   const memoryGuard = opts.memoryGuard;
   const timeGuard = opts.timeGuard;
   const guardInterval = timeGuard ? TIMED_RESOURCE_GUARD_INTERVAL : RESOURCE_GUARD_INTERVAL;
-  let findingBytes = 0;
-  let ancestryPayloadBytes = 0;
+  let sinceGuard = restored?.guardChecksSinceLast ?? 0;
+  let findingBytes = restored?.findingBytes ?? 0;
+  let ancestryPayloadBytes = restored?.ancestryPayloadBytes ?? 0;
+  let current: SharedActiveCursor | null = restored?.current ?? null;
   const emptyRetainedMemory = (): SharedRetainedMemory => ({
     pendingStateBytes: 0,
     pendingVariableBytes: 0,
@@ -1413,7 +1697,7 @@ function createSharedEngine(
     retainedNodes: 0,
     frontierReferences: 0,
   });
-  let peakRetainedMemory = emptyRetainedMemory();
+  let peakRetainedMemory = restored?.peakRetainedMemory ?? emptyRetainedMemory();
   const byteLength = (value: string): number => Buffer.byteLength(value, "utf8");
   const frontierReferenceCount = (): number =>
     deep.length + random.length + novelty.size + variablePriority.size + goalPriority.size;
@@ -1506,7 +1790,7 @@ function createSharedEngine(
     const choiceIndices: number[] = [];
     let id: number | null = nodeId;
     while (id !== null) {
-      const node: SharedNode | undefined = nodes[id];
+      const node: SharedCheckpointNode | undefined = nodes[id];
       if (!node) throw new Error(`Shared witness ancestry ${id} was released too early`);
       if (node.choiceText !== undefined) {
         path.push(node.choiceText);
@@ -1529,7 +1813,7 @@ function createSharedEngine(
   const releaseNode = (startId: number): void => {
     let id: number | null = startId;
     while (id !== null) {
-      const node: SharedNode | undefined = nodes[id];
+      const node: SharedCheckpointNode | undefined = nodes[id];
       if (!node || node.active || node.childRefs > 0) return;
       const parent: number | null = node.parent;
       ancestryPayloadBytes -= node.ancestryBytes;
@@ -1651,7 +1935,7 @@ function createSharedEngine(
 
   const takeRandom = (): number | undefined => {
     while (random.length > 0) {
-      const index = Math.floor(rng() * random.length);
+      const index = Math.floor(rng.next() * random.length);
       const id = random[index];
       random[index] = random[random.length - 1];
       random.pop();
@@ -1714,57 +1998,52 @@ function createSharedEngine(
   const rootStep = continueMaximally(session);
   const assertions = assertionTracker(session.story, knots, opts.assertions, foundBy);
   const goals = new GoalTracker(opts.goals ?? [], foundBy);
-  session.errors.forEach((message) =>
-    runtimeErrors.set(message, {
-      message,
-      path: [],
-      choiceIndices: [],
-      firstDiscoveredAtState: 0,
-      sourceLocation: sourceLocationForRuntimeError(message, knots),
-      foundBy,
-    })
-  );
-  session.warnings.forEach((warning) => runtimeWarnings.add(warning));
-  recordKnotCoverage(session);
-  const rootVariables = extractVariables(session.story);
-  assertions.observe({
-    variables: rootVariables,
-    terminal: rootStep.choicesOffered.length === 0 && session.errors.length === 0,
-    knots: [...assertionKnotCounts(session.story, opts.assertions)].filter(([, count]) => count > 0).map(([name]) => name),
-    path: [],
-    choiceIndices: [],
-    state: 0,
-  });
-  goals.observe({ variables: rootVariables, path: [], choiceIndices: [], state: 0 });
-  observeSemanticKey(variableStateCounts, variableStateKey(rootVariables));
-
-  if (rootStep.choicesOffered.length === 0) {
-    if (session.errors.length === 0) {
-      const finalText = rootStep.text.trim().split(/\n/).slice(-3).join("\n");
-      recordEnding(endings, visibleOutcomes, `${finalText}|${JSON.stringify(rootVariables)}`, {
+  if (!restored) {
+    session.errors.forEach((message) =>
+      runtimeErrors.set(message, {
+        message,
         path: [],
         choiceIndices: [],
         firstDiscoveredAtState: 0,
-        finalText,
-        variables: rootVariables,
+        sourceLocation: sourceLocationForRuntimeError(message, knots),
         foundBy,
-      });
-    }
-    finished = true;
-  } else {
-    const rootState = session.story.state.ToJson();
-    rememberDedupeKey(seenStates, stateKey(rootState, stateSensitivity));
-    rememberDedupeKey(seenChoiceSets, rootStep.choicesOffered.slice().sort().join("\u0001"));
-    addNode(rootState, rootVariables, null, undefined, undefined, 0, 1, 0, goals.priority(rootVariables));
-  }
-  noteDiscoveryProgress();
+      })
+    );
+    session.warnings.forEach((warning) => runtimeWarnings.add(warning));
+    recordKnotCoverage(session);
+    const rootVariables = extractVariables(session.story);
+    assertions.observe({
+      variables: rootVariables,
+      terminal: rootStep.choicesOffered.length === 0 && session.errors.length === 0,
+      knots: [...assertionKnotCounts(session.story, opts.assertions)].filter(([, count]) => count > 0).map(([name]) => name),
+      path: [],
+      choiceIndices: [],
+      state: 0,
+    });
+    goals.observe({ variables: rootVariables, path: [], choiceIndices: [], state: 0 });
+    observeSemanticKey(variableStateCounts, variableStateKey(rootVariables));
 
-  interface SharedChoice {
-    index: number;
-    text: string;
-    sourcePath?: string;
+    if (rootStep.choicesOffered.length === 0) {
+      if (session.errors.length === 0) {
+        const finalText = rootStep.text.trim().split(/\n/).slice(-3).join("\n");
+        recordEnding(endings, visibleOutcomes, `${finalText}|${JSON.stringify(rootVariables)}`, {
+          path: [],
+          choiceIndices: [],
+          firstDiscoveredAtState: 0,
+          finalText,
+          variables: rootVariables,
+          foundBy,
+        });
+      }
+      finished = true;
+    } else {
+      const rootState = session.story.state.ToJson();
+      rememberDedupeKey(seenStates, stateKey(rootState, stateSensitivity));
+      rememberDedupeKey(seenChoiceSets, rootStep.choicesOffered.slice().sort().join("\u0001"));
+      addNode(rootState, rootVariables, null, undefined, undefined, 0, 1, 0, goals.priority(rootVariables));
+    }
+    noteDiscoveryProgress();
   }
-  let current: { nodeId: number; choices: SharedChoice[]; cursor: number } | null = null;
 
   const finishCurrent = () => {
     if (!current) return;
@@ -1990,13 +2269,69 @@ function createSharedEngine(
     });
   };
 
+  const buildCheckpoint = (): SharedSearchCheckpoint => {
+    if (done() || memoryStopped || timeStopped) {
+      throw new RangeError("Shared search cannot checkpoint after completion or a resource stop");
+    }
+    const value: SharedSearchCheckpoint = {
+      schemaVersion: SHARED_SEARCH_CHECKPOINT_SCHEMA_VERSION,
+      engine: "shared:deep-novelty-v1",
+      configuration: checkpointConfiguration,
+      state: {
+        endings: [...endings.entries()],
+        visibleOutcomes: [...visibleOutcomes],
+        runtimeErrors: [...runtimeErrors.entries()],
+        runtimeWarnings: [...runtimeWarnings],
+        visitedKnots: [...visitedKnots],
+        seenStates: [...seenStates],
+        seenChoiceSets: [...seenChoiceSets],
+        variableStateCounts: [...variableStateCounts.entries()],
+        variableTransitionCounts: [...variableTransitionCounts.entries()],
+        nodes: nodes.map((node) => node ?? null),
+        deep: [...deep],
+        random: [...random],
+        novelty: novelty.checkpoint(),
+        rngState: rng.checkpoint(),
+        policyCursor,
+        insertionOrder,
+        current,
+        pendingStates,
+        pendingBytes,
+        pendingVariableBytes,
+        activeStateBytes,
+        activeVariableBytes,
+        peakPendingStates,
+        peakPendingBytes,
+        retainedNodes,
+        dedupeBytes,
+        semanticIndexBytes,
+        releasedNodes,
+        frontierCompactions,
+        guardChecksSinceLast: sinceGuard,
+        statesExplored,
+        totalGranted,
+        dedupeHits,
+        maxDepthReached,
+        deepestStateDiscovered,
+        lastDiscoveryAtState,
+        discoveryCurve: discoveryCurve.checkpoint(),
+        truncated,
+        truncatedBy: { ...truncatedBy },
+        finished,
+        findingBytes,
+        ancestryPayloadBytes,
+        peakRetainedMemory: { ...peakRetainedMemory },
+      },
+    };
+    return JSON.parse(JSON.stringify(value)) as SharedSearchCheckpoint;
+  };
+
   return {
     label: foundBy,
     systematic: true,
     run(grant: number): number {
       totalGranted += grant;
       const start = statesExplored;
-      let sinceGuard = 0;
       while (statesExplored - start < grant) {
         if (frontierStopped) break;
         if ((memoryGuard || timeGuard) && ++sinceGuard >= guardInterval) {
@@ -2011,8 +2346,10 @@ function createSharedEngine(
           }
         }
         if (!advance()) break;
+        // Compaction timing is part of frontier order. Tie it to cumulative
+        // work, not caller chunk boundaries, so pause/resume cannot perturb it.
+        if (statesExplored > 0 && statesExplored % 1_000 === 0) compactFrontiers();
       }
-      compactFrontiers();
       return statesExplored - start;
     },
     done,
@@ -2020,6 +2357,7 @@ function createSharedEngine(
     stoppedForMemory: () => memoryStopped,
     stoppedForTime: () => timeStopped,
     snapshot: buildResult,
+    checkpoint: buildCheckpoint,
     finalize(): ExploreResult {
       if (memoryStopped) {
         truncated = true;
@@ -2086,6 +2424,82 @@ export function exploreShared(
     throw new RangeError("maxStates must be an integer from 1 to 100000000");
   }
   return runEngineToBudget(createSharedEngine(storyJson, knots, externals, opts), maxStates, opts);
+}
+
+export interface SharedResumableRun {
+  result: ExploreResult;
+  /** Present only while the base shared search still has resumable work. */
+  checkpoint?: SharedSearchCheckpoint;
+}
+
+/**
+ * Run the base shared search to a total state grant and preserve its exact live
+ * frontier when work remains. A resumed run receives a new total grant, not an
+ * additional budget, so callers can safely grow 100k -> 1m without double-counting.
+ *
+ * This first checkpoint schema intentionally excludes assertions, goals, and
+ * experimental frontier scoring. Those modes need their own explicit state
+ * contracts before they can make the same exact-resume promise.
+ */
+export function exploreSharedResumable(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {},
+  checkpoint?: SharedSearchCheckpoint
+): SharedResumableRun {
+  if (opts.sharedVariableAware || opts.sharedGoalAware || opts.assertions?.length || opts.goals?.length) {
+    throw new RangeError("Shared resumable search supports only the base shared strategy without assertions or goals");
+  }
+  const maxStates = opts.maxStates ?? 100_000;
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 100_000_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 100000000");
+  }
+  const alreadyGranted = checkpoint?.state.totalGranted ?? 0;
+  if (maxStates < alreadyGranted) {
+    throw new RangeError(`maxStates ${maxStates} cannot be lower than the checkpoint's total grant ${alreadyGranted}`);
+  }
+
+  const engine = createSharedEngine(storyJson, knots, externals, opts, checkpoint);
+  const stateInterval = opts.progressIntervalStates ?? DEFAULT_PROGRESS_INTERVAL_STATES;
+  const timeInterval = opts.progressIntervalMs ?? DEFAULT_PROGRESS_INTERVAL_MS;
+  let remaining = maxStates - alreadyGranted;
+  let statesExplored = checkpoint?.state.statesExplored ?? 0;
+  let lastStates = statesExplored;
+  let lastAt = Date.now();
+  let grantsSinceClock = 0;
+
+  // One-grant steps keep issued work and guard cadence independent of where a
+  // process happened to pause. Frontier compaction is tied to cumulative work
+  // inside the engine, so this does not turn every state into a compaction.
+  while (remaining > 0 && !engine.done() && !engine.stoppedForMemory() && !engine.stoppedForTime()) {
+    const consumed = engine.run(1);
+    remaining--;
+    statesExplored += consumed;
+    if (opts.onProgress) {
+      grantsSinceClock++;
+      const stateDue = statesExplored - lastStates >= stateInterval;
+      if (stateDue || grantsSinceClock >= 64 || timeInterval === 0) {
+        grantsSinceClock = 0;
+        const now = Date.now();
+        if (stateDue || now - lastAt >= timeInterval) {
+          const snapshot = engine.snapshot();
+          lastStates = statesExplored;
+          lastAt = now;
+          opts.onProgress(progressFromSnapshot(engine.label, statesExplored, snapshot));
+        }
+      }
+    }
+    if (consumed === 0) break;
+  }
+
+  const nextCheckpoint = !engine.done() && !engine.stoppedForMemory() && !engine.stoppedForTime()
+    ? engine.checkpoint()
+    : undefined;
+  const result = engine.finalize();
+  result.passes = [engine.telemetry()];
+  opts.onProgress?.(progressFromSnapshot(engine.label, result.statesExplored, result));
+  return nextCheckpoint ? { result, checkpoint: nextCheckpoint } : { result };
 }
 
 export function exploreSharedVariableAware(
