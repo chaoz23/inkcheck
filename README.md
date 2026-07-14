@@ -174,6 +174,7 @@ The default budget is 10,000,000 states and the ceiling is 100,000,000, so it is
 | DFS / beam frontier | **flat** | DFS is bounded by depth; the beam has a hard frontier cap. Neither grows with the budget. |
 | Random sampling | **flat** (O of findings) | Keeps no dedup structure. |
 | BFS repro-shortening frontier | **the one super-linear risk** | On a deep, loop-light, branching story it can balloon (a research run queued ~631K full states). `--no-min-repro` removes this slice entirely. |
+| Experimental shared frontier | **shape-dependent, potentially linear** | Retains serialized pending checkpoints plus witness ancestry. Reports expose component high-water marks; optional `--max-frontier-states` / `--max-frontier-memory` envelopes stop cleanly before this live queue exceeds an explicit bound. |
 
 Two practical rules of thumb from that:
 
@@ -181,7 +182,7 @@ Two practical rules of thumb from that:
 - **The memory guard is the real limiter, not the ceiling.** A run stops cleanly at 85% of the V8 heap (or your `--max-memory`) and returns a *partial* report with `truncatedBy.memory` rather than crashing. So setting `--max-states 100000000` is not reckless — on a normal machine the guard, not the ceiling, decides where it stops. To go further, give Node more heap: `NODE_OPTIONS=--max-old-space-size=8192 inkcheck big.ink --max-states 100000000`.
 - **Safety limits are not efficiency decisions.** State, time, and memory caps answer “how far may this job go?” They do not claim that using the whole machine is valuable or that an apparent plateau is complete. The 0.6 research path measures portfolio-new findings over time, throughput, recovery gaps, peak RSS, and retained-frontier bytes so future quick/balanced/deep policies can choose useful result windows while still reserving long-tail probes. Fixed limits remain available for CI and audit.
 
-Levers, in order of impact, when a story is too big to finish: raise `--max-old-space-size` (more headroom), pass `--no-min-repro` (drops the super-linear BFS frontier), lower `--max-states` (bounds both time and memory), or split the story and check parts separately. The `nextRun` verdict names the binding limit after each run so you know which lever applies.
+Levers, in order of impact, when a story is too big to finish: raise `--max-old-space-size` (more headroom), pass `--no-min-repro` (drops the super-linear BFS frontier), lower `--max-states` (bounds both time and memory), or split the story and check parts separately. In experimental shared mode, set `--max-frontier-memory` or `--max-frontier-states` when the pending-checkpoint queue itself needs a tighter bound, and raise that envelope only when its report shows useful evidence continuing to arrive. The `nextRun` verdict names the binding limit after each run so you know which lever applies.
 
 The measured [resource-safe deep-run evaluation](docs/resource-guard-evaluation.md) records how the guards behave on authored 5M-ceiling jobs, including shared-frontier pending-state and serialized-byte high-water evidence.
 
