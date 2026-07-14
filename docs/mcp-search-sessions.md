@@ -5,9 +5,10 @@ Inkcheck's MCP server can continue one exact base-shared search across calls and
 1. `start_search` runs a bounded synchronous window and returns a bearer `sessionCapability`.
 2. `inspect_search` reopens bounded status and privacy-minimal finding summaries.
 3. `continue_search` raises the cumulative state grant and continues the exact saved frontier.
-4. `cancel_search` marks the session cancelled between windows while retaining recoverability by default.
-5. `replay_witness` executes one stable finding from the latest report against current source.
-6. `pin_regression` and `check_regression` preserve and recheck one confirmed runtime failure across source edits.
+4. `add_goal` spends an explicit additional budget on one safe typed goal from the story root without mutating that frontier.
+5. `cancel_search` marks the session cancelled between windows while retaining recoverability by default.
+6. `replay_witness` executes one stable finding from the latest report against current source.
+7. `pin_regression` and `check_regression` preserve and recheck one confirmed runtime failure across source edits.
 
 This is cooperative **result-window execution**, not a background job. A `start_search` or `continue_search` call runs until its durable boundary. `cancel_search` cannot interrupt a window already running; call it after that tool returns. Use hosted async jobs when mid-run reconnect/cancel behavior is required.
 
@@ -15,11 +16,11 @@ This is cooperative **result-window execution**, not a background job. A `start_
 
 - First-window default: 1,000,000 states.
 - Added work per call: at most 5,000,000 states.
-- Cumulative session grant: at most 100,000,000 states.
+- Base plus cumulative directed grants: at most 100,000,000 states.
 - One recoverable session per story entrypoint.
 - At most 100 session metadata files per project and 64 retained events per session.
 
-`maxStates` is always a cumulative total. A session at 1M can continue to 6M in one call, not to 7M. Every mutation requires the last returned `revision`; stale concurrent operations fail closed.
+For `continue_search`, `maxStates` is always the new cumulative base total. A session at 1M can continue to 6M in one call, not to 7M. For `add_goal`, `maxStates` is additional directed work for that probe. Inspection exposes `budget.base`, `budget.directed`, and `budget.total`; directed work never disappears inside the base total. Every mutation requires the last returned `revision`; stale concurrent operations fail closed.
 
 ## Supported scope
 
@@ -27,11 +28,19 @@ Sessions preserve the exact frontier only for base shared search without asserti
 
 Every completed window writes a normal source-bound report under `.inkcheck/reports/`. When live work remains it also writes an exact checkpoint under `.inkcheck/checkpoints/`. Session responses expose stable IDs, counters, binding reason, bounded event history, and paged finding summaries; they do not return the full report or checkpoint payload.
 
+## Additive goal probes
+
+`add_goal` accepts one existing safe typed goal or ordered staged goal and a grant of at most 5M states. It validates the goal against current story variables and knots, then runs deterministic goal-directed shared search from the story root. It does not continue, reorder, or mutate the exact base frontier. The base report/checkpoint IDs and base counters remain unchanged.
+
+The call saves a separate private source-bound goal report and returns the goal result, closest state or exact witness, plus explicit directed and campaign accounting. Because that response can include variable names/values and choice text, it is a content-revealing operation. Ordinary inspection retains only an opaque goal handle, reached/missed status, report ID, and grant/consumption counts; conditions, descriptions, variables, and witnesses are not copied into session metadata.
+
+A bounded miss remains `not_reached_within_limits`. Goal work is additional evidence, never baseline-equivalent coverage. This first slice intentionally does not persist a directed frontier, continue one probe, or reprioritize the saved base frontier.
+
 ## Witness replay
 
 `replay_witness` requires the bearer capability, last observed revision, and a stable finding ID returned by `inspect_search`. It binds to the latest immutable report, requires current source and an indexed witness, recompiles, and executes the saved choices with the saved Ink story seed. Success increments the session revision and appends only report/finding IDs plus replay status to bounded metadata.
 
-Search-session schema v2 adds that replay audit event. Inkcheck reads v1 foundation sessions and upgrades them atomically on the next mutation; unknown future schemas still fail closed.
+Search-session schema v2 adds that replay audit event. Schema v3 adds regression audit events, and schema v4 adds additive-goal accounting and opaque summaries. Inkcheck reads v1-v3 sessions and upgrades them atomically on the next mutation; unknown future schemas still fail closed.
 
 This is an explicit content-revealing execution boundary: the response includes the selected transcript, choice text, runtime result, and final variables. None of that payload is copied into session metadata or ordinary inspection. Stale revisions/source, missing or foreign IDs, findings without indexed replay, and concurrent session mutations fail instead of replaying approximately.
 
@@ -45,7 +54,7 @@ After an edit, `check_regression` recompiles current source and replays the save
 - `still_failing`: the pinned runtime-error hash is observed again;
 - `path_changed`: indexed choices no longer follow the path or a different runtime failure blocks it first.
 
-Compile failures are prerequisite errors, never `fixed`. The first pin schema intentionally rejects endings and assertion violations: ending reachability is not a failure, and assertions need assertion-aware evaluation rather than plain playtest. Pins are private `0700`/`0600` artifacts where supported, capped at 1 MiB each and 100 per project, session-bound, and ignored by the agent kit. Search-session schema v3 adds privacy-safe pin/check audit events while reading v1/v2 metadata.
+Compile failures are prerequisite errors, never `fixed`. The first pin schema intentionally rejects endings and assertion violations: ending reachability is not a failure, and assertions need assertion-aware evaluation rather than plain playtest. Pins are private `0700`/`0600` artifacts where supported, capped at 1 MiB each and 100 per project, session-bound, and ignored by the agent kit. Search-session schema v3 introduced privacy-safe pin/check audit events; schema v4 retains them unchanged.
 
 ## Capability and privacy
 

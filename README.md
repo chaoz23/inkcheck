@@ -92,7 +92,7 @@ For a new project containing one `.ink` file, `inkcheck init` creates this confi
 
 `--save-report` atomically stores a versioned report under `.inkcheck/reports/` and returns its stable content-and-entrypoint-derived ID. A later session can use `inkcheck artifacts list --json` and `inkcheck artifacts show <report-id> --json`; reopening reports whether the saved evidence is `current`, `stale`, or `path_changed` against the present entrypoint. Reports can contain story text, variables, and exact witnesses, so the agent kit ignores them by default. See [local report artifacts](docs/local-artifacts.md) for the trust, privacy, and compatibility contract.
 
-Long base-shared runs can also persist their exact live frontier locally. Start with `--search=shared --no-min-repro --save-checkpoint`, then continue later with `inkcheck resume <checkpoint-id> --max-states N`; `N` is the larger total grant, not extra hidden work. `inkcheck checkpoints list/show` reports bounded metadata and source freshness. Checkpoint files are private, atomic, source/config-bound, ignored by default, and retention-capped; they may contain authored text and runtime state. See [local resumable checkpoints](docs/local-checkpoints.md). MCP agents can use the same exact foundation through durable [`start_search` / `inspect_search` / `continue_search` / `cancel_search` result windows](docs/mcp-search-sessions.md). Portfolio, shared-variable, assertions, goals, and hosted jobs do not use this checkpoint contract yet.
+Long base-shared runs can also persist their exact live frontier locally. Start with `--search=shared --no-min-repro --save-checkpoint`, then continue later with `inkcheck resume <checkpoint-id> --max-states N`; `N` is the larger total grant, not extra hidden work. `inkcheck checkpoints list/show` reports bounded metadata and source freshness. Checkpoint files are private, atomic, source/config-bound, ignored by default, and retention-capped; they may contain authored text and runtime state. See [local resumable checkpoints](docs/local-checkpoints.md). MCP agents can use the same exact foundation through durable [`start_search` / `inspect_search` / `continue_search` / `cancel_search` result windows](docs/mcp-search-sessions.md). They can also use `add_goal` for an explicit additive directed probe that starts from the story root and leaves that exact base frontier untouched. Portfolio, shared-variable, assertions, directed-frontier resume, and hosted jobs do not use this checkpoint contract yet.
 
 ## Hosted checker
 
@@ -207,6 +207,7 @@ Tools for AI agents working on ink stories:
 | `start_search` | Start one durable exact shared-search result window and receive a bearer capability |
 | `inspect_search` | Reopen bounded session status and privacy-minimal saved findings |
 | `continue_search` | Raise the cumulative grant by up to 5M and continue the exact frontier |
+| `add_goal` | Run one safe typed goal with an explicit additive budget from the story root |
 | `cancel_search` | Cancel between windows, retaining recoverability unless explicitly discarded |
 | `replay_witness` | Explicitly replay one stable session finding against current source |
 | `pin_regression` | Preserve one confirmed runtime failure as a private post-edit check |
@@ -228,7 +229,7 @@ or to any MCP client config:
 }
 ```
 
-The compact loop is edit `.ink` → `compile_story` → `explore_story` → fix confirmed findings → repeat. For long jobs, replace the one-shot exploration with result-window sessions. Start/continue are synchronous calls, so cancellation is trustworthy at returned durable boundaries, not mid-window preemption. `inspect_search` stays privacy-minimal; `replay_witness` is the explicit boundary that returns one current transcript, choice trail, and variable state. For runtime failures, `pin_regression` before editing and `check_regression` afterward provide a deterministic fixed/still-failing/path-changed verdict without another search run. See [MCP result-window sessions](docs/mcp-search-sessions.md).
+The compact loop is edit `.ink` → `compile_story` → `explore_story` → fix confirmed findings → repeat. For long jobs, replace the one-shot exploration with result-window sessions. Start/continue are synchronous calls, so cancellation is trustworthy at returned durable boundaries, not mid-window preemption. `inspect_search` stays privacy-minimal; `add_goal` can spend a separately reported directed budget without weakening the exact base search, and `replay_witness` is the explicit boundary that returns one current transcript, choice trail, and variable state. For runtime failures, `pin_regression` before editing and `check_regression` afterward provide a deterministic fixed/still-failing/path-changed verdict without another search run. See [MCP result-window sessions](docs/mcp-search-sessions.md).
 
 ## CLI
 

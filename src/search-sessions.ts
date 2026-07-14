@@ -5,6 +5,7 @@ import { recommendNextRun } from "./advice";
 import {
   artifactProjectRoot,
   listReportFindings,
+  openReportArtifact,
   replayReportFinding,
   saveReportArtifact,
   type FindingPage,
@@ -14,10 +15,13 @@ import {
   DEFAULT_STORY_SEED,
   MAX_STORY_SEED,
   classifyUnvisitedKnots,
+  exploreGoalProbe,
   exploreSharedResumable,
+  validateGoalsForStory,
   type ExploreResult,
   type SharedSearchCheckpoint,
 } from "./explore";
+import { parseGoalDefinitions, type GoalDefinition, type GoalResult } from "./goals";
 import {
   compile,
   DEFAULT_MAX_DEPTH,
@@ -57,7 +61,15 @@ export {
 } from "./search-session-contract";
 
 type SessionStatus = "paused" | "complete" | "stopped" | "cancelled";
-type SessionEventType = "started" | "continued" | "cancelled" | "replayed" | "regression_pinned" | "regression_checked";
+type SessionEventType = "started" | "continued" | "cancelled" | "replayed" | "regression_pinned" | "regression_checked" | "goal_added";
+
+interface GoalProbeSummary {
+  goalHandle: string;
+  status: GoalResult["status"];
+  reportId: string;
+  directedGranted: number;
+  directedConsumed: number;
+}
 
 interface SearchSessionEvent {
   sequence: number;
@@ -71,10 +83,14 @@ interface SearchSessionEvent {
   replayStatus?: "completed" | "runtime_error" | "path_changed";
   pinId?: string;
   regressionStatus?: "fixed" | "still_failing" | "path_changed";
+  goalHandle?: string;
+  goalStatus?: GoalResult["status"];
+  directedGranted?: number;
+  directedConsumed?: number;
 }
 
 interface SearchSessionRecord {
-  schemaVersion: 3;
+  schemaVersion: 4;
   artifactType: "mcp-search-session";
   inkcheckVersion: string;
   capabilityHash: string;
@@ -86,6 +102,9 @@ interface SearchSessionRecord {
   recoverable: boolean;
   totalGranted: number;
   statesExplored: number;
+  directedGranted: number;
+  directedStatesExplored: number;
+  goalProbes: GoalProbeSummary[];
   latestReportId: string;
   latestCheckpointId?: string;
   bindingLimit: string | null;
@@ -113,6 +132,12 @@ export interface SearchSessionResponse {
     latestCheckpointId?: string;
     bindingLimit: string | null;
     findings: SearchSessionRecord["findings"];
+    budget: {
+      base: { granted: number; consumed: number };
+      directed: { granted: number; consumed: number };
+      total: { granted: number; consumed: number };
+    };
+    goalProbes: GoalProbeSummary[];
     events: SearchSessionEvent[];
     droppedEventCount: number;
   };
@@ -200,6 +225,33 @@ export interface CheckRegressionInput {
   pinId: string;
 }
 
+export interface AddGoalInput {
+  file: string;
+  sessionCapability: string;
+  revision: number;
+  goal: unknown;
+  maxStates: number;
+}
+
+export interface AddGoalResponse {
+  schemaVersion: number;
+  inkcheckVersion: string;
+  session: SearchSessionResponse["session"];
+  goalHandle: string;
+  goalReportId: string;
+  goal: GoalDefinition;
+  result: GoalResult;
+  budget: {
+    directedGranted: number;
+    directedConsumed: number;
+    campaignGranted: number;
+    campaignConsumed: number;
+  };
+  disclosure: string;
+  semantics: string;
+  nextOperation: { tool: "inspect_search"; reason: string };
+}
+
 export interface PinRegressionResponse {
   schemaVersion: number;
   inkcheckVersion: string;
@@ -254,9 +306,25 @@ function parseRecord(raw: string, expectedHash?: string): SearchSessionRecord {
   if (!value || typeof value !== "object") throw new Error("search session metadata must be a JSON object");
   const record = value as Partial<SearchSessionRecord>;
   const sourceSchema = (record as { schemaVersion?: unknown }).schemaVersion;
-  if (sourceSchema !== 1 && sourceSchema !== 2 && sourceSchema !== SEARCH_SESSION_SCHEMA_VERSION) {
+  if (sourceSchema !== 1 && sourceSchema !== 2 && sourceSchema !== 3 && sourceSchema !== SEARCH_SESSION_SCHEMA_VERSION) {
     throw new Error(`unsupported search session schema ${String(record.schemaVersion)}; use a compatible Inkcheck version or start a new session`);
   }
+  if (sourceSchema !== SEARCH_SESSION_SCHEMA_VERSION) {
+    record.directedGranted = 0;
+    record.directedStatesExplored = 0;
+    record.goalProbes = [];
+  }
+  const goalProbes = record.goalProbes as Array<Partial<GoalProbeSummary>> | undefined;
+  const validGoalProbes = Array.isArray(goalProbes) && goalProbes.length <= MAX_MCP_SESSION_EVENTS
+    && goalProbes.every((probe) => probe && typeof probe === "object"
+      && Object.keys(probe).sort().join(",") === "directedConsumed,directedGranted,goalHandle,reportId,status"
+      && typeof probe.goalHandle === "string" && /^goal-[0-9a-f]{24}$/.test(probe.goalHandle)
+      && ["reached", "not_reached_within_limits", "proven_unreachable", "blocked_by_stage"].includes(String(probe.status))
+      && typeof probe.reportId === "string" && /^report-[0-9a-f]{24}$/.test(probe.reportId)
+      && Number.isSafeInteger(probe.directedGranted) && (probe.directedGranted as number) >= 1
+      && (probe.directedGranted as number) <= MAX_MCP_SESSION_WINDOW_STATES
+      && Number.isSafeInteger(probe.directedConsumed) && (probe.directedConsumed as number) >= 0
+      && (probe.directedConsumed as number) <= (probe.directedGranted as number));
   const findings = record.findings as Partial<SearchSessionRecord["findings"]> | undefined;
   const validFindings = findings
     && Object.keys(findings).sort().join(",") === "assertionViolations,endings,runtimeErrors,unvisitedKnots"
@@ -265,30 +333,42 @@ function parseRecord(raw: string, expectedHash?: string): SearchSessionRecord {
   const validEvent = (event: unknown): boolean => {
     if (!event || typeof event !== "object" || Array.isArray(event)) return false;
     const item = event as Partial<SearchSessionEvent>;
-    const allowed = ["checkpointId", "findingId", "pinId", "regressionStatus", "replayStatus", "reportId", "revision", "sequence", "statesExplored", "totalGranted", "type"];
+    const allowed = ["checkpointId", "directedConsumed", "directedGranted", "findingId", "goalHandle", "goalStatus", "pinId", "regressionStatus", "replayStatus", "reportId", "revision", "sequence", "statesExplored", "totalGranted", "type"];
     if (Object.keys(item).some((key) => !allowed.includes(key))) return false;
     const replayEvent = item.type === "replayed";
     const pinEvent = item.type === "regression_pinned";
     const checkEvent = item.type === "regression_checked";
+    const goalEvent = item.type === "goal_added";
+    const noGoalDetails = item.goalHandle === undefined && item.goalStatus === undefined
+      && item.directedGranted === undefined && item.directedConsumed === undefined;
     const validDetails = replayEvent
-      ? (sourceSchema === 2 || sourceSchema === SEARCH_SESSION_SCHEMA_VERSION)
+      ? (sourceSchema === 2 || sourceSchema === 3 || sourceSchema === SEARCH_SESSION_SCHEMA_VERSION)
         && typeof item.findingId === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(item.findingId)
         && ["completed", "runtime_error", "path_changed"].includes(String(item.replayStatus))
-        && item.pinId === undefined && item.regressionStatus === undefined
+        && item.pinId === undefined && item.regressionStatus === undefined && noGoalDetails
       : pinEvent
-        ? sourceSchema === SEARCH_SESSION_SCHEMA_VERSION
+        ? (sourceSchema === 3 || sourceSchema === SEARCH_SESSION_SCHEMA_VERSION)
           && typeof item.findingId === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(item.findingId)
           && typeof item.pinId === "string" && /^regression-[0-9a-f]{24}$/.test(item.pinId)
-          && item.replayStatus === undefined && item.regressionStatus === undefined
+          && item.replayStatus === undefined && item.regressionStatus === undefined && noGoalDetails
         : checkEvent
-          ? sourceSchema === SEARCH_SESSION_SCHEMA_VERSION
+          ? (sourceSchema === 3 || sourceSchema === SEARCH_SESSION_SCHEMA_VERSION)
             && typeof item.pinId === "string" && /^regression-[0-9a-f]{24}$/.test(item.pinId)
             && ["fixed", "still_failing", "path_changed"].includes(String(item.regressionStatus))
-            && item.findingId === undefined && item.replayStatus === undefined
-          : item.findingId === undefined && item.pinId === undefined
-            && item.replayStatus === undefined && item.regressionStatus === undefined;
+            && item.findingId === undefined && item.replayStatus === undefined && noGoalDetails
+          : goalEvent
+            ? sourceSchema === SEARCH_SESSION_SCHEMA_VERSION
+              && typeof item.goalHandle === "string" && /^goal-[0-9a-f]{24}$/.test(item.goalHandle)
+              && ["reached", "not_reached_within_limits", "proven_unreachable", "blocked_by_stage"].includes(String(item.goalStatus))
+              && Number.isSafeInteger(item.directedGranted) && (item.directedGranted as number) >= 1
+              && Number.isSafeInteger(item.directedConsumed) && (item.directedConsumed as number) >= 0
+              && (item.directedConsumed as number) <= (item.directedGranted as number)
+              && item.findingId === undefined && item.pinId === undefined
+              && item.replayStatus === undefined && item.regressionStatus === undefined
+            : item.findingId === undefined && item.pinId === undefined
+              && item.replayStatus === undefined && item.regressionStatus === undefined && noGoalDetails;
     return Number.isSafeInteger(item.sequence) && (item.sequence as number) >= 1
-      && ["started", "continued", "cancelled", "replayed", "regression_pinned", "regression_checked"].includes(String(item.type))
+      && ["started", "continued", "cancelled", "replayed", "regression_pinned", "regression_checked", "goal_added"].includes(String(item.type))
       && Number.isSafeInteger(item.revision) && (item.revision as number) >= 1
       && Number.isSafeInteger(item.totalGranted) && (item.totalGranted as number) >= 1
       && Number.isSafeInteger(item.statesExplored) && (item.statesExplored as number) >= 0
@@ -309,6 +389,11 @@ function parseRecord(raw: string, expectedHash?: string): SearchSessionRecord {
     || (record.totalGranted as number) > MAX_MCP_SESSION_TOTAL_STATES
     || !Number.isSafeInteger(record.statesExplored) || (record.statesExplored as number) < 0
     || (record.statesExplored as number) > (record.totalGranted as number)
+    || !Number.isSafeInteger(record.directedGranted) || (record.directedGranted as number) < 0
+    || !Number.isSafeInteger(record.directedStatesExplored) || (record.directedStatesExplored as number) < 0
+    || (record.directedStatesExplored as number) > (record.directedGranted as number)
+    || (record.totalGranted as number) + (record.directedGranted as number) > MAX_MCP_SESSION_TOTAL_STATES
+    || !validGoalProbes
     || typeof record.latestReportId !== "string" || !/^report-[0-9a-f]{24}$/.test(record.latestReportId)
     || (record.latestCheckpointId !== undefined && !/^checkpoint-[0-9a-f]{24}$/.test(record.latestCheckpointId))
     || (record.bindingLimit !== null && typeof record.bindingLimit !== "string")
@@ -500,6 +585,8 @@ async function runWindow(
 }
 
 function responseSession(record: SearchSessionRecord): SearchSessionResponse["session"] {
+  const campaignGranted = record.totalGranted + record.directedGranted;
+  const campaignConsumed = record.statesExplored + record.directedStatesExplored;
   return {
     revision: record.revision,
     status: record.status,
@@ -510,6 +597,12 @@ function responseSession(record: SearchSessionRecord): SearchSessionResponse["se
     ...(record.latestCheckpointId ? { latestCheckpointId: record.latestCheckpointId } : {}),
     bindingLimit: record.bindingLimit,
     findings: record.findings,
+    budget: {
+      base: { granted: record.totalGranted, consumed: record.statesExplored },
+      directed: { granted: record.directedGranted, consumed: record.directedStatesExplored },
+      total: { granted: campaignGranted, consumed: campaignConsumed },
+    },
+    goalProbes: record.goalProbes,
     events: record.events,
     droppedEventCount: record.droppedEventCount,
   };
@@ -574,6 +667,9 @@ export async function startSearchSession(input: StartSearchInput): Promise<Searc
     recoverable: Boolean(run.checkpointId),
     totalGranted: totalGrant,
     statesExplored: run.result.statesExplored,
+    directedGranted: 0,
+    directedStatesExplored: 0,
+    goalProbes: [],
     latestReportId: run.reportId,
     ...(run.checkpointId ? { latestCheckpointId: run.checkpointId } : {}),
     bindingLimit: run.bindingLimit,
@@ -608,6 +704,9 @@ export async function continueSearchSession(input: ContinueSearchInput): Promise
     throw new Error("search session has no recoverable frontier; inspect its terminal status or start a new session");
   }
   validateGrant(input.maxStates, record.totalGranted);
+  if (input.maxStates + record.directedGranted > MAX_MCP_SESSION_TOTAL_STATES) {
+    throw new RangeError(`base plus directed grants must not exceed ${MAX_MCP_SESSION_TOTAL_STATES} states`);
+  }
   const resumed = await loadCheckpointForResume(projectRoot, record.latestCheckpointId);
   const saved = resumed.checkpoint.configuration;
   const run = await runWindow(projectRoot, input.file, input.maxStates, {
@@ -642,6 +741,144 @@ export async function continueSearchSession(input: ContinueSearchInput): Promise
   });
   writeRecord(projectRoot, updated, record.revision);
   return sessionResponse(projectRoot, updated, input);
+}
+
+export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalResponse> {
+  const { projectRoot, record } = loadSession(input.file, input.sessionCapability);
+  if (record.revision !== input.revision) {
+    throw new Error(`search session revision is ${record.revision}, not ${input.revision}; inspect it before retrying`);
+  }
+  if (!Number.isSafeInteger(input.maxStates) || input.maxStates < 1 || input.maxStates > MAX_MCP_SESSION_WINDOW_STATES) {
+    throw new RangeError(`maxStates must be an integer from 1 to ${MAX_MCP_SESSION_WINDOW_STATES}`);
+  }
+  if (record.totalGranted + record.directedGranted + input.maxStates > MAX_MCP_SESSION_TOTAL_STATES) {
+    throw new RangeError(`base plus directed grants must not exceed ${MAX_MCP_SESSION_TOTAL_STATES} states`);
+  }
+  const issues: string[] = [];
+  const goals = parseGoalDefinitions([input.goal], "goals", issues) ?? [];
+  if (issues.length || goals.length !== 1) {
+    throw new RangeError(`Invalid goals:\n${issues.map((issue) => `- ${issue}`).join("\n")}`);
+  }
+  const currentBase = await openReportArtifact(projectRoot, record.latestReportId);
+  if (currentBase.artifact.freshness !== "current") {
+    throw new Error("add_goal requires the exact source used by the session's latest base report; start a fresh search after source changes");
+  }
+  const compiled = await compile(input.file);
+  if (!compiled.success || !compiled.storyJson) {
+    throw new Error(`Compilation failed; run compile_story and fix ${compiled.issues.length} issue(s) before adding a goal`);
+  }
+  const { storyJson, ...compileReport } = compiled;
+  const knots = scanKnots(input.file);
+  const externals = scanExternals(input.file);
+  validateGoalsForStory(storyJson, knots, externals, goals);
+  const baseConfiguration = currentBase.report.effectiveConfiguration as {
+    limits?: { maxDepth?: number; seed?: number; storySeed?: number };
+    maxFrontierStates?: number | null;
+    maxFrontierMb?: number | null;
+  };
+  const limits = baseConfiguration.limits ?? {};
+  const semantics = scanStorySemantics(input.file);
+  const { memoryGuard } = createResourceGuards();
+  const result = exploreGoalProbe(storyJson, knots, externals, {
+    maxDepth: limits.maxDepth ?? DEFAULT_MAX_DEPTH,
+    seed: limits.seed,
+    storySeed: limits.storySeed ?? DEFAULT_STORY_SEED,
+    goalMaxStates: input.maxStates,
+    goals,
+    memoryGuard,
+    preserveTurnState: semantics.usesTurns,
+    preserveRandomState: semantics.usesRandomness,
+    randomnessDetected: semantics.usesRandomness,
+    sharedMaxPendingStates: baseConfiguration.maxFrontierStates ?? undefined,
+    sharedMaxPendingBytes: baseConfiguration.maxFrontierMb === null || baseConfiguration.maxFrontierMb === undefined
+      ? undefined
+      : baseConfiguration.maxFrontierMb * 1024 * 1024,
+  });
+  classifyUnvisitedKnots(result, scanInboundDiverts(input.file));
+  const configuration: EffectiveReportConfiguration = {
+    search: "shared",
+    executionScope: "goal-probe",
+    minRepro: false,
+    strict: false,
+    maxMemoryMb: null,
+    maxTimeSec: null,
+    maxFrontierStates: baseConfiguration.maxFrontierStates ?? null,
+    maxFrontierMb: baseConfiguration.maxFrontierMb ?? null,
+    goalMaxStates: input.maxStates,
+    storySeed: limits.storySeed ?? DEFAULT_STORY_SEED,
+    goals,
+  };
+  const report = buildReportEnvelope({
+    compile: compileReport,
+    explore: result,
+    nextRun: {
+      recommendation: "investigate",
+      stop: true,
+      flags: {
+        maxDepth: result.limits.maxDepth,
+        maxStates: input.maxStates,
+        ...(result.limits.seed === undefined ? {} : { seed: result.limits.seed }),
+      },
+      rationale: "This report is one additive goal probe from the story root, not the resumable base search.",
+      expectedGain: "Inspect the goal result, then explicitly choose whether to add another directed probe or continue the protected base search.",
+    },
+    storyJson,
+    configuration,
+  });
+  const goalReport = saveReportArtifact(projectRoot, input.file, report);
+  const goalResult = result.goalResults?.[0];
+  if (!goalResult) throw new Error("goal probe completed without a goal result");
+  const goalHandle = `goal-${randomBytes(12).toString("hex")}`;
+  const summary: GoalProbeSummary = {
+    goalHandle,
+    status: goalResult.status,
+    reportId: goalReport.id,
+    directedGranted: input.maxStates,
+    directedConsumed: result.statesExplored,
+  };
+  const nextRevision = record.revision + 1;
+  const updated: SearchSessionRecord = {
+    ...record,
+    updatedAt: new Date().toISOString(),
+    revision: nextRevision,
+    directedGranted: record.directedGranted + input.maxStates,
+    directedStatesExplored: record.directedStatesExplored + result.statesExplored,
+    goalProbes: [...record.goalProbes, summary].slice(-MAX_MCP_SESSION_EVENTS),
+  };
+  appendEvent(updated, {
+    type: "goal_added",
+    revision: nextRevision,
+    totalGranted: updated.totalGranted,
+    statesExplored: updated.statesExplored,
+    reportId: goalReport.id,
+    ...(updated.latestCheckpointId ? { checkpointId: updated.latestCheckpointId } : {}),
+    goalHandle,
+    goalStatus: goalResult.status,
+    directedGranted: input.maxStates,
+    directedConsumed: result.statesExplored,
+  });
+  writeRecord(projectRoot, updated, record.revision);
+  return {
+    schemaVersion: SEARCH_SESSION_SCHEMA_VERSION,
+    inkcheckVersion: VERSION,
+    session: responseSession(updated),
+    goalHandle,
+    goalReportId: goalReport.id,
+    goal: goals[0],
+    result: goalResult,
+    budget: {
+      directedGranted: input.maxStates,
+      directedConsumed: result.statesExplored,
+      campaignGranted: updated.totalGranted + updated.directedGranted,
+      campaignConsumed: updated.statesExplored + updated.directedStatesExplored,
+    },
+    disclosure: "This explicit goal response may include variable names and values, choice text, and an indexed witness. Ordinary inspect_search metadata remains privacy-minimal.",
+    semantics: "The directed work started at the story root and was additive. It did not resume, reduce, reorder, or mutate the exact base-search frontier.",
+    nextOperation: {
+      tool: "inspect_search",
+      reason: "Inspect the committed revision and separate base/directed totals before choosing the next bounded operation.",
+    },
+  };
 }
 
 export async function cancelSearchSession(input: CancelSearchInput): Promise<CancelSearchResponse> {

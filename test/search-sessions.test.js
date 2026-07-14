@@ -8,6 +8,7 @@ const { createHash } = require("node:crypto");
 const { openReportArtifact, saveReportArtifact } = require("../dist/artifacts");
 const { compile } = require("../dist/inklecate");
 const {
+  addSessionGoal,
   cancelSearchSession,
   checkSessionRegression,
   continueSearchSession,
@@ -186,7 +187,15 @@ test("MCP session metadata rejects incompatible versions and one recoverable ses
     });
     assert.strictEqual(upgraded.session.revision, 2);
     value = JSON.parse(fs.readFileSync(metadata, "utf8"));
-    assert.strictEqual(value.schemaVersion, 3);
+    assert.strictEqual(value.schemaVersion, 4);
+    value.schemaVersion = 3;
+    delete value.directedGranted;
+    delete value.directedStatesExplored;
+    delete value.goalProbes;
+    fs.writeFileSync(metadata, JSON.stringify(value));
+    const legacy = await inspectSearchSession({ file, sessionCapability: started.sessionCapability });
+    assert.deepStrictEqual(legacy.session.budget.directed, { granted: 0, consumed: 0 });
+    value = JSON.parse(fs.readFileSync(metadata, "utf8"));
     value.events.push({
       sequence: 3,
       type: "replayed",
@@ -209,6 +218,147 @@ test("MCP session metadata rejects incompatible versions and one recoverable ses
     await assert.rejects(
       () => startSearchSession({ file, maxStates: 73 }),
       /unsupported search session schema 999/
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("add_goal spends additive directed work while preserving the exact base session", async () => {
+  const { root, file } = project();
+  try {
+    const started = await startSearchSession({ file, maxStates: 73, maxDepth: 150, seed: 7 });
+    const baseReportId = started.session.latestReportId;
+    const baseCheckpointId = started.session.latestCheckpointId;
+    const checkpointFile = path.join(root, ".inkcheck", "checkpoints", `${baseCheckpointId}.json`);
+    const checkpointHash = createHash("sha256").update(fs.readFileSync(checkpointFile)).digest("hex");
+    const added = await addSessionGoal({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: started.session.revision,
+      maxStates: 20,
+      goal: {
+        id: "reach_depth",
+        condition: { left: { variable: "depth" }, operator: ">=", right: { literal: 2 } },
+      },
+    });
+    assert.strictEqual(added.result.status, "reached");
+    assert.match(added.goalHandle, /^goal-[0-9a-f]{24}$/);
+    assert.strictEqual(added.session.revision, 2);
+    assert.strictEqual(added.session.latestReportId, baseReportId);
+    assert.strictEqual(added.session.latestCheckpointId, baseCheckpointId);
+    assert.deepStrictEqual(added.session.budget.base, { granted: 73, consumed: started.session.statesExplored });
+    assert.deepStrictEqual(added.session.budget.directed, { granted: 20, consumed: added.budget.directedConsumed });
+    assert.strictEqual(added.session.budget.total.granted, 93);
+    assert.match(added.semantics, /started at the story root.*additive/i);
+    assert.strictEqual(
+      createHash("sha256").update(fs.readFileSync(checkpointFile)).digest("hex"),
+      checkpointHash
+    );
+
+    const goalReport = await openReportArtifact(root, added.goalReportId);
+    assert.strictEqual(goalReport.artifact.freshness, "current");
+    assert.strictEqual(goalReport.report.effectiveConfiguration.executionScope, "goal-probe");
+    assert.strictEqual(goalReport.report.effectiveConfiguration.limits.maxStates, 0);
+    assert.strictEqual(goalReport.report.effectiveConfiguration.limits.goalMaxStates, 20);
+    assert.strictEqual(goalReport.report.explore.goalBudget.generalGranted, 0);
+    assert.strictEqual(goalReport.report.explore.goalBudget.directedGranted, 20);
+
+    const inspected = await inspectSearchSession({ file, sessionCapability: started.sessionCapability });
+    assert.deepStrictEqual(inspected.session.goalProbes, [{
+      goalHandle: added.goalHandle,
+      status: "reached",
+      reportId: added.goalReportId,
+      directedGranted: 20,
+      directedConsumed: added.budget.directedConsumed,
+    }]);
+    const sessionPath = path.join(root, ".inkcheck", "sessions", fs.readdirSync(path.join(root, ".inkcheck", "sessions"))[0]);
+    const raw = fs.readFileSync(sessionPath, "utf8");
+    for (const sensitive of ["reach_depth", '"depth"', '"condition"', '"observedValues"', '"choiceIndices"']) {
+      assert.strictEqual(raw.includes(sensitive), false, `session metadata leaked ${sensitive}`);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("add_goal reports bounded misses and supports staged goals", async () => {
+  const { root, file } = project();
+  try {
+    const started = await startSearchSession({ file, maxStates: 10, maxDepth: 150 });
+    const missed = await addSessionGoal({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: 1,
+      maxStates: 1,
+      goal: {
+        id: "far_code",
+        condition: { left: { variable: "path_code" }, operator: "==", right: { literal: 999999 } },
+      },
+    });
+    assert.strictEqual(missed.result.status, "not_reached_within_limits");
+    const staged = await addSessionGoal({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: 2,
+      maxStates: 20,
+      goal: {
+        id: "two_steps",
+        stages: [
+          { id: "one", condition: { left: { variable: "depth" }, operator: ">=", right: { literal: 1 } } },
+          { id: "two", condition: { left: { variable: "depth" }, operator: ">=", right: { literal: 2 } } },
+        ],
+      },
+    });
+    assert.strictEqual(staged.result.status, "reached");
+    assert.deepStrictEqual(staged.result.stages.map((stage) => stage.status), ["reached", "reached"]);
+    assert.strictEqual(staged.session.budget.directed.granted, 21);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("add_goal fails before work for invalid goals, stale revisions, changed source, and campaign caps", async () => {
+  const { root, file } = project();
+  try {
+    const started = await startSearchSession({ file, maxStates: 10, maxDepth: 150 });
+    const goal = {
+      id: "bad_variable",
+      condition: { left: { variable: "missing" }, operator: "==", right: { literal: true } },
+    };
+    await assert.rejects(
+      () => addSessionGoal({ file, sessionCapability: started.sessionCapability, revision: 1, maxStates: 1, goal }),
+      /unknown variable missing/
+    );
+    await assert.rejects(
+      () => addSessionGoal({ file, sessionCapability: started.sessionCapability, revision: 99, maxStates: 1, goal }),
+      /revision is 1, not 99/
+    );
+    fs.appendFileSync(file, "\nChanged before goal.\n");
+    await assert.rejects(
+      () => addSessionGoal({
+        file,
+        sessionCapability: started.sessionCapability,
+        revision: 1,
+        maxStates: 1,
+        goal: { id: "depth", condition: { left: { variable: "depth" }, operator: ">=", right: { literal: 1 } } },
+      }),
+      /requires the exact source/
+    );
+    fs.copyFileSync(FIXTURE, file);
+    const sessionPath = path.join(root, ".inkcheck", "sessions", fs.readdirSync(path.join(root, ".inkcheck", "sessions"))[0]);
+    const metadata = JSON.parse(fs.readFileSync(sessionPath, "utf8"));
+    metadata.totalGranted = 99_000_000;
+    fs.writeFileSync(sessionPath, JSON.stringify(metadata));
+    await assert.rejects(
+      () => addSessionGoal({
+        file,
+        sessionCapability: started.sessionCapability,
+        revision: 1,
+        maxStates: 1_000_001,
+        goal: { id: "depth", condition: { left: { variable: "depth" }, operator: ">=", right: { literal: 1 } } },
+      }),
+      /base plus directed grants must not exceed 100000000/
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
