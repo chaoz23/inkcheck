@@ -51,6 +51,7 @@
     "docs/local-artifacts.md",
     "docs/local-checkpoints.md",
     "docs/shared-checkpoint-schema-v1.md",
+    "docs/mcp-search-sessions.md",
     "docs/product-engineering-scorecard.md",
     "docs/shadow-policy-evaluation.md",
     "docs/promotion-benchmark.md",

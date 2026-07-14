@@ -133,7 +133,7 @@ export function createAgentKit(
   }
   planned.push(
     { path: path.join(root, ".github", "workflows", "inkcheck.yml"), content: workflow() },
-    { path: path.join(root, ".inkcheck", ".gitignore"), content: "reports/\ncheckpoints/\n*.tmp\n" },
+    { path: path.join(root, ".inkcheck", ".gitignore"), content: "reports/\ncheckpoints/\nsessions/\n*.tmp\n" },
     { path: path.join(root, ".inkcheck", "AGENTS.md"), content: agentInstructions(entrypoint) }
   );
   return { projectRoot: root, entrypoint, files: applyPlan(root, planned) };

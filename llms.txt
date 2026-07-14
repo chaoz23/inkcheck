@@ -28,7 +28,8 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 - Fetch or replay one stable finding: `npx -y inkcheck artifacts finding <report-id> <finding-id> --json` or `npx -y inkcheck artifacts replay <report-id> <finding-id> --json`; replay fails unless source freshness is current
 - Report storage is capped at 256 MiB per report and 1 GiB per project. Preview cleanup with `artifacts delete <id> --json` or `artifacts prune --keep N --json`; add `--apply` only after reviewing the deterministic, at-most-100-report selection.
 - Save an unfinished exact local frontier: `npx -y inkcheck story.ink --search=shared --no-min-repro --max-states 100000 --save-checkpoint --json`
-- Resume it to a larger total grant: `npx -y inkcheck resume <checkpoint-id> --max-states 1000000 --json`; require current freshness and treat checkpoint files as sensitive story data. This surface is CLI-only.
+- Resume it to a larger total grant: `npx -y inkcheck resume <checkpoint-id> --max-states 1000000 --json`; require current freshness and treat checkpoint files as sensitive story data.
+- MCP long jobs use `start_search` then `inspect_search` / `continue_search` with the returned bearer capability and revision. Each synchronous window adds at most 5M states; `cancel_search` acts between windows and retains exact recoverability unless `discard: true`.
 - Human fix list: `npx -y inkcheck <story.ink> --human`
 - Human-readable CI output: `npx -y inkcheck <story.ink> --markdown`
 - CI: `npx -y inkcheck story/main.ink --strict`
@@ -61,6 +62,10 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 - story_stats — word/knot/choice counts + full knot list with locations
 - playtest_story — play one indexed choice path headlessly; transcript, tags, variables, errors, and replay status (`completed`, `runtime_error`, or `path_changed`)
 - explore_story — bounded systematic walk: terminal states, error repro paths, knot coverage, and explicit limitations
+- start_search — start one durable exact base-shared result window (1M default) and return a bearer capability
+- inspect_search — bounded session status and privacy-minimal saved finding summaries; no full report/frontier
+- continue_search — continue the exact frontier to a larger cumulative grant, adding at most 5M per call
+- cancel_search — cancel between synchronous windows; retained by default, explicitly forget with `discard: true`
 
 ## Intended agent loop
 

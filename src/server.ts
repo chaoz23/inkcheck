@@ -15,6 +15,15 @@ import {
 import { parseAssertionDefinitions } from "./assertions";
 import { parseGoalDefinitions } from "./goals";
 import { createResourceGuards } from "./resource-guards";
+import {
+  cancelSearchSession,
+  continueSearchSession,
+  DEFAULT_MCP_SESSION_WINDOW_STATES,
+  inspectSearchSession,
+  MAX_MCP_SESSION_TOTAL_STATES,
+  MAX_MCP_SESSION_WINDOW_STATES,
+  startSearchSession,
+} from "./search-sessions";
 
 const server = new McpServer({ name: "inkcheck", version: VERSION });
 
@@ -241,6 +250,104 @@ server.registerTool(
       storyJson: compiled.storyJson,
       configuration,
     }));
+  }
+);
+
+server.registerTool(
+  "start_search",
+  {
+    description:
+      "Start one durable exact shared-search result window. Returns an opaque bearer capability plus bounded findings and a source-bound checkpoint when work remains. This call runs synchronously until the window boundary; it does not create a background job.",
+    inputSchema: {
+      file: z.string().describe("Path to the root .ink file"),
+      maxStates: z.number().int().min(1).max(MAX_MCP_SESSION_WINDOW_STATES).optional()
+        .describe(`Total state grant for the first window (default ${DEFAULT_MCP_SESSION_WINDOW_STATES}, max ${MAX_MCP_SESSION_WINDOW_STATES})`),
+      maxDepth: z.number().int().min(1).max(1000).optional()
+        .describe(`Max choices deep to explore (default ${DEFAULT_MAX_DEPTH})`),
+      seed: z.number().int().min(0).max(4294967295).optional()
+        .describe("Seed for the reproducible shared frontier (default 1)"),
+      storySeed: z.number().int().min(1).max(MAX_STORY_SEED).optional()
+        .describe(`Initial Ink runtime RNG seed (default ${DEFAULT_STORY_SEED})`),
+      maxFrontierStates: z.number().int().min(1).max(100000000).optional()
+        .describe("Maximum pending checkpoints retained (default unlimited)"),
+      maxFrontierMb: z.number().int().min(1).max(1000000).optional()
+        .describe("Maximum pending checkpoint payload in MiB (default unlimited)"),
+      findingLimit: z.number().int().min(1).max(100).optional()
+        .describe("Maximum privacy-minimal saved finding summaries to return (default 20)"),
+    },
+  },
+  async (input) => {
+    try {
+      return json(await startSearchSession(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
+
+server.registerTool(
+  "inspect_search",
+  {
+    description:
+      "Inspect a durable MCP result-window session between windows. Returns bounded session evidence and privacy-minimal saved finding summaries, never the full report or sensitive frontier payload.",
+    inputSchema: {
+      file: z.string().describe("The same root .ink file used to start the session"),
+      sessionCapability: z.string().describe("Opaque bearer capability returned by start_search"),
+      findingLimit: z.number().int().min(1).max(100).optional(),
+      findingCursor: z.string().optional().describe("Cursor returned by the previous immutable saved-finding page"),
+    },
+  },
+  async (input) => {
+    try {
+      return json(await inspectSearchSession(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
+
+server.registerTool(
+  "continue_search",
+  {
+    description:
+      "Continue the exact saved frontier to a larger cumulative state grant. Each synchronous call may add at most 5M states and returns at the next durable result boundary; pass the last observed revision to reject stale concurrent mutations.",
+    inputSchema: {
+      file: z.string().describe("The same root .ink file used to start the session"),
+      sessionCapability: z.string().describe("Opaque bearer capability returned by start_search"),
+      revision: z.number().int().min(1).describe("Last revision returned by start_search, inspect_search, or continue_search"),
+      maxStates: z.number().int().min(2).max(MAX_MCP_SESSION_TOTAL_STATES)
+        .describe("New cumulative total grant; must increase by no more than 5000000 states"),
+      findingLimit: z.number().int().min(1).max(100).optional(),
+      findingCursor: z.string().optional(),
+    },
+  },
+  async (input) => {
+    try {
+      return json(await continueSearchSession(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
+
+server.registerTool(
+  "cancel_search",
+  {
+    description:
+      "Cancel a durable MCP search between result windows. By default the exact checkpoint is retained and can be continued later; discard=true forgets the session metadata and bearer capability. This cannot interrupt a start_search or continue_search call already running.",
+    inputSchema: {
+      file: z.string().describe("The same root .ink file used to start the session"),
+      sessionCapability: z.string().describe("Opaque bearer capability returned by start_search"),
+      revision: z.number().int().min(1).describe("Last observed session revision"),
+      discard: z.boolean().optional().describe("Forget session metadata/capability instead of retaining recoverability (default false)"),
+    },
+  },
+  async (input) => {
+    try {
+      return json(await cancelSearchSession(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
   }
 );
 

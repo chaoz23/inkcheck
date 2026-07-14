@@ -19,7 +19,7 @@ The resumed `--max-states` value is the new **total grant**. It must be greater 
 
 ## Supported scope
 
-Exact persistence currently supports only base `--search=shared` with `--no-min-repro`. Assertions, goals, `shared-variable`, the default portfolio, `--auto`, `--next`, hosted jobs, and MCP are rejected rather than restarted or resumed approximately. `inkcheck capabilities --json` reports `resumableSearchSurfaces: ["cli"]` so agents can distinguish this local workflow from unsupported surfaces.
+Exact persistence currently supports only base `--search=shared` with `--no-min-repro`. Assertions, goals, `shared-variable`, the default portfolio, `--auto`, `--next`, and hosted jobs are rejected rather than restarted or resumed approximately. MCP exposes the same narrow engine contract as cooperative [result-window sessions](mcp-search-sessions.md), while one-shot `explore_story` remains non-resumable. `inkcheck capabilities --json` reports `resumableSearchSurfaces: ["cli", "mcp"]` so agents can discover both supported surfaces without inferring hosted support.
 
 ## Inspect and reopen
 

@@ -214,7 +214,7 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.schemaVersion, 1);
   assert.strictEqual(value.inkcheckVersion, "0.5.1");
   assert.deepStrictEqual(value.searchModes, ["portfolio", "shared", "shared-variable"]);
-  assert.deepStrictEqual(value.resumableSearchSurfaces, ["cli"]);
+  assert.deepStrictEqual(value.resumableSearchSurfaces, ["cli", "mcp"]);
   assert.strictEqual(value.limits.maxStates, 100_000_000);
   assert.strictEqual(value.limits.maxGoalStates, 100_000_000);
   assert.strictEqual(value.limits.maxTotalStates, 100_000_000);
@@ -232,6 +232,12 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.limits.maxReportBytes, DEFAULT_MAX_REPORT_BYTES);
   assert.strictEqual(value.limits.maxProjectReportBytes, DEFAULT_MAX_PROJECT_REPORT_BYTES);
   assert.strictEqual(value.limits.maxReportPrunePerRun, MAX_REPORT_PRUNE_PER_RUN);
+  assert.strictEqual(value.schemas.searchSession, 1);
+  assert.strictEqual(value.limits.defaultMcpSessionWindowStates, 1_000_000);
+  assert.strictEqual(value.limits.maxMcpSessionWindowStates, 5_000_000);
+  assert.strictEqual(value.limits.maxMcpSessionTotalStates, 100_000_000);
+  assert.strictEqual(value.limits.maxMcpSessionFiles, 100);
+  assert.strictEqual(value.limits.maxMcpSessionEvents, 64);
   assert.strictEqual(value.limits.defaultMaxDepth, 100);
   assert.strictEqual(value.features.indexedWitnesses, true);
   assert.strictEqual(value.features.assertions, true);
@@ -240,6 +246,7 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.features.localReportArtifacts, true);
   assert.strictEqual(value.features.savedFindingLookup, true);
   assert.strictEqual(value.features.resumableSearch, true);
+  assert.strictEqual(value.features.interactiveSearchSessions, true);
 });
 
 test("config schema v1 validates bounded executable project defaults", () => {
@@ -805,6 +812,7 @@ test("Codex agent kit creates synchronized config, CI, ignore rules, and instruc
     assert.match(fs.readFileSync(path.join(tmp, ".inkcheck", "AGENTS.md"), "utf8"), /Inkcheck 0\.5\.1/);
     assert.match(fs.readFileSync(path.join(tmp, ".github", "workflows", "inkcheck.yml"), "utf8"), /inkcheck@0\.5\.1/);
     assert.match(fs.readFileSync(path.join(tmp, ".inkcheck", ".gitignore"), "utf8"), /checkpoints\//);
+    assert.match(fs.readFileSync(path.join(tmp, ".inkcheck", ".gitignore"), "utf8"), /sessions\//);
     const second = createAgentKit(tmp, "codex");
     assert.ok(second.files.every((file) => file.status === "unchanged"));
   } finally {

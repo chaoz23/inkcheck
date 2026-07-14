@@ -9,6 +9,14 @@ import {
   DEFAULT_MAX_CHECKPOINT_BYTES,
   DEFAULT_MAX_PROJECT_CHECKPOINT_BYTES,
 } from "./checkpoints";
+import {
+  DEFAULT_MCP_SESSION_WINDOW_STATES,
+  MAX_MCP_SESSION_EVENTS,
+  MAX_MCP_SESSION_FILES,
+  MAX_MCP_SESSION_TOTAL_STATES,
+  MAX_MCP_SESSION_WINDOW_STATES,
+  SEARCH_SESSION_SCHEMA_VERSION,
+} from "./search-session-contract";
 
 export const CAPABILITIES_SCHEMA_VERSION = 1;
 export const PROJECT_INSPECTION_SCHEMA_VERSION = 1;
@@ -26,7 +34,7 @@ export const MAX_INSPECT_EXTERNALS = 200;
 export interface InkcheckCapabilities {
   schemaVersion: number;
   inkcheckVersion: string;
-  schemas: { report: number; config: number; projectInspection: number; artifact: number; checkpointArtifact: number };
+  schemas: { report: number; config: number; projectInspection: number; artifact: number; checkpointArtifact: number; searchSession: number };
   limits: {
     maxDepth: number;
     maxStates: number;
@@ -43,6 +51,11 @@ export interface InkcheckCapabilities {
     maxReportBytes: number;
     maxProjectReportBytes: number;
     maxReportPrunePerRun: number;
+    defaultMcpSessionWindowStates: number;
+    maxMcpSessionWindowStates: number;
+    maxMcpSessionTotalStates: number;
+    maxMcpSessionFiles: number;
+    maxMcpSessionEvents: number;
   };
   searchModes: string[];
   resumableSearchSurfaces: string[];
@@ -56,6 +69,7 @@ export interface InkcheckCapabilities {
     localReportArtifacts: boolean;
     savedFindingLookup: boolean;
     resumableSearch: boolean;
+    interactiveSearchSessions: boolean;
   };
 }
 
@@ -69,6 +83,7 @@ export function capabilities(): InkcheckCapabilities {
       projectInspection: PROJECT_INSPECTION_SCHEMA_VERSION,
       artifact: ARTIFACT_SCHEMA_VERSION,
       checkpointArtifact: CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
+      searchSession: SEARCH_SESSION_SCHEMA_VERSION,
     },
     limits: {
       maxDepth: 1_000,
@@ -86,9 +101,14 @@ export function capabilities(): InkcheckCapabilities {
       maxReportBytes: DEFAULT_MAX_REPORT_BYTES,
       maxProjectReportBytes: DEFAULT_MAX_PROJECT_REPORT_BYTES,
       maxReportPrunePerRun: MAX_REPORT_PRUNE_PER_RUN,
+      defaultMcpSessionWindowStates: DEFAULT_MCP_SESSION_WINDOW_STATES,
+      maxMcpSessionWindowStates: MAX_MCP_SESSION_WINDOW_STATES,
+      maxMcpSessionTotalStates: MAX_MCP_SESSION_TOTAL_STATES,
+      maxMcpSessionFiles: MAX_MCP_SESSION_FILES,
+      maxMcpSessionEvents: MAX_MCP_SESSION_EVENTS,
     },
     searchModes: ["portfolio", "shared", "shared-variable"],
-    resumableSearchSurfaces: ["cli"],
+    resumableSearchSurfaces: ["cli", "mcp"],
     features: {
       projectInspection: true,
       indexedWitnesses: true,
@@ -99,6 +119,7 @@ export function capabilities(): InkcheckCapabilities {
       localReportArtifacts: true,
       savedFindingLookup: true,
       resumableSearch: true,
+      interactiveSearchSessions: true,
     },
   };
 }
