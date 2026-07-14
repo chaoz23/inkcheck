@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import * as v8 from "v8";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -15,6 +14,7 @@ import {
 } from "./report-contract";
 import { parseAssertionDefinitions } from "./assertions";
 import { parseGoalDefinitions } from "./goals";
+import { createResourceGuards } from "./resource-guards";
 
 const server = new McpServer({ name: "inkcheck", version: VERSION });
 
@@ -192,8 +192,7 @@ server.registerTool(
     const portfolioStates = totalMaxStates - reproStates;
     // Stop cleanly before a V8 heap OOM (uncatchable after the fact); the
     // cap tracks any --max-old-space-size the host set.
-    const memoryCapBytes = Math.floor(v8.getHeapStatistics().heap_size_limit * 0.85);
-    const memoryGuard = () => process.memoryUsage().heapUsed < memoryCapBytes;
+    const { memoryGuard } = createResourceGuards();
     const options = {
       maxDepth,
       maxStates: Math.max(1, portfolioStates),

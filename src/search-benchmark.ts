@@ -90,6 +90,8 @@ export interface SearchBenchmarkSummary {
     dedupeHits: number;
     maxDepthReached: number;
     peakFrontier: number | null;
+    peakPendingStates: number | null;
+    peakPendingBytes: number | null;
   };
   result: {
     exhaustive: boolean;
@@ -109,6 +111,9 @@ export interface SearchBenchmarkSummary {
       | "dedupeHits"
       | "maxDepthReached"
       | "lastDiscoveryAtState"
+      | "peakFrontier"
+      | "peakPendingStates"
+      | "peakPendingBytes"
       | "exhaustive"
     >
   >;
@@ -200,6 +205,18 @@ export function summarizeSearchResult(
               : Math.max(peak ?? 0, pass.peakFrontier),
           null
         ),
+      peakPendingStates: passes.reduce<number | null>(
+        (peak, pass) => pass.peakPendingStates === undefined
+          ? peak
+          : Math.max(peak ?? 0, pass.peakPendingStates),
+        null
+      ),
+      peakPendingBytes: passes.reduce<number | null>(
+        (peak, pass) => pass.peakPendingBytes === undefined
+          ? peak
+          : Math.max(peak ?? 0, pass.peakPendingBytes),
+        null
+      ),
     },
     result: {
       exhaustive: report.exhaustive,
@@ -217,6 +234,9 @@ export function summarizeSearchResult(
       dedupeHits: pass.dedupeHits,
       maxDepthReached: pass.maxDepthReached,
       lastDiscoveryAtState: pass.lastDiscoveryAtState,
+      ...(pass.peakFrontier === undefined ? {} : { peakFrontier: pass.peakFrontier }),
+      ...(pass.peakPendingStates === undefined ? {} : { peakPendingStates: pass.peakPendingStates }),
+      ...(pass.peakPendingBytes === undefined ? {} : { peakPendingBytes: pass.peakPendingBytes }),
       exhaustive: pass.exhaustive,
     })),
   };

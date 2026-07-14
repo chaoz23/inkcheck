@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import * as v8 from "v8";
 import {
   CompileResult,
   DEFAULT_MAX_DEPTH,
@@ -48,6 +47,7 @@ import {
 } from "./discovery";
 import { findDefaultProjectConfig, loadProjectConfig } from "./config";
 import { createAgentKit, initProject, renderScaffoldResult } from "./scaffold";
+import { createResourceGuards } from "./resource-guards";
 
 function usage(message?: string): never {
   if (message) console.error(`inkcheck: ${message}\n`);
@@ -398,16 +398,10 @@ async function main() {
   // Memory guard: a V8 heap OOM cannot be caught after the fact, so stop
   // cleanly before it. The cap is an explicit --max-memory, or 85% of the
   // V8 old-space limit (which honors any --max-old-space-size the user set).
-  const heapLimit = v8.getHeapStatistics().heap_size_limit;
-  const memoryCapBytes = maxMemoryMb !== undefined
-    ? maxMemoryMb * 1024 * 1024
-    : Math.floor(heapLimit * 0.85);
-  const memoryGuard = () => process.memoryUsage().heapUsed < memoryCapBytes;
-
-  // Time guard: stop cleanly at a wall-clock deadline and hand back a partial
-  // report, rather than being killed mid-run. No deadline unless --max-time.
-  const deadline = maxTimeSec !== undefined ? Date.now() + maxTimeSec * 1000 : undefined;
-  const timeGuard = deadline !== undefined ? () => Date.now() < deadline : undefined;
+  const { memoryCapBytes, memoryGuard, timeGuard } = createResourceGuards({
+    maxMemoryMb,
+    ...(maxTimeSec === undefined ? {} : { maxTimeMs: maxTimeSec * 1000 }),
+  });
 
   const runCheck = (bounds: { maxDepth?: number; maxStates?: number; seed?: number }): ExploreResult => {
     const runStates = bounds.maxStates ?? 10_000_000;

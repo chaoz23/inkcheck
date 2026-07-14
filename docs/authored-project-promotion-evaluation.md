@@ -35,7 +35,7 @@ Sky Caravan was screened as a stronger 90k-word scale case. Its MIT-licensed sou
 
 ## Reproducibility and limits
 
-The first whole-manifest attempt was stopped at a predeclared 2.5-hour manual envelope because the original harness emitted only one atomic final report. The checked-in runner now supports `--case`, `--budget`, per-cell stderr progress, and `--worker-timeout-ms`. The tables above come from the superseding isolated cells, not estimates recovered from the aborted process.
+The first whole-manifest attempt was stopped at a predeclared 2.5-hour manual envelope because the original harness emitted only one atomic final report. The tables above come from the superseding isolated cells, not estimates recovered from the aborted process. They also preserve the evaluation-time meaning of `unavailable`: those workers were hard-killed without a report. The current runner adds guarded partial results and atomic scheduler-window snapshots; a future rerun may therefore turn the same wall-clock boundary into measured partial evidence without retroactively changing this table.
 
 ```sh
 npm run build

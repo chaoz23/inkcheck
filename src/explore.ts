@@ -471,6 +471,8 @@ export interface ExploreOptions {
   weights?: PortfolioWeights;
   /** Receive privacy-safe bounded-search work snapshots. */
   onProgress?: (progress: ExploreProgress) => void;
+  /** Receive periodic full evidence snapshots for crash-safe evaluation persistence. */
+  onSnapshot?: (result: ExploreResult) => void;
   /** Internal/test override for the normal 10,000-state progress cadence. */
   progressIntervalStates?: number;
   /** Internal/test override for the normal one-second progress heartbeat. */
@@ -505,6 +507,8 @@ export const DEFAULT_RANDOM_SEED = 1;
 export const DEFAULT_BEAM_WIDTH = 64;
 export const DEFAULT_PROGRESS_INTERVAL_STATES = 10_000;
 export const DEFAULT_PROGRESS_INTERVAL_MS = 1_000;
+const RESOURCE_GUARD_INTERVAL = 512;
+const TIMED_RESOURCE_GUARD_INTERVAL = 64;
 
 export interface ExploreProgress {
   pass: string;
@@ -1063,6 +1067,7 @@ function createSearchEngine(
   const memoryGuard = opts.memoryGuard;
   let timeStopped = false;
   const timeGuard = opts.timeGuard;
+  const guardInterval = timeGuard ? TIMED_RESOURCE_GUARD_INTERVAL : RESOURCE_GUARD_INTERVAL;
   const done = () =>
     finished ||
     (!current && (strategy === "bfs" ? head >= frames.length : frames.length === 0));
@@ -1098,7 +1103,7 @@ function createSearchEngine(
       const start = statesExplored;
       let sinceGuard = 0;
       while (statesExplored - start < grant) {
-        if ((memoryGuard || timeGuard) && ++sinceGuard >= 512) {
+        if ((memoryGuard || timeGuard) && ++sinceGuard >= guardInterval) {
           sinceGuard = 0;
           if (memoryGuard && !memoryGuard()) {
             memoryStopped = true;
@@ -1320,6 +1325,7 @@ function createSharedEngine(
   let timeStopped = false;
   const memoryGuard = opts.memoryGuard;
   const timeGuard = opts.timeGuard;
+  const guardInterval = timeGuard ? TIMED_RESOURCE_GUARD_INTERVAL : RESOURCE_GUARD_INTERVAL;
 
   const noteDiscoveryProgress = () => {
     if (discoveryCurve.observe(statesExplored, {
@@ -1751,7 +1757,7 @@ function createSharedEngine(
       const start = statesExplored;
       let sinceGuard = 0;
       while (statesExplored - start < grant) {
-        if ((memoryGuard || timeGuard) && ++sinceGuard >= 512) {
+        if ((memoryGuard || timeGuard) && ++sinceGuard >= guardInterval) {
           sinceGuard = 0;
           if (memoryGuard && !memoryGuard()) {
             memoryStopped = true;
@@ -1932,6 +1938,7 @@ function createRandomEngine(
   const memoryGuard = opts.memoryGuard;
   let timeStopped = false;
   const timeGuard = opts.timeGuard;
+  const guardInterval = timeGuard ? TIMED_RESOURCE_GUARD_INTERVAL : RESOURCE_GUARD_INTERVAL;
   let maxDepthReached = 0;
   let lastDiscoveryAtState: number | null = null;
   const discoveryCurve = new DiscoveryCurveRecorder();
@@ -2126,7 +2133,7 @@ function createRandomEngine(
       const start = statesExplored;
       let sinceGuard = 0;
       while (statesExplored - start < grant) {
-        if ((memoryGuard || timeGuard) && ++sinceGuard >= 512) {
+        if ((memoryGuard || timeGuard) && ++sinceGuard >= guardInterval) {
           sinceGuard = 0;
           if (memoryGuard && !memoryGuard()) {
             memoryStopped = true;
@@ -2258,6 +2265,7 @@ function createBeamEngine(
   const memoryGuard = opts.memoryGuard;
   let timeStopped = false;
   const timeGuard = opts.timeGuard;
+  const guardInterval = timeGuard ? TIMED_RESOURCE_GUARD_INTERVAL : RESOURCE_GUARD_INTERVAL;
   let dedupeHits = 0;
   let maxDepthReached = 0;
   let peakFrontier = 0;
@@ -2537,7 +2545,7 @@ function createBeamEngine(
       const start = statesExplored;
       let sinceGuard = 0;
       while (statesExplored - start < grant) {
-        if ((memoryGuard || timeGuard) && ++sinceGuard >= 512) {
+        if ((memoryGuard || timeGuard) && ++sinceGuard >= guardInterval) {
           sinceGuard = 0;
           if (memoryGuard && !memoryGuard()) {
             memoryStopped = true;
@@ -2681,7 +2689,11 @@ function explorePortfolioInternal(
   if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 100_000_000) {
     throw new RangeError("maxStates must be an integer from 1 to 100000000");
   }
-  if (maxStates === 1) return explore(storyJson, knots, externals, opts);
+  if (maxStates === 1) {
+    const result = explore(storyJson, knots, externals, opts);
+    opts.onSnapshot?.(result);
+    return result;
+  }
 
   const weights = opts.weights ?? DEFAULT_PORTFOLIO_WEIGHTS;
   const shared = { ...opts };
@@ -2761,6 +2773,39 @@ function explorePortfolioInternal(
   let exhaustedEarly = false;
   let memoryStopped = false;
   let timeStopped = false;
+
+  const buildPortfolioSnapshot = (): ExploreResult => {
+    const snapshots = engines.map((engine) => engine.snapshot());
+    const [firstSnapshot, ...otherSnapshots] = snapshots;
+    const mergedSnapshot = otherSnapshots.reduce(
+      (acc, result) => mergeExploreResults(acc, result),
+      firstSnapshot
+    );
+    mergedSnapshot.limits.maxStates = maxStates;
+    mergedSnapshot.discoveryCurve = portfolioCurve.result();
+    mergedSnapshot.discoverySummary = portfolioCurve.summary(maxStates - remaining);
+    mergedSnapshot.schedule = [...schedule];
+    if (replayShadowAllocation) mergedSnapshot.policyReplay = [...policyReplay];
+    mergedSnapshot.passes = engines.map((engine, i) => {
+      const telemetry = engine.telemetry();
+      return {
+        ...telemetry,
+        newEndings: marginalTotals[i].endings,
+        newKnots: marginalTotals[i].knots,
+        newRuntimeErrors: marginalTotals[i].errors,
+        portfolioMarginalCurve: marginalCurves[i].result(),
+        portfolioMarginalSummary: marginalCurves[i].summary(telemetry.statesExplored),
+      };
+    });
+    if (memoryStopped && !mergedSnapshot.exhaustive) {
+      mergedSnapshot.truncated = true;
+      mergedSnapshot.truncatedBy = { ...mergedSnapshot.truncatedBy, maxStates: false, memory: true };
+    } else if (timeStopped && !mergedSnapshot.exhaustive) {
+      mergedSnapshot.truncated = true;
+      mergedSnapshot.truncatedBy = { ...mergedSnapshot.truncatedBy, maxStates: false, time: true };
+    }
+    return mergedSnapshot;
+  };
 
   while (remaining > 0 && !exhaustedEarly && !memoryStopped && !timeStopped && engines.some((e) => !e.done())) {
     // Stop before a round begins if a guard has already tripped, so we do not
@@ -2895,6 +2940,7 @@ function explorePortfolioInternal(
       if (engine.stoppedForTime()) {
         timeStopped = true;
       }
+      if (memoryStopped || timeStopped) break;
       if (engine.done() && engine.exhaustive()) {
         // The reachable space is proven covered; all further work is redundant.
         exhaustedEarly = true;
@@ -2902,6 +2948,7 @@ function explorePortfolioInternal(
       }
     }
     schedule.push({ round: schedule.length + 1, entries });
+    opts.onSnapshot?.(buildPortfolioSnapshot());
     if (memoryStopped || timeStopped) break;
     const totalScore = scores.reduce((a, b) => a + b, 0);
     let legacyWeights = currentWeights;

@@ -55,6 +55,11 @@ export interface PromotionManifest {
 export interface PromotionObservation {
   elapsedMs: number;
   peakRssBytes: number;
+  resourceLimits: {
+    memoryCapBytes: number;
+    timeLimitMs: number | null;
+  };
+  workerExit: "completed" | "hard-timeout-snapshot";
   summary: SearchBenchmarkSummary;
   deterministicRepeatMatch?: boolean;
 }
@@ -286,6 +291,14 @@ function proofAndLimits(summary: SearchBenchmarkSummary): string {
   return `${summary.result.exhaustive ? "proved" : "partial"}:${limits || "none"}`;
 }
 
+function resourceLimits(observation: PromotionObservation): string {
+  const memory = `${(observation.resourceLimits.memoryCapBytes / 1_048_576).toFixed(0)}MiB`;
+  const time = observation.resourceLimits.timeLimitMs === null
+    ? "unlimited"
+    : `${(observation.resourceLimits.timeLimitMs / 1000).toFixed(0)}s`;
+  return `${memory}/${time}/${observation.workerExit}`;
+}
+
 export function renderPromotionMarkdown(report: PromotionBenchmarkReport): string {
   const lines = [
     "# Search promotion benchmark",
@@ -320,11 +333,11 @@ export function renderPromotionMarkdown(report: PromotionBenchmarkReport): strin
   lines.push(
     "## Matched runs",
     "",
-    "| Case | Family | Budget | Depth | Search seed | Story seed | States B/C | Evidence B/C | Proof and limits B/C | Regression | Gain | Baseline-only | Candidate-only | Repeat B/C | Time B/C | Peak RSS B/C |",
-    "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | ---: | ---: |"
+    "| Case | Family | Budget | Depth | Search seed | Story seed | States B/C | Evidence B/C | Proof and limits B/C | Regression | Gain | Baseline-only | Candidate-only | Repeat B/C | Time B/C | Peak RSS B/C | Worker limits B/C |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | --- |"
   );
   for (const pair of report.pairs) {
-    lines.push(`| ${pair.caseId} | ${pair.family} | ${pair.budget.toLocaleString("en-US")} | ${pair.depth} | ${pair.seed} | ${pair.storySeed} | ${pair.baseline.summary.statesExplored.toLocaleString("en-US")}/${pair.candidate.summary.statesExplored.toLocaleString("en-US")} | ${countSummaryEvidence(pair.baseline.summary)}/${countSummaryEvidence(pair.candidate.summary)} | ${proofAndLimits(pair.baseline.summary)}/${proofAndLimits(pair.candidate.summary)} | ${pair.comparison.regressionRisk} | ${pair.comparison.gainClass} | ${countEvidence(pair.comparison.baselineOnly)} | ${countEvidence(pair.comparison.candidateOnly)} | ${pair.baseline.deterministicRepeatMatch ?? "n/a"}/${pair.candidate.deterministicRepeatMatch ?? "n/a"} | ${pair.baseline.elapsedMs.toFixed(0)}/${pair.candidate.elapsedMs.toFixed(0)} ms | ${(pair.baseline.peakRssBytes / 1_048_576).toFixed(1)}/${(pair.candidate.peakRssBytes / 1_048_576).toFixed(1)} MiB |`);
+    lines.push(`| ${pair.caseId} | ${pair.family} | ${pair.budget.toLocaleString("en-US")} | ${pair.depth} | ${pair.seed} | ${pair.storySeed} | ${pair.baseline.summary.statesExplored.toLocaleString("en-US")}/${pair.candidate.summary.statesExplored.toLocaleString("en-US")} | ${countSummaryEvidence(pair.baseline.summary)}/${countSummaryEvidence(pair.candidate.summary)} | ${proofAndLimits(pair.baseline.summary)}/${proofAndLimits(pair.candidate.summary)} | ${pair.comparison.regressionRisk} | ${pair.comparison.gainClass} | ${countEvidence(pair.comparison.baselineOnly)} | ${countEvidence(pair.comparison.candidateOnly)} | ${pair.baseline.deterministicRepeatMatch ?? "n/a"}/${pair.candidate.deterministicRepeatMatch ?? "n/a"} | ${pair.baseline.elapsedMs.toFixed(0)}/${pair.candidate.elapsedMs.toFixed(0)} ms | ${(pair.baseline.peakRssBytes / 1_048_576).toFixed(1)}/${(pair.candidate.peakRssBytes / 1_048_576).toFixed(1)} MiB | ${resourceLimits(pair.baseline)}/${resourceLimits(pair.candidate)} |`);
   }
   lines.push(
     "",
@@ -354,6 +367,16 @@ export function deterministicPromotionView(report: PromotionBenchmarkReport): un
       storySeed: pair.storySeed,
       baseline: pair.baseline.summary,
       candidate: pair.candidate.summary,
+      resources: {
+        baseline: {
+          resourceLimits: pair.baseline.resourceLimits,
+          workerExit: pair.baseline.workerExit,
+        },
+        candidate: {
+          resourceLimits: pair.candidate.resourceLimits,
+          workerExit: pair.candidate.workerExit,
+        },
+      },
       comparison: pair.comparison,
     })),
     families: report.families,
