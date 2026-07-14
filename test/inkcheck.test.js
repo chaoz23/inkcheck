@@ -20,6 +20,7 @@ const {
   explorePortfolio,
   explorePortfolioShadowReplay,
   exploreShared,
+  exploreSharedResumable,
   exploreSharedVariableAware,
   exploreRandom,
   exploreBeam,
@@ -43,6 +44,13 @@ const {
   inspectProject,
   PROJECT_INSPECTION_SCHEMA_VERSION,
 } = require("../dist/discovery");
+const {
+  CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
+  listCheckpointArtifacts,
+  loadCheckpointForResume,
+  openCheckpointArtifact,
+  saveCheckpointArtifact,
+} = require("../dist/checkpoints");
 const { CONFIG_SCHEMA_VERSION, parseProjectConfig, loadProjectConfig } = require("../dist/config");
 const { initProject, createAgentKit } = require("../dist/scaffold");
 const {
@@ -196,6 +204,7 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.schemaVersion, 1);
   assert.strictEqual(value.inkcheckVersion, "0.5.1");
   assert.deepStrictEqual(value.searchModes, ["portfolio", "shared", "shared-variable"]);
+  assert.deepStrictEqual(value.resumableSearchSurfaces, ["cli"]);
   assert.strictEqual(value.limits.maxStates, 100_000_000);
   assert.strictEqual(value.limits.maxGoalStates, 100_000_000);
   assert.strictEqual(value.limits.maxTotalStates, 100_000_000);
@@ -206,13 +215,17 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.schemas.report, 1);
   assert.strictEqual(value.schemas.config, CONFIG_SCHEMA_VERSION);
   assert.strictEqual(value.schemas.artifact, 1);
+  assert.strictEqual(value.schemas.checkpointArtifact, CHECKPOINT_ARTIFACT_SCHEMA_VERSION);
+  assert.strictEqual(value.limits.maxCheckpointBytes, 512 * 1024 * 1024);
+  assert.strictEqual(value.limits.maxProjectCheckpointBytes, 1024 * 1024 * 1024);
+  assert.strictEqual(value.limits.checkpointGenerationsPerEntrypoint, 3);
   assert.strictEqual(value.limits.defaultMaxDepth, 100);
   assert.strictEqual(value.features.indexedWitnesses, true);
   assert.strictEqual(value.features.assertions, true);
   assert.strictEqual(value.features.goals, true);
   assert.strictEqual(value.features.stagedGoals, true);
   assert.strictEqual(value.features.localReportArtifacts, true);
-  assert.strictEqual(value.features.resumableSearch, false);
+  assert.strictEqual(value.features.resumableSearch, true);
 });
 
 test("config schema v1 validates bounded executable project defaults", () => {
@@ -1060,6 +1073,188 @@ test("report artifacts fail closed on tampering, incompatible versions, and corr
     const corrupt = spawnSync(process.execPath, [CLI, "artifacts", "show", reference.id, "--json"], { cwd: tmp, encoding: "utf8" });
     assert.strictEqual(corrupt.status, 2);
     assert.match(corrupt.stderr, /corrupt JSON/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("checkpoint artifacts are private, source-bound, idempotent, and deterministically retained", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-checkpoint-artifact-"));
+  const story = path.join(tmp, "story.ink");
+  try {
+    fs.copyFileSync(path.join(SEARCH_FIXTURES, "low-dedup-wide.ink"), story);
+    const compiled = await compile(story);
+    const knots = scanKnots(story);
+    const makeCheckpoint = (maxStates) => exploreSharedResumable(compiled.storyJson, knots, [], {
+      maxDepth: 150,
+      maxStates,
+      seed: 7,
+      preserveTurnState: false,
+      preserveRandomState: false,
+    }).checkpoint;
+
+    const first = saveCheckpointArtifact(tmp, story, makeCheckpoint(10));
+    const repeated = saveCheckpointArtifact(tmp, story, makeCheckpoint(10));
+    assert.strictEqual(repeated.id, first.id);
+    assert.deepStrictEqual(repeated.pruned, []);
+    const firstFile = path.join(tmp, ...first.path.split("/"));
+    if (process.platform !== "win32") assert.strictEqual(fs.statSync(firstFile).mode & 0o777, 0o600);
+    assert.strictEqual((await openCheckpointArtifact(tmp, first.id)).artifact.freshness, "current");
+    assert.strictEqual((await loadCheckpointForResume(tmp, first.id)).checkpoint.state.totalGranted, 10);
+
+    const references = [first];
+    for (const budget of [20, 30, 40]) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
+      references.push(saveCheckpointArtifact(tmp, story, makeCheckpoint(budget)));
+    }
+    const retained = listCheckpointArtifacts(tmp);
+    assert.strictEqual(retained.length, 3);
+    assert.strictEqual(references[3].pruned.includes(first.id), true);
+    assert.strictEqual(retained.some((item) => item.id === first.id), false);
+    assert.strictEqual(retained.some((item) => item.id === references[3].id), true);
+
+    const beforeQuotaFailure = fs.readdirSync(path.join(tmp, ".inkcheck", "checkpoints"));
+    assert.throws(
+      () => saveCheckpointArtifact(tmp, story, makeCheckpoint(50), { maxCheckpointBytes: 1 }),
+      /single-checkpoint limit/
+    );
+    assert.throws(
+      () => saveCheckpointArtifact(tmp, story, makeCheckpoint(50), {
+        maxCheckpointBytes: Number.MAX_SAFE_INTEGER,
+        maxProjectBytes: 1,
+      }),
+      /project checkpoint quota/
+    );
+    assert.deepStrictEqual(fs.readdirSync(path.join(tmp, ".inkcheck", "checkpoints")), beforeQuotaFailure);
+    assert.strictEqual(beforeQuotaFailure.some((name) => name.endsWith(".tmp")), false);
+
+    fs.writeFileSync(story, "Changed\n-> END\n");
+    assert.strictEqual((await openCheckpointArtifact(tmp, references[3].id)).artifact.freshness, "stale");
+    await assert.rejects(() => loadCheckpointForResume(tmp, references[3].id), /resume requires the exact source/);
+    fs.rmSync(story);
+    assert.strictEqual((await openCheckpointArtifact(tmp, references[3].id)).artifact.freshness, "path_changed");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("checkpoint artifacts fail closed on tampering and incompatible envelopes", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-checkpoint-invalid-"));
+  const story = path.join(tmp, "story.ink");
+  try {
+    fs.copyFileSync(path.join(SEARCH_FIXTURES, "low-dedup-wide.ink"), story);
+    const compiled = await compile(story);
+    const checkpoint = exploreSharedResumable(compiled.storyJson, scanKnots(story), [], {
+      maxStates: 10,
+      preserveTurnState: false,
+      preserveRandomState: false,
+    }).checkpoint;
+    const reference = saveCheckpointArtifact(tmp, story, checkpoint);
+    const artifactFile = path.join(tmp, ...reference.path.split("/"));
+    const original = fs.readFileSync(artifactFile, "utf8");
+
+    const tampered = JSON.parse(original);
+    tampered.checkpoint.state.totalGranted++;
+    fs.writeFileSync(artifactFile, JSON.stringify(tampered));
+    assert.throws(() => listCheckpointArtifacts(tmp), /content does not match its stable ID/);
+
+    const incompatible = JSON.parse(original);
+    incompatible.artifactSchemaVersion = 999;
+    fs.writeFileSync(artifactFile, JSON.stringify(incompatible));
+    await assert.rejects(() => openCheckpointArtifact(tmp, reference.id), /compatible Inkcheck version or migrate/);
+
+    fs.writeFileSync(artifactFile, "{not-json");
+    await assert.rejects(() => openCheckpointArtifact(tmp, reference.id), /corrupt JSON/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("CLI persists and resumes an exact base-shared trajectory across processes", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-checkpoint-cli-"));
+  try {
+    fs.copyFileSync(path.join(SEARCH_FIXTURES, "low-dedup-wide.ink"), path.join(tmp, "story.ink"));
+    const common = ["--search=shared", "--no-min-repro", "--max-depth", "150", "--seed", "7", "--progress=off", "--json"];
+    const firstRun = spawnSync(process.execPath, [CLI, "story.ink", ...common, "--max-states", "73", "--save-checkpoint"], {
+      cwd: tmp,
+      encoding: "utf8",
+    });
+    assert.strictEqual(firstRun.status, 0, firstRun.stderr);
+    const first = JSON.parse(firstRun.stdout);
+    assert.strictEqual(first.checkpoint.saved, true);
+    assert.match(first.checkpoint.id, /^checkpoint-[0-9a-f]{24}$/);
+    assert.match(firstRun.stderr, new RegExp(`saved checkpoint ${first.checkpoint.id}`));
+
+    const listed = spawnSync(process.execPath, [CLI, "checkpoints", "list", "--json"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(listed.status, 0, listed.stderr);
+    assert.strictEqual(JSON.parse(listed.stdout).checkpoints[0].id, first.checkpoint.id);
+    const shown = spawnSync(process.execPath, [CLI, "checkpoints", "show", first.checkpoint.id, "--json"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(shown.status, 0, shown.stderr);
+    assert.strictEqual(JSON.parse(shown.stdout).artifact.freshness, "current");
+    assert.strictEqual(shown.stdout.includes("stateJson"), false, "show returns bounded metadata, not the frontier payload");
+
+    const resumedRun = spawnSync(process.execPath, [CLI, "resume", first.checkpoint.id, "--max-states", "500", "--progress=off", "--json"], {
+      cwd: tmp,
+      encoding: "utf8",
+    });
+    assert.strictEqual(resumedRun.status, 0, resumedRun.stderr);
+    const resumed = JSON.parse(resumedRun.stdout);
+    assert.strictEqual(resumed.checkpoint.resumedFrom, first.checkpoint.id);
+
+    const fullRun = spawnSync(process.execPath, [CLI, "story.ink", ...common, "--max-states", "500", "--save-checkpoint"], {
+      cwd: tmp,
+      encoding: "utf8",
+    });
+    assert.strictEqual(fullRun.status, 0, fullRun.stderr);
+    const full = JSON.parse(fullRun.stdout);
+    assert.deepStrictEqual(resumed.explore, full.explore);
+    assert.deepStrictEqual(resumed.shadowDecision, full.shadowDecision);
+    assert.strictEqual(resumed.checkpoint.id, full.checkpoint.id);
+
+    const equalGrant = spawnSync(process.execPath, [CLI, "resume", first.checkpoint.id, "--max-states", "73", "--json"], {
+      cwd: tmp,
+      encoding: "utf8",
+    });
+    assert.strictEqual(equalGrant.status, 2);
+    assert.match(equalGrant.stderr, /must be greater/);
+    const missingGrant = spawnSync(process.execPath, [CLI, "resume", first.checkpoint.id, "--json"], {
+      cwd: tmp,
+      encoding: "utf8",
+    });
+    assert.strictEqual(missingGrant.status, 2);
+    assert.match(missingGrant.stderr, /requires explicit --max-states/);
+    const changedSeed = spawnSync(process.execPath, [CLI, "resume", first.checkpoint.id, "--max-states", "500", "--seed", "8", "--json"], {
+      cwd: tmp,
+      encoding: "utf8",
+    });
+    assert.strictEqual(changedSeed.status, 2);
+    assert.match(changedSeed.stderr, /source, strategy, limits, seeds/);
+    const unsupported = spawnSync(process.execPath, [CLI, "story.ink", "--search=shared", "--max-states", "10", "--save-checkpoint"], {
+      cwd: tmp,
+      encoding: "utf8",
+    });
+    assert.strictEqual(unsupported.status, 2);
+    assert.match(unsupported.stderr, /--no-min-repro/);
+    const defaultDepth = spawnSync(process.execPath, [
+      CLI, "story.ink", "--search=shared", "--no-min-repro", "--max-states", "10", "--progress=off", "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(defaultDepth.status, 0, defaultDepth.stderr);
+    assert.strictEqual(JSON.parse(defaultDepth.stdout).explore.limits.maxDepth, 100);
+
+    fs.writeFileSync(path.join(tmp, "complete.ink"), "Done\n-> END\n");
+    const complete = spawnSync(process.execPath, [
+      CLI, "complete.ink", "--search=shared", "--no-min-repro", "--max-states", "100", "--save-checkpoint", "--progress=off", "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(complete.status, 0, complete.stderr);
+    assert.deepStrictEqual(JSON.parse(complete.stdout).checkpoint, { saved: false, reason: "complete" });
+
+    fs.writeFileSync(path.join(tmp, "story.ink"), "Changed\n-> END\n");
+    const stale = spawnSync(process.execPath, [CLI, "resume", first.checkpoint.id, "--max-states", "500", "--json"], {
+      cwd: tmp,
+      encoding: "utf8",
+    });
+    assert.strictEqual(stale.status, 2);
+    assert.match(stale.stderr, /checkpoint .* is stale/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

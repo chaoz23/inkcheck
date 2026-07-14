@@ -1571,7 +1571,7 @@ function createSharedEngine(
   opts: ExploreOptions,
   checkpoint?: SharedSearchCheckpoint
 ): SharedPassEngine {
-  const maxDepth = opts.maxDepth ?? 30;
+  const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
     throw new RangeError("maxDepth must be an integer from 1 to 1000");
   }

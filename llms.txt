@@ -24,6 +24,8 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 - CLI machine output: `npx -y inkcheck <story.ink> --json`
 - Save a source-bound local report: `npx -y inkcheck <story.ink> --save-report --json`
 - Reopen saved evidence by stable ID: `npx -y inkcheck artifacts show <report-id> --json` and require `artifact.freshness == "current"` before treating it as current evidence
+- Save an unfinished exact local frontier: `npx -y inkcheck story.ink --search=shared --no-min-repro --max-states 100000 --save-checkpoint --json`
+- Resume it to a larger total grant: `npx -y inkcheck resume <checkpoint-id> --max-states 1000000 --json`; require current freshness and treat checkpoint files as sensitive story data. This surface is CLI-only.
 - Human fix list: `npx -y inkcheck <story.ink> --human`
 - Human-readable CI output: `npx -y inkcheck <story.ink> --markdown`
 - CI: `npx -y inkcheck story/main.ink --strict`
@@ -59,7 +61,7 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 
 ## Intended agent loop
 
-edit .ink → compile_story → explore_story → fix what it reports → repeat. Treat inkcheck as a deterministic oracle for a story graph you generated or edited.
+edit .ink → compile_story → explore_story → fix what it reports → repeat. Treat inkcheck as a deterministic bounded mechanical check for a story graph you generated or edited.
 
 For coverage escalation, every explore report includes `nextRun`: a deterministic verdict from the closed set stop / deepen / broaden / reseed / investigate, with ready-to-use `flags`, a `rationale` citing the report fields that drove it, and `stop: true` when rerunning has no evidence behind it. Loop on it (rerun with `nextRun.flags` until `stop`), or use CLI `--next` which does the loop itself (max 3 escalations, fixpoint-detected, per-run trail in JSON `runs`).
 

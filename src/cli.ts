@@ -16,12 +16,14 @@ import {
 } from "./inklecate";
 import {
   ExploreResult,
+  ExploreProgress,
   DEFAULT_STORY_SEED,
   MAX_STORY_SEED,
   PortfolioWeights,
   UnvisitedKnotReport,
   classifyUnvisitedKnots,
   explore,
+  exploreSharedResumable,
   exploreWithGoals,
   mergeMinRepro,
   validateAssertionsForStory,
@@ -56,6 +58,13 @@ import {
   openReportArtifact,
   saveReportArtifact,
 } from "./artifacts";
+import {
+  CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
+  listCheckpointArtifacts,
+  loadCheckpointForResume,
+  openCheckpointArtifact,
+  saveCheckpointArtifact,
+} from "./checkpoints";
 
 function usage(message?: string): never {
   if (message) console.error(`inkcheck: ${message}\n`);
@@ -69,6 +78,9 @@ Usage: inkcheck <story.ink> [options]
        inkcheck agent-kit --format codex [directory] [--entrypoint story.ink] [--json]
        inkcheck artifacts list [--json]
        inkcheck artifacts show <report-id> [--json]
+       inkcheck checkpoints list [--json]
+       inkcheck checkpoints show <checkpoint-id> [--json]
+       inkcheck resume <checkpoint-id> --max-states N [options]
        inkcheck mcp              Start the MCP server (stdio)
 
 Options:
@@ -91,6 +103,7 @@ Options:
   --json             Emit the full report as JSON
   --markdown         Emit a GitHub-friendly Markdown report
   --save-report      Atomically save a versioned local report artifact
+  --save-checkpoint  Save an exact base-shared frontier when work remains
   --progress=<mode>  Write progress to stderr: auto, human, ndjson, or off (default auto in a terminal)
 `);
   process.exit(2);
@@ -109,6 +122,38 @@ async function main() {
     const value = capabilities();
     console.log(args.includes("--json") ? JSON.stringify(value, null, 2) : renderCapabilitiesHuman(value));
     return;
+  }
+  if (args[0] === "checkpoints") {
+    const command = args[1];
+    const json = args.includes("--json");
+    const values = args.slice(2).filter((arg) => arg !== "--json");
+    if (args.slice(2).some((arg) => arg.startsWith("--") && arg !== "--json")) {
+      usage(`checkpoints: unknown option: ${args.slice(2).find((arg) => arg.startsWith("--") && arg !== "--json")}`);
+    }
+    let projectRoot = process.cwd();
+    try {
+      const config = findDefaultProjectConfig();
+      if (config) projectRoot = path.dirname(config.path);
+      if (command === "list" && values.length === 0) {
+        const checkpoints = listCheckpointArtifacts(projectRoot);
+        console.log(json
+          ? JSON.stringify({ checkpointArtifactSchemaVersion: CHECKPOINT_ARTIFACT_SCHEMA_VERSION, checkpoints }, null, 2)
+          : checkpoints.length
+            ? checkpoints.map((checkpoint) => `${checkpoint.id}  ${checkpoint.totalGranted} granted  ${checkpoint.createdAt}  ${checkpoint.entrypoint}`).join("\n")
+            : "No saved Inkcheck checkpoints.");
+        return;
+      }
+      if (command === "show" && values.length === 1) {
+        const opened = await openCheckpointArtifact(projectRoot, values[0]);
+        console.log(json
+          ? JSON.stringify(opened, null, 2)
+          : `${opened.artifact.id}: ${opened.artifact.freshness}\nEntrypoint: ${opened.artifact.entrypoint}\nGrant: ${opened.artifact.totalGranted}\nSaved: ${opened.artifact.createdAt}`);
+        return;
+      }
+      usage("checkpoints requires `list` or `show <checkpoint-id>` and optional --json");
+    } catch (error) {
+      usage(error instanceof Error ? error.message : String(error));
+    }
   }
   if (args[0] === "artifacts") {
     const command = args[1];
@@ -198,6 +243,14 @@ async function main() {
       usage(error instanceof Error ? error.message : String(error));
     }
   }
+  let resumeCheckpointId: string | undefined;
+  if (args[0] === "resume") {
+    resumeCheckpointId = args[1];
+    if (!resumeCheckpointId || resumeCheckpointId.startsWith("--")) {
+      usage("resume requires a checkpoint ID and explicit --max-states N");
+    }
+    args.splice(0, 2);
+  }
   const inspectMode = args[0] === "inspect";
   if (inspectMode) args.shift();
   let file: string | undefined;
@@ -212,6 +265,8 @@ async function main() {
   let asMarkdown = false;
   let asHuman = false;
   let saveReport = false;
+  let saveCheckpoint = resumeCheckpointId !== undefined;
+  let maxStatesSpecified = false;
   let minRepro = true;
   let minReproSpecified = false;
   let profileOnly = false;
@@ -234,7 +289,10 @@ async function main() {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--max-depth") maxDepth = boundedInt(arg, args[++i], 1_000);
-    else if (arg === "--max-states") maxStates = boundedInt(arg, args[++i], 100_000_000);
+    else if (arg === "--max-states") {
+      maxStatesSpecified = true;
+      maxStates = boundedInt(arg, args[++i], 100_000_000);
+    }
     else if (arg === "--goal-states") goalMaxStates = boundedInt(arg, args[++i], 100_000_000);
     else if (arg === "--seed") seed = boundedInt(arg, args[++i], 4_294_967_295);
     else if (arg === "--story-seed") storySeed = boundedInt(arg, args[++i], MAX_STORY_SEED);
@@ -258,6 +316,7 @@ async function main() {
     else if (arg === "--json") asJson = true;
     else if (arg === "--markdown") asMarkdown = true;
     else if (arg === "--save-report") saveReport = true;
+    else if (arg === "--save-checkpoint") saveCheckpoint = true;
     else if (arg === "--no-min-repro") {
       minRepro = false;
       minReproSpecified = true;
@@ -281,6 +340,34 @@ async function main() {
   } catch (error) {
     usage(error instanceof Error ? error.message : String(error));
   }
+  let resumed: Awaited<ReturnType<typeof loadCheckpointForResume>> | undefined;
+  if (resumeCheckpointId) {
+    if (file) usage("resume reads its entrypoint from the checkpoint and does not accept a story path");
+    if (!maxStatesSpecified) usage("resume requires explicit --max-states N as the new total grant");
+    const projectRoot = projectConfig ? path.dirname(projectConfig.path) : process.cwd();
+    try {
+      resumed = await loadCheckpointForResume(projectRoot, resumeCheckpointId);
+    } catch (error) {
+      usage(error instanceof Error ? error.message : String(error));
+    }
+    file = resumed.entrypoint;
+    if (searchSpecified && search !== "shared") usage("resume supports only --search=shared");
+    search = "shared";
+    minRepro = false;
+    maxDepth ??= resumed.checkpoint.configuration.maxDepth;
+    seed ??= resumed.checkpoint.configuration.seed;
+    storySeed ??= resumed.checkpoint.configuration.storySeed;
+    if (maxFrontierStates === undefined && resumed.checkpoint.configuration.maxPendingStates !== null) {
+      maxFrontierStates = resumed.checkpoint.configuration.maxPendingStates;
+    }
+    const checkpointBytes = resumed.checkpoint.configuration.maxPendingBytes;
+    if (maxFrontierMb === undefined && checkpointBytes !== null) {
+      if (checkpointBytes % (1024 * 1024) !== 0) {
+        usage("this checkpoint uses a byte-level frontier bound that the CLI cannot represent in MiB");
+      }
+      maxFrontierMb = checkpointBytes / (1024 * 1024);
+    }
+  }
   if (!file) file = projectConfig?.entrypoint;
   if (!file) usage("missing story file (or inkcheck.yml entrypoint)");
   if ([asJson, asMarkdown, asHuman].filter(Boolean).length > 1) {
@@ -291,7 +378,7 @@ async function main() {
     if (asMarkdown || asHuman || profileOnly || auto || followNext || strict || !minRepro ||
         maxDepth !== undefined || maxStates !== undefined || goalMaxStates !== undefined || seed !== undefined || storySeed !== undefined ||
         maxMemoryMb !== undefined || maxTimeSec !== undefined || maxFrontierStates !== undefined || maxFrontierMb !== undefined || search !== "portfolio" ||
-        progressSpecified || saveReport) {
+        progressSpecified || saveReport || saveCheckpoint || resumeCheckpointId !== undefined) {
       usage("inspect accepts a story path and optional --json only");
     }
     try {
@@ -314,14 +401,21 @@ async function main() {
   maxTimeSec ??= configDefaults?.maxTimeSec;
   maxFrontierStates ??= configDefaults?.maxFrontierStates;
   maxFrontierMb ??= configDefaults?.maxFrontierMb;
-  if (!searchSpecified && configDefaults?.search) search = configDefaults.search;
+  if (!resumeCheckpointId && !searchSpecified && configDefaults?.search) search = configDefaults.search;
   if (!strict && configDefaults?.strict) strict = true;
-  if (!minReproSpecified && configDefaults?.minRepro !== undefined) minRepro = configDefaults.minRepro;
+  if (!resumeCheckpointId && !minReproSpecified && configDefaults?.minRepro !== undefined) minRepro = configDefaults.minRepro;
   if ((maxFrontierStates !== undefined || maxFrontierMb !== undefined) && search === "portfolio") {
     usage("--max-frontier-states/--max-frontier-memory require --search shared or shared-variable");
   }
+  if (saveCheckpoint && (search !== "shared" || minRepro || auto || followNext || (goalMaxStates ?? 0) > 0 || saveReport)) {
+    usage("checkpoint persistence requires --search=shared --no-min-repro and does not support --auto, --next, --goal-states, or --save-report");
+  }
+  if (resumed && maxStates! <= resumed.checkpoint.state.totalGranted) {
+    usage(`resume --max-states must be greater than the checkpoint's ${resumed.checkpoint.state.totalGranted}-state total grant`);
+  }
 
   if (profileOnly) {
+    if (saveCheckpoint) usage("--profile cannot save or resume a checkpoint");
     const profile = scanShapeProfile(file);
     if (asJson) {
       console.log(JSON.stringify({ profile }, null, 2));
@@ -360,7 +454,7 @@ async function main() {
   };
   const startedAt = Date.now();
   let sequence = 0;
-  let statesExplored = 0;
+  let statesExplored = resumed?.checkpoint.state.statesExplored ?? 0;
   const selectedProgressMode = progressMode as "auto" | "human" | "ndjson" | "off";
   const humanProgress = selectedProgressMode === "auto" || selectedProgressMode === "human"
     ? new HumanProgressRenderer(process.stderr, selectedProgressMode)
@@ -448,6 +542,9 @@ async function main() {
   const inboundDiverts = scanInboundDiverts(file);
   const configuredAssertions = projectConfig?.config.assertions ?? [];
   const configuredGoals = projectConfig?.config.goals ?? [];
+  if (saveCheckpoint && (configuredAssertions.length > 0 || configuredGoals.length > 0)) {
+    usage("checkpoint persistence does not yet support configured assertions or goals");
+  }
   if (additionalGoalStates > 0 && configuredGoals.length === 0) {
     usage("--goal-states requires at least one configured goal");
   }
@@ -470,6 +567,7 @@ async function main() {
     ...(maxTimeSec === undefined ? {} : { maxTimeMs: maxTimeSec * 1000 }),
   });
 
+  let nextCheckpoint: ReturnType<typeof exploreSharedResumable>["checkpoint"];
   const runCheck = (bounds: { maxDepth?: number; maxStates?: number; seed?: number }): ExploreResult => {
     const runStates = bounds.maxStates ?? 10_000_000;
     if (runStates + additionalGoalStates > 100_000_000) {
@@ -481,7 +579,7 @@ async function main() {
     // states already spent in earlier runs.
     const statesBase = statesExplored;
     emitProgress("phase_start", { phase: "explore" });
-    let checked = exploreWithGoals(compiled.storyJson!, knots, externals, {
+    const exploreOptions = {
       maxDepth: bounds.maxDepth,
       maxStates: Math.max(1, portfolioStates),
       seed: bounds.seed,
@@ -494,11 +592,8 @@ async function main() {
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,
-      assertions: configuredAssertions,
-      goals: configuredGoals,
-      goalMaxStates: additionalGoalStates,
-      onProgress: (progress) => {
-        statesExplored = statesBase + progress.statesExplored;
+      onProgress: (progress: ExploreProgress) => {
+        statesExplored = saveCheckpoint ? progress.statesExplored : statesBase + progress.statesExplored;
         emitProgress("progress", {
           pass: progress.pass,
           endingsFound: progress.endingsFound,
@@ -512,8 +607,28 @@ async function main() {
           statesSinceLastDiscovery: progress.statesSinceLastDiscovery,
         });
       },
-    }, search);
-    statesExplored = statesBase + checked.statesExplored;
+    };
+    let checked: ExploreResult;
+    if (saveCheckpoint) {
+      const continuation = exploreSharedResumable(
+        compiled.storyJson!,
+        knots,
+        externals,
+        exploreOptions,
+        resumed?.checkpoint
+      );
+      checked = continuation.result;
+      nextCheckpoint = continuation.checkpoint;
+    } else {
+      checked = exploreWithGoals(compiled.storyJson!, knots, externals, {
+        ...exploreOptions,
+        weights: profile?.suggested.weights,
+        assertions: configuredAssertions,
+        goals: configuredGoals,
+        goalMaxStates: additionalGoalStates,
+      }, search);
+    }
+    statesExplored = saveCheckpoint ? checked.statesExplored : statesBase + checked.statesExplored;
     emitProgress("phase_end", { phase: "explore" });
     if (reproStates > 0) {
       emitProgress("phase_start", { phase: "min_repro" });
@@ -536,7 +651,13 @@ async function main() {
     return classifyUnvisitedKnots(checked, inboundDiverts);
   };
 
-  let report = runCheck({ maxDepth, maxStates, seed });
+  let report: ExploreResult;
+  try {
+    report = runCheck({ maxDepth, maxStates, seed });
+  } catch (error) {
+    if (resumed && error instanceof RangeError) usage(error.message);
+    throw error;
+  }
   let advice = recommendNextRun(report, adviceProfile);
   const runs: {
     run: number;
@@ -598,12 +719,41 @@ async function main() {
     storyJson: compiled.storyJson!,
     configuration: reportConfiguration,
   });
+  let checkpointOutput: Record<string, unknown> | undefined;
+  if (saveCheckpoint) {
+    if (nextCheckpoint) {
+      const projectRoot = artifactProjectRoot(file!, projectConfig?.path);
+      const reference = saveCheckpointArtifact(projectRoot, file!, nextCheckpoint);
+      checkpointOutput = {
+        saved: true,
+        ...reference,
+        ...(resumeCheckpointId ? { resumedFrom: resumeCheckpointId } : {}),
+      };
+      console.error(`saved checkpoint ${reference.id} (${reference.path})`);
+      if (reference.pruned.length > 0) {
+        console.error(`pruned ${reference.pruned.length} older checkpoint(s): ${reference.pruned.join(", ")}`);
+      }
+    } else {
+      checkpointOutput = {
+        saved: false,
+        ...(resumeCheckpointId ? { resumedFrom: resumeCheckpointId } : {}),
+        reason: report.exhaustive ? "complete" : "not_resumable",
+      };
+      console.error(report.exhaustive
+        ? "search completed; no resumable checkpoint was needed"
+        : "run ended without resumable state; no checkpoint was created");
+    }
+  }
   const artifact = saveReport ? persistReport(outputReport) : undefined;
   emitProgress("phase_start", { phase: "report" });
   if (asJson) {
     console.log(
       JSON.stringify(
-        artifact ? { ...outputReport, artifact } : outputReport,
+          {
+            ...outputReport,
+            ...(artifact ? { artifact } : {}),
+            ...(checkpointOutput ? { checkpoint: checkpointOutput } : {}),
+          },
         null,
         2
       )

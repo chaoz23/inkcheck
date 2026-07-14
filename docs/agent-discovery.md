@@ -13,14 +13,14 @@ MCP: `inkcheck_capabilities`
 The response is deterministic for an installed Inkcheck version and reports:
 
 - `schemaVersion` and `inkcheckVersion`
-- report, configuration, project-inspection, and local-artifact schema versions
+- report, configuration, project-inspection, report-artifact, and checkpoint-artifact schema versions
 - default and maximum state/depth limits
 - supported search modes
 - explicit feature flags, including `false` for features not yet available
 
 Agents should check a feature flag instead of inferring support from missing documentation. Schema version `0` means that contract is not yet available.
 
-`localReportArtifacts: true` means the CLI can save and reopen source-bound reports by stable ID. `resumableSearch: false` remains separate: saved reports do not contain a runnable frontier checkpoint, and neither the CLI nor MCP currently accepts one. The experimental base shared engine has a library-level JSON resume contract, but capabilities stay false until a supported user/agent persistence workflow ships.
+`localReportArtifacts: true` means the CLI can save and reopen source-bound reports by stable ID. `resumableSearch: true` plus `resumableSearchSurfaces: ["cli"]` means exact base-shared continuation is available through local CLI checkpoint artifacts; it does **not** claim that MCP or hosted jobs can resume. Check `schemas.checkpointArtifact` and the checkpoint byte/generation limits before relying on that workflow.
 
 ## Project inspection
 
