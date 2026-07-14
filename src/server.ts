@@ -17,11 +17,13 @@ import { parseGoalDefinitions } from "./goals";
 import { createResourceGuards } from "./resource-guards";
 import {
   cancelSearchSession,
+  checkSessionRegression,
   continueSearchSession,
   DEFAULT_MCP_SESSION_WINDOW_STATES,
   inspectSearchSession,
   MAX_MCP_SESSION_TOTAL_STATES,
   MAX_MCP_SESSION_WINDOW_STATES,
+  pinSessionRegression,
   replaySessionWitness,
   startSearchSession,
 } from "./search-sessions";
@@ -44,6 +46,48 @@ server.registerTool(
     inputSchema: {},
   },
   async () => json(capabilities())
+);
+
+server.registerTool(
+  "pin_regression",
+  {
+    description:
+      "Pin one confirmed runtime-error finding from the session's latest current report for deterministic post-edit rechecks. Saves a private bounded artifact with indexed choices, story seed, and hashed expected errors; endings and assertion findings are rejected in this first slice.",
+    inputSchema: {
+      file: z.string().describe("The same root .ink file used to start the session"),
+      sessionCapability: z.string().describe("Opaque bearer capability returned by start_search"),
+      revision: z.number().int().min(1).describe("Last observed session revision"),
+      findingId: z.string().min(1).max(256).describe("Stable runtime finding ID returned by inspect_search.savedFindings"),
+    },
+  },
+  async (input) => {
+    try {
+      return json(await pinSessionRegression(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
+
+server.registerTool(
+  "check_regression",
+  {
+    description:
+      "After editing current source, replay one private runtime regression pin without spending search states. Returns fixed, still_failing, or path_changed and advances the session revision; compile failures remain explicit prerequisite errors.",
+    inputSchema: {
+      file: z.string().describe("The same root .ink file used to create the pin"),
+      sessionCapability: z.string().describe("Opaque bearer capability for the pin's originating session"),
+      revision: z.number().int().min(1).describe("Last observed session revision"),
+      pinId: z.string().regex(/^regression-[0-9a-f]{24}$/).describe("Opaque regression pin ID returned by pin_regression"),
+    },
+  },
+  async (input) => {
+    try {
+      return json(await checkSessionRegression(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
 );
 
 server.registerTool(

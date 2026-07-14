@@ -9,8 +9,10 @@ const { openReportArtifact, saveReportArtifact } = require("../dist/artifacts");
 const { compile } = require("../dist/inklecate");
 const {
   cancelSearchSession,
+  checkSessionRegression,
   continueSearchSession,
   inspectSearchSession,
+  pinSessionRegression,
   replaySessionWitness,
   startSearchSession,
 } = require("../dist/search-sessions");
@@ -184,7 +186,7 @@ test("MCP session metadata rejects incompatible versions and one recoverable ses
     });
     assert.strictEqual(upgraded.session.revision, 2);
     value = JSON.parse(fs.readFileSync(metadata, "utf8"));
-    assert.strictEqual(value.schemaVersion, 2);
+    assert.strictEqual(value.schemaVersion, 3);
     value.events.push({
       sequence: 3,
       type: "replayed",
@@ -312,6 +314,208 @@ test("MCP witness replay rejects foreign IDs and findings without indexed witnes
         findingId: noWitnessId,
       }),
       /no supported indexed replay witness/
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("MCP runtime regression pins classify still failing, fixed, and path changed without new search work", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-mcp-regression-"));
+  const file = path.join(root, "story.ink");
+  const brokenSource = fs.readFileSync(path.join(__dirname, "..", "examples", "content-exhaustion.ink"), "utf8");
+  fs.writeFileSync(file, brokenSource);
+  try {
+    const started = await startSearchSession({ file, maxStates: 100 });
+    const findingId = started.savedFindings.findings[0].id;
+    const pinned = await pinSessionRegression({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: 1,
+      findingId,
+    });
+    assert.match(pinned.pin.id, /^regression-[0-9a-f]{24}$/);
+    assert.strictEqual(pinned.pin.findingId, findingId);
+    assert.strictEqual(pinned.pin.choiceCount, 1);
+    assert.strictEqual(pinned.session.revision, 2);
+    assert.strictEqual(pinned.session.events.at(-1).type, "regression_pinned");
+
+    const unchanged = await checkSessionRegression({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: 2,
+      pinId: pinned.pin.id,
+    });
+    assert.strictEqual(unchanged.check.status, "still_failing");
+    assert.strictEqual(unchanged.check.reason, "pinned_failure_reproduced");
+    assert.strictEqual(unchanged.nextOperation.tool, "check_regression");
+    assert.strictEqual(unchanged.session.revision, 3);
+    assert.strictEqual(unchanged.session.statesExplored, started.session.statesExplored);
+
+    fs.writeFileSync(file, `${brokenSource}    -> DONE\n`);
+    const fixed = await checkSessionRegression({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: 3,
+      pinId: pinned.pin.id,
+    });
+    assert.strictEqual(fixed.check.status, "fixed");
+    assert.strictEqual(fixed.check.reason, "completed_without_pinned_failure");
+    assert.strictEqual(fixed.nextOperation.tool, "cancel_search");
+    assert.strictEqual(fixed.session.revision, 4);
+    assert.strictEqual(fixed.session.statesExplored, started.session.statesExplored);
+
+    fs.writeFileSync(file, "The choice was removed.\n-> END\n");
+    const changed = await checkSessionRegression({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: 4,
+      pinId: pinned.pin.id,
+    });
+    assert.strictEqual(changed.check.status, "path_changed");
+    assert.strictEqual(changed.check.reason, "indexed_path_changed");
+    assert.strictEqual(changed.session.revision, 5);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("regression pins are idempotent, private, session-bound, and contain no replay prose", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-mcp-regression-private-"));
+  const file = path.join(root, "story.ink");
+  fs.copyFileSync(path.join(__dirname, "..", "examples", "content-exhaustion.ink"), file);
+  try {
+    const started = await startSearchSession({ file, maxStates: 100 });
+    const findingId = started.savedFindings.findings[0].id;
+    const first = await pinSessionRegression({ file, sessionCapability: started.sessionCapability, revision: 1, findingId });
+    const second = await pinSessionRegression({ file, sessionCapability: started.sessionCapability, revision: 2, findingId });
+    assert.strictEqual(second.pin.id, first.pin.id);
+    const pins = path.join(root, ".inkcheck", "regressions");
+    assert.deepStrictEqual(fs.readdirSync(pins), [`${first.pin.id}.json`]);
+    const artifact = path.join(pins, `${first.pin.id}.json`);
+    const raw = fs.readFileSync(artifact, "utf8");
+    assert.match(raw, /"choices": \[\s*0\s*\]/);
+    assert.match(raw, /"expectedRuntimeErrorHashes"/);
+    for (const sensitive of ["Do you need", "You wait", "transcript", "variables", "pendingChoices", "RUNTIME ERROR"]) {
+      assert.strictEqual(raw.includes(sensitive), false, `pin artifact leaked ${sensitive}`);
+    }
+    const sessionFile = path.join(root, ".inkcheck", "sessions", fs.readdirSync(path.join(root, ".inkcheck", "sessions"))[0]);
+    const sessionRaw = fs.readFileSync(sessionFile, "utf8");
+    assert.strictEqual(sessionRaw.includes('"choices"'), false);
+    assert.strictEqual(sessionRaw.includes('"expectedRuntimeErrorHashes"'), false);
+    if (process.platform !== "win32") {
+      assert.strictEqual(fs.statSync(pins).mode & 0o777, 0o700);
+      assert.strictEqual(fs.statSync(artifact).mode & 0o777, 0o600);
+    }
+
+    const other = path.join(root, "other.ink");
+    fs.copyFileSync(path.join(__dirname, "..", "examples", "content-exhaustion.ink"), other);
+    const foreign = await startSearchSession({ file: other, maxStates: 100 });
+    await assert.rejects(
+      () => checkSessionRegression({
+        file: other,
+        sessionCapability: foreign.sessionCapability,
+        revision: 1,
+        pinId: first.pin.id,
+      }),
+      /belongs to another search session/
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("regression pinning fails closed for stale source, unsupported findings, compile errors, and corrupt pins", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-mcp-regression-errors-"));
+  const runtimeFile = path.join(root, "runtime.ink");
+  const endingFile = path.join(root, "ending.ink");
+  fs.copyFileSync(path.join(__dirname, "..", "examples", "content-exhaustion.ink"), runtimeFile);
+  fs.copyFileSync(path.join(__dirname, "..", "examples", "clean-branch.ink"), endingFile);
+  try {
+    const runtime = await startSearchSession({ file: runtimeFile, maxStates: 100 });
+    const runtimeId = runtime.savedFindings.findings[0].id;
+    fs.appendFileSync(runtimeFile, "\nChanged before pin.\n");
+    await assert.rejects(
+      () => pinSessionRegression({ file: runtimeFile, sessionCapability: runtime.sessionCapability, revision: 1, findingId: runtimeId }),
+      /regression pin requires current source/
+    );
+
+    const ending = await startSearchSession({ file: endingFile, maxStates: 100 });
+    const endingId = ending.savedFindings.findings.find((finding) => finding.kind === "ending.reached").id;
+    await assert.rejects(
+      () => pinSessionRegression({ file: endingFile, sessionCapability: ending.sessionCapability, revision: 1, findingId: endingId }),
+      /currently support runtime findings only/
+    );
+
+    const pinnedFile = path.join(root, "pinned.ink");
+    fs.copyFileSync(path.join(__dirname, "..", "examples", "content-exhaustion.ink"), pinnedFile);
+    const pinnedSession = await startSearchSession({ file: pinnedFile, maxStates: 100 });
+    const pinned = await pinSessionRegression({
+      file: pinnedFile,
+      sessionCapability: pinnedSession.sessionCapability,
+      revision: 1,
+      findingId: pinnedSession.savedFindings.findings[0].id,
+    });
+    fs.writeFileSync(pinnedFile, "-> missing_knot\n");
+    await assert.rejects(
+      () => checkSessionRegression({
+        file: pinnedFile,
+        sessionCapability: pinnedSession.sessionCapability,
+        revision: 2,
+        pinId: pinned.pin.id,
+      }),
+      /current story does not compile/
+    );
+    fs.copyFileSync(path.join(__dirname, "..", "examples", "content-exhaustion.ink"), pinnedFile);
+    const artifact = path.join(root, ".inkcheck", "regressions", `${pinned.pin.id}.json`);
+    const corrupt = JSON.parse(fs.readFileSync(artifact, "utf8"));
+    corrupt.transcript = "must never persist";
+    fs.writeFileSync(artifact, JSON.stringify(corrupt));
+    await assert.rejects(
+      () => checkSessionRegression({
+        file: pinnedFile,
+        sessionCapability: pinnedSession.sessionCapability,
+        revision: 2,
+        pinId: pinned.pin.id,
+      }),
+      /privacy-sensitive fields/
+    );
+    delete corrupt.transcript;
+    corrupt.schemaVersion = 999;
+    fs.writeFileSync(artifact, JSON.stringify(corrupt));
+    await assert.rejects(
+      () => checkSessionRegression({
+        file: pinnedFile,
+        sessionCapability: pinnedSession.sessionCapability,
+        revision: 2,
+        pinId: pinned.pin.id,
+      }),
+      /unsupported regression pin schema 999/
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("regression pin storage enforces the per-project file ceiling", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-mcp-regression-quota-"));
+  const file = path.join(root, "story.ink");
+  fs.copyFileSync(path.join(__dirname, "..", "examples", "content-exhaustion.ink"), file);
+  try {
+    const started = await startSearchSession({ file, maxStates: 100 });
+    const pins = path.join(root, ".inkcheck", "regressions");
+    fs.mkdirSync(pins, { recursive: true });
+    for (let index = 0; index < 100; index++) {
+      fs.writeFileSync(path.join(pins, `regression-${index.toString(16).padStart(24, "0")}.json`), "{}");
+    }
+    await assert.rejects(
+      () => pinSessionRegression({
+        file,
+        sessionCapability: started.sessionCapability,
+        revision: 1,
+        findingId: started.savedFindings.findings[0].id,
+      }),
+      /already has 100 regression pins/
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

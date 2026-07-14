@@ -30,6 +30,12 @@ import {
 import { buildReportEnvelope, type EffectiveReportConfiguration } from "./report-contract";
 import { createResourceGuards } from "./resource-guards";
 import {
+  checkRegressionPin,
+  createRegressionPin,
+  type RegressionCheckResult,
+  type RegressionPinSummary,
+} from "./regressions";
+import {
   DEFAULT_MCP_SESSION_WINDOW_STATES,
   MAX_MCP_SESSION_BYTES,
   MAX_MCP_SESSION_EVENTS,
@@ -51,7 +57,7 @@ export {
 } from "./search-session-contract";
 
 type SessionStatus = "paused" | "complete" | "stopped" | "cancelled";
-type SessionEventType = "started" | "continued" | "cancelled" | "replayed";
+type SessionEventType = "started" | "continued" | "cancelled" | "replayed" | "regression_pinned" | "regression_checked";
 
 interface SearchSessionEvent {
   sequence: number;
@@ -63,10 +69,12 @@ interface SearchSessionEvent {
   checkpointId?: string;
   findingId?: string;
   replayStatus?: "completed" | "runtime_error" | "path_changed";
+  pinId?: string;
+  regressionStatus?: "fixed" | "still_failing" | "path_changed";
 }
 
 interface SearchSessionRecord {
-  schemaVersion: 2;
+  schemaVersion: 3;
   artifactType: "mcp-search-session";
   inkcheckVersion: string;
   capabilityHash: string;
@@ -178,6 +186,36 @@ export interface ReplayWitnessResponse {
   nextOperation: { tool: "inspect_search"; reason: string };
 }
 
+export interface PinRegressionInput {
+  file: string;
+  sessionCapability: string;
+  revision: number;
+  findingId: string;
+}
+
+export interface CheckRegressionInput {
+  file: string;
+  sessionCapability: string;
+  revision: number;
+  pinId: string;
+}
+
+export interface PinRegressionResponse {
+  schemaVersion: number;
+  inkcheckVersion: string;
+  session: SearchSessionResponse["session"];
+  pin: RegressionPinSummary;
+  nextOperation: { tool: "check_regression"; reason: string };
+}
+
+export interface CheckRegressionResponse {
+  schemaVersion: number;
+  inkcheckVersion: string;
+  session: SearchSessionResponse["session"];
+  check: RegressionCheckResult;
+  nextOperation: { tool: "cancel_search" | "check_regression"; reason: string };
+}
+
 function sessionsDirectory(projectRoot: string): string {
   return path.join(path.resolve(projectRoot), ".inkcheck", "sessions");
 }
@@ -216,7 +254,7 @@ function parseRecord(raw: string, expectedHash?: string): SearchSessionRecord {
   if (!value || typeof value !== "object") throw new Error("search session metadata must be a JSON object");
   const record = value as Partial<SearchSessionRecord>;
   const sourceSchema = (record as { schemaVersion?: unknown }).schemaVersion;
-  if (sourceSchema !== 1 && sourceSchema !== SEARCH_SESSION_SCHEMA_VERSION) {
+  if (sourceSchema !== 1 && sourceSchema !== 2 && sourceSchema !== SEARCH_SESSION_SCHEMA_VERSION) {
     throw new Error(`unsupported search session schema ${String(record.schemaVersion)}; use a compatible Inkcheck version or start a new session`);
   }
   const findings = record.findings as Partial<SearchSessionRecord["findings"]> | undefined;
@@ -227,21 +265,37 @@ function parseRecord(raw: string, expectedHash?: string): SearchSessionRecord {
   const validEvent = (event: unknown): boolean => {
     if (!event || typeof event !== "object" || Array.isArray(event)) return false;
     const item = event as Partial<SearchSessionEvent>;
-    const allowed = ["checkpointId", "findingId", "replayStatus", "reportId", "revision", "sequence", "statesExplored", "totalGranted", "type"];
+    const allowed = ["checkpointId", "findingId", "pinId", "regressionStatus", "replayStatus", "reportId", "revision", "sequence", "statesExplored", "totalGranted", "type"];
     if (Object.keys(item).some((key) => !allowed.includes(key))) return false;
     const replayEvent = item.type === "replayed";
+    const pinEvent = item.type === "regression_pinned";
+    const checkEvent = item.type === "regression_checked";
+    const validDetails = replayEvent
+      ? (sourceSchema === 2 || sourceSchema === SEARCH_SESSION_SCHEMA_VERSION)
+        && typeof item.findingId === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(item.findingId)
+        && ["completed", "runtime_error", "path_changed"].includes(String(item.replayStatus))
+        && item.pinId === undefined && item.regressionStatus === undefined
+      : pinEvent
+        ? sourceSchema === SEARCH_SESSION_SCHEMA_VERSION
+          && typeof item.findingId === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(item.findingId)
+          && typeof item.pinId === "string" && /^regression-[0-9a-f]{24}$/.test(item.pinId)
+          && item.replayStatus === undefined && item.regressionStatus === undefined
+        : checkEvent
+          ? sourceSchema === SEARCH_SESSION_SCHEMA_VERSION
+            && typeof item.pinId === "string" && /^regression-[0-9a-f]{24}$/.test(item.pinId)
+            && ["fixed", "still_failing", "path_changed"].includes(String(item.regressionStatus))
+            && item.findingId === undefined && item.replayStatus === undefined
+          : item.findingId === undefined && item.pinId === undefined
+            && item.replayStatus === undefined && item.regressionStatus === undefined;
     return Number.isSafeInteger(item.sequence) && (item.sequence as number) >= 1
-      && ["started", "continued", "cancelled", "replayed"].includes(String(item.type))
+      && ["started", "continued", "cancelled", "replayed", "regression_pinned", "regression_checked"].includes(String(item.type))
       && Number.isSafeInteger(item.revision) && (item.revision as number) >= 1
       && Number.isSafeInteger(item.totalGranted) && (item.totalGranted as number) >= 1
       && Number.isSafeInteger(item.statesExplored) && (item.statesExplored as number) >= 0
       && typeof item.reportId === "string" && /^report-[0-9a-f]{24}$/.test(item.reportId)
       && (item.checkpointId === undefined
         || (typeof item.checkpointId === "string" && /^checkpoint-[0-9a-f]{24}$/.test(item.checkpointId)))
-      && (replayEvent && sourceSchema === SEARCH_SESSION_SCHEMA_VERSION
-        ? typeof item.findingId === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(item.findingId)
-          && ["completed", "runtime_error", "path_changed"].includes(String(item.replayStatus))
-        : item.findingId === undefined && item.replayStatus === undefined);
+      && validDetails;
   };
   if (record.artifactType !== "mcp-search-session" || typeof record.inkcheckVersion !== "string"
     || typeof record.capabilityHash !== "string" || !/^[0-9a-f]{64}$/.test(record.capabilityHash)
@@ -667,5 +721,84 @@ export async function replaySessionWitness(input: ReplayWitnessInput): Promise<R
       tool: "inspect_search",
       reason: "Inspect the updated revision before continuing, cancelling, or replaying another finding.",
     },
+  };
+}
+
+export async function pinSessionRegression(input: PinRegressionInput): Promise<PinRegressionResponse> {
+  const { projectRoot, record } = loadSession(input.file, input.sessionCapability);
+  if (record.revision !== input.revision) {
+    throw new Error(`search session revision is ${record.revision}, not ${input.revision}; inspect it before retrying`);
+  }
+  if (!/^[A-Za-z0-9._:-]{1,256}$/.test(input.findingId)) {
+    throw new Error("findingId must be a stable Inkcheck finding ID");
+  }
+  const pin = await createRegressionPin(
+    projectRoot,
+    input.file,
+    record.capabilityHash,
+    record.latestReportId,
+    input.findingId
+  );
+  const nextRevision = record.revision + 1;
+  const updated: SearchSessionRecord = {
+    ...record,
+    updatedAt: new Date().toISOString(),
+    revision: nextRevision,
+  };
+  appendEvent(updated, {
+    type: "regression_pinned",
+    revision: nextRevision,
+    totalGranted: updated.totalGranted,
+    statesExplored: updated.statesExplored,
+    reportId: updated.latestReportId,
+    ...(updated.latestCheckpointId ? { checkpointId: updated.latestCheckpointId } : {}),
+    findingId: pin.findingId,
+    pinId: pin.id,
+  });
+  writeRecord(projectRoot, updated, record.revision);
+  return {
+    schemaVersion: SEARCH_SESSION_SCHEMA_VERSION,
+    inkcheckVersion: VERSION,
+    session: responseSession(updated),
+    pin,
+    nextOperation: {
+      tool: "check_regression",
+      reason: "After editing the story, recheck this private pin without spending the search budget again.",
+    },
+  };
+}
+
+export async function checkSessionRegression(input: CheckRegressionInput): Promise<CheckRegressionResponse> {
+  const { projectRoot, record } = loadSession(input.file, input.sessionCapability);
+  if (record.revision !== input.revision) {
+    throw new Error(`search session revision is ${record.revision}, not ${input.revision}; inspect it before retrying`);
+  }
+  const check = await checkRegressionPin(projectRoot, input.file, record.capabilityHash, input.pinId);
+  const nextRevision = record.revision + 1;
+  const updated: SearchSessionRecord = {
+    ...record,
+    updatedAt: new Date().toISOString(),
+    revision: nextRevision,
+  };
+  appendEvent(updated, {
+    type: "regression_checked",
+    revision: nextRevision,
+    totalGranted: updated.totalGranted,
+    statesExplored: updated.statesExplored,
+    reportId: updated.latestReportId,
+    ...(updated.latestCheckpointId ? { checkpointId: updated.latestCheckpointId } : {}),
+    pinId: check.pin.id,
+    regressionStatus: check.status,
+  });
+  writeRecord(projectRoot, updated, record.revision);
+  const fixed = check.status === "fixed";
+  return {
+    schemaVersion: SEARCH_SESSION_SCHEMA_VERSION,
+    inkcheckVersion: VERSION,
+    session: responseSession(updated),
+    check,
+    nextOperation: fixed
+      ? { tool: "cancel_search", reason: "The pinned failure is fixed. Discard this now-stale session, then start a fresh broader search on edited source." }
+      : { tool: "check_regression", reason: "The pin is not fixed. Edit the story again, then recheck this same pin without spending search states." },
   };
 }
