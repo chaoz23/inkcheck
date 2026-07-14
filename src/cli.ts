@@ -54,8 +54,11 @@ import { createAgentKit, initProject, renderScaffoldResult } from "./scaffold";
 import { createResourceGuards } from "./resource-guards";
 import {
   artifactProjectRoot,
+  listReportFindings,
   listReportArtifacts,
+  openReportFinding,
   openReportArtifact,
+  replayReportFinding,
   saveReportArtifact,
 } from "./artifacts";
 import {
@@ -78,6 +81,9 @@ Usage: inkcheck <story.ink> [options]
        inkcheck agent-kit --format codex [directory] [--entrypoint story.ink] [--json]
        inkcheck artifacts list [--json]
        inkcheck artifacts show <report-id> [--json]
+       inkcheck artifacts findings <report-id> [--limit N] [--cursor C] [--json]
+       inkcheck artifacts finding <report-id> <finding-id> [--json]
+       inkcheck artifacts replay <report-id> <finding-id> [--json]
        inkcheck checkpoints list [--json]
        inkcheck checkpoints show <checkpoint-id> [--json]
        inkcheck resume <checkpoint-id> --max-states N [options]
@@ -157,16 +163,30 @@ async function main() {
   }
   if (args[0] === "artifacts") {
     const command = args[1];
-    const json = args.includes("--json");
-    const values = args.slice(2).filter((arg) => arg !== "--json");
-    if (args.slice(2).some((arg) => arg.startsWith("--") && arg !== "--json")) {
-      usage(`artifacts: unknown option: ${args.slice(2).find((arg) => arg.startsWith("--") && arg !== "--json")}`);
+    let json = false;
+    let limit: number | undefined;
+    let cursor: string | undefined;
+    const values: string[] = [];
+    for (let index = 2; index < args.length; index += 1) {
+      const arg = args[index];
+      if (arg === "--json") json = true;
+      else if (arg === "--limit" || arg === "--cursor") {
+        const value = args[index + 1];
+        if (value === undefined || value.startsWith("--")) usage(`artifacts: ${arg} requires a value`);
+        index += 1;
+        if (arg === "--limit") {
+          if (!/^\d+$/.test(value)) usage("artifacts: --limit must be an integer");
+          limit = Number(value);
+        } else cursor = value;
+      } else if (arg.startsWith("--")) usage(`artifacts: unknown option: ${arg}`);
+      else values.push(arg);
     }
     let projectRoot = process.cwd();
     try {
       const config = findDefaultProjectConfig();
       if (config) projectRoot = path.dirname(config.path);
       if (command === "list" && values.length === 0) {
+        if (limit !== undefined || cursor !== undefined) usage("artifacts list does not accept finding pagination options");
         const artifacts = listReportArtifacts(projectRoot);
         console.log(json
           ? JSON.stringify({ artifactSchemaVersion: ARTIFACT_SCHEMA_VERSION, artifacts }, null, 2)
@@ -176,13 +196,41 @@ async function main() {
         return;
       }
       if (command === "show" && values.length === 1) {
+        if (limit !== undefined || cursor !== undefined) usage("artifacts show does not accept finding pagination options");
         const opened = await openReportArtifact(projectRoot, values[0]);
         console.log(json
           ? JSON.stringify(opened, null, 2)
           : `${opened.artifact.id}: ${opened.artifact.freshness}\nEntrypoint: ${opened.artifact.entrypoint}\nSaved: ${opened.artifact.createdAt}`);
         return;
       }
-      usage("artifacts requires `list` or `show <report-id>` and optional --json");
+      if (command === "findings" && values.length === 1) {
+        const page = await listReportFindings(projectRoot, values[0], { limit, cursor });
+        console.log(json
+          ? JSON.stringify(page, null, 2)
+          : [
+              `${page.artifact.id}: ${page.artifact.freshness}`,
+              ...page.findings.map((finding) => `${finding.id}  ${finding.kind}  ${finding.section}`),
+              ...(page.page.nextCursor ? [`Next cursor: ${page.page.nextCursor}`] : []),
+            ].join("\n"));
+        return;
+      }
+      if (command === "finding" && values.length === 2) {
+        if (limit !== undefined || cursor !== undefined) usage("artifacts finding does not accept pagination options");
+        const opened = await openReportFinding(projectRoot, values[0], values[1]);
+        console.log(json
+          ? JSON.stringify(opened, null, 2)
+          : `${opened.summary.id}: ${opened.summary.kind}\nReport: ${opened.artifact.id} (${opened.artifact.freshness})\nSection: ${opened.summary.section}\n${JSON.stringify(opened.finding, null, 2)}`);
+        return;
+      }
+      if (command === "replay" && values.length === 2) {
+        if (limit !== undefined || cursor !== undefined) usage("artifacts replay does not accept pagination options");
+        const replayed = await replayReportFinding(projectRoot, values[0], values[1]);
+        console.log(json
+          ? JSON.stringify(replayed, null, 2)
+          : `${replayed.finding.id}: ${replayed.replay.replayStatus}\nStory seed: ${replayed.replay.storySeed}\nRuntime errors: ${replayed.replay.runtimeErrors.length}`);
+        return;
+      }
+      usage("artifacts requires list, show <report-id>, findings <report-id>, finding <report-id> <finding-id>, or replay <report-id> <finding-id>");
     } catch (error) {
       usage(error instanceof Error ? error.message : String(error));
     }

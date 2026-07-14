@@ -17,6 +17,8 @@ Compile-failure reports use the same schema/version fields and fingerprint the e
 
 When the explicit CLI `--save-report` option is used, emitted JSON additionally contains `artifact: { id, path }`. The saved report payload itself remains the ordinary schema-v1 envelope, avoiding a circular content-derived ID. See [local report artifacts](local-artifacts.md) for freshness and compatibility semantics.
 
+Saved-finding collection responses are a separate bounded view over an immutable report. They contain `artifact`, privacy-minimal `findings`, and `page: { limit, returned, total, nextCursor }`. Fetch-by-ID returns one `summary` plus its complete `finding`; replay returns the summary plus a normal playtest result. Response pagination never changes or implies exploration coverage.
+
 When local CLI checkpoint persistence is active, emitted JSON additionally contains `checkpoint`. A saved live frontier reports `{ saved: true, id, path, pruned, resumedFrom? }`; a run without supported resumable state reports `{ saved: false, resumedFrom?, reason: "complete"|"not_resumable" }`. The frontier payload is never embedded in stdout. Checkpoint artifacts use their own schema and privacy/retention contract; see [local resumable checkpoints](local-checkpoints.md).
 
 ## Findings

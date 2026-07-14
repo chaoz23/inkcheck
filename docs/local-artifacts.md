@@ -17,6 +17,9 @@ From the project directory:
 ```sh
 inkcheck artifacts list --json
 inkcheck artifacts show report-0123456789abcdef01234567 --json
+inkcheck artifacts findings report-0123456789abcdef01234567 --limit 20 --json
+inkcheck artifacts finding report-0123456789abcdef01234567 runtime.content_exhaustion:0123456789abcdef --json
+inkcheck artifacts replay report-0123456789abcdef01234567 runtime.content_exhaustion:0123456789abcdef --json
 ```
 
 `show` recompiles the current entrypoint when the saved report used a compiled-story fingerprint. Its `artifact.freshness` is:
@@ -26,6 +29,14 @@ inkcheck artifacts show report-0123456789abcdef01234567 --json
 - `path_changed`: the saved project-relative entrypoint no longer exists.
 
 Only `current` evidence describes the current source. Stale reports remain useful historical evidence, but are never presented as current proof. Corrupt JSON, metadata/content mismatches, and unsupported artifact/report schemas fail closed with regeneration or migration guidance.
+
+## Finding drill-down and replay
+
+`artifacts findings` indexes compile issues, runtime errors, endings, assertion violations, and goal/stage witnesses. It returns 20 summaries by default and accepts `--limit` from 1 through 100. `page.nextCursor` continues through the immutable report; cursors are bound to one report ID and foreign, malformed, or out-of-range cursors fail closed.
+
+Collection summaries contain stable ID, normalized kind, report section, replay/witness availability, and a source location when available. They deliberately omit messages, story prose, choice labels and indices, variable values, ending text, and complete witnesses. Use `artifacts finding` to request one complete finding explicitly.
+
+`artifacts replay` is an execution boundary. It requires a `current` report, recompiles the current project entrypoint, then passes the saved zero-based choices and `storySeed` to Inkcheck's playtest engine. It returns the replay transcript, variables, runtime errors, and `completed`, `runtime_error`, or `path_changed` status. Findings without an indexed replay, stale/path-changed reports, compile failures, missing IDs, and ambiguous duplicate IDs are rejected rather than approximated.
 
 ## Version control and privacy
 

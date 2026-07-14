@@ -48,6 +48,7 @@ export interface InkcheckCapabilities {
     stagedGoals: boolean;
     anytimeShadowDecision: boolean;
     localReportArtifacts: boolean;
+    savedFindingLookup: boolean;
     resumableSearch: boolean;
   };
 }
@@ -87,6 +88,7 @@ export function capabilities(): InkcheckCapabilities {
       stagedGoals: true,
       anytimeShadowDecision: true,
       localReportArtifacts: true,
+      savedFindingLookup: true,
       resumableSearch: true,
     },
   };

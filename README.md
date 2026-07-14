@@ -231,6 +231,9 @@ inkcheck inspect <story.ink> [--json]
 inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--story-seed N] [--search=portfolio|shared|shared-variable] [--max-frontier-states N] [--max-frontier-memory MB] [--auto] [--profile] [--next] [--no-min-repro] [--strict] [--save-report] [--save-checkpoint] [--progress=auto|human|ndjson|off] [--human|--json|--markdown]
 inkcheck artifacts list [--json]
 inkcheck artifacts show <report-id> [--json]
+inkcheck artifacts findings <report-id> [--limit N] [--cursor C] [--json]
+inkcheck artifacts finding <report-id> <finding-id> [--json]
+inkcheck artifacts replay <report-id> <finding-id> [--json]
 inkcheck checkpoints list [--json]
 inkcheck checkpoints show <checkpoint-id> [--json]
 inkcheck resume <checkpoint-id> --max-states N [--json]
@@ -240,6 +243,8 @@ inkcheck mcp    # start the MCP server on stdio
 `inkcheck capabilities --json` lets agents check schema versions, limits, search modes, and explicit supported or unavailable features before relying on them. `inkcheck inspect story.ink --json` performs deterministic source-only discovery without compiling or exploring: it follows project-local includes and returns a bounded map of story shape, semantics, externals, knots/functions, and variable declarations/reads/writes. See the [agent discovery contract](docs/agent-discovery.md).
 
 JSON checks use the versioned [report schema](docs/report-schema-v1.md). Findings have stable IDs and normalized kinds; ending and runtime-error witnesses carry both human choice text and zero-based choice indices, so duplicate labels remain exactly replayable through `playtest_story`. The envelope records the Inkcheck version, compiled-story fingerprint, effective configuration, binding limit, and an observation-only `shadowDecision` while retaining the established `compile`, `stats`, `explore`, and `nextRun` sections.
+
+Saved reports support bounded finding drill-down without loading the full report. `artifacts findings` returns at most 20 privacy-minimal summaries by default (maximum 100) and a report-bound cursor; summaries omit story prose, variables, choice text, and witness paths. `artifacts finding` fetches one complete stable finding. `artifacts replay` recompiles the saved entrypoint and follows that finding's indexed choices with its saved story seed, but only while artifact freshness is `current`; stale or moved source fails closed.
 
 Maintainers can compare shadow recommendations across independent budget runs with the manifest-driven [shadow policy evaluator](docs/shadow-policy-evaluation.md). The separate [search promotion benchmark](docs/promotion-benchmark.md) runs matched baseline/candidate matrices across a checked-in 20-family corpus plus a pinned consent-safe authored-project tier, reports resource observations and worst-family/project losses, and never declares a winner. The first [authored-project evaluation](docs/authored-project-promotion-evaluation.md) found parity where cells completed and meaningful project-shape resource limits, not a policy-v2 advantage. Neither tool calls a bounded larger run an oracle or changes the default policy.
 
