@@ -67,6 +67,8 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 - continue_search — continue the exact frontier to a larger cumulative grant, adding at most 5M per call
 - cancel_search — cancel between synchronous windows; retained by default, explicitly forget with `discard: true`
 - replay_witness — explicitly execute one stable latest-report finding against current source; returns transcript/choices/variables, advances revision, and keeps only opaque audit metadata
+- pin_regression — preserve one confirmed current runtime failure as a private idempotent pin; runtime errors only in this first slice
+- check_regression — after editing, classify a pin as fixed, still_failing, or path_changed without spending search states
 
 ## Intended agent loop
 

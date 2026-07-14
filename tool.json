@@ -121,8 +121,9 @@
     },
     "jsonSchema": {
       "reportEnvelope": "{ schemaVersion: 1, inkcheckVersion, storyFingerprint: {algorithm, source, value}, effectiveConfiguration, bindingLimit, compile, stats?, profile?, explore?, nextRun?, runs?, checkpoint?: {saved, id?, path?, pruned?, resumedFrom?, reason?} }",
-      "capabilities": "{ schemaVersion, inkcheckVersion, schemas: {report, config, projectInspection, artifact, checkpointArtifact, searchSession}, limits: {..., defaultMcpSessionWindowStates, maxMcpSessionWindowStates, maxMcpSessionTotalStates, maxMcpSessionFiles, maxMcpSessionEvents}, searchModes, resumableSearchSurfaces, features: {projectInspection, indexedWitnesses, assertions, goals, localReportArtifacts, savedFindingLookup, resumableSearch, interactiveSearchSessions, sessionWitnessReplay} }",
+      "capabilities": "{ schemaVersion, inkcheckVersion, schemas: {report, config, projectInspection, artifact, checkpointArtifact, searchSession, regressionArtifact}, limits: {..., defaultMcpSessionWindowStates, maxMcpSessionWindowStates, maxMcpSessionTotalStates, maxMcpSessionFiles, maxMcpSessionEvents, maxRegressionPinBytes, maxRegressionPinsPerProject}, searchModes, resumableSearchSurfaces, features: {projectInspection, indexedWitnesses, assertions, goals, localReportArtifacts, savedFindingLookup, resumableSearch, interactiveSearchSessions, sessionWitnessReplay, sessionRegressionPins} }",
       "searchSession": "{ schemaVersion, inkcheckVersion, sessionCapability?: bearer-secret, session: {revision, status, recoverable, totalGranted, statesExplored, latestReportId, latestCheckpointId?, bindingLimit, findings, events, droppedEventCount}, savedFindings, nextOperation }",
+      "regressionPin": "private runtime-only artifact with stable pin ID, session/entrypoint binding, indexed choices, story seed, baseline fingerprint, and hashed expected runtime errors; check returns fixed|still_failing|path_changed without search states",
       "savedFindings": "{ artifact: {id, entrypoint, freshness}, findings: [{id, kind, section, hasWitness, hasReplay, sourceLocation?}], page: {limit, returned, total, nextCursor} }; fetch returns one summary plus complete finding; replay returns summary plus playtest result",
       "artifactLifecycle": "{ operation: 'delete'|'prune', applied, keepPerEntrypoint?, candidateCount, selectedCount, remainingCandidates, bytes, candidates: [{id, path, entrypoint, createdAt, sizeBytes}] }",
       "inspection": "{ schemaVersion, inkcheckVersion, entrypoint, includes, shape, semantics, externals, knots, variables, truncation, recommendedNextOperation }",
@@ -197,8 +198,16 @@
       {
         "name": "replay_witness",
         "description": "Explicitly replay one stable latest-report finding against current source; returns transcript, choice text, and variables and advances the session revision."
+      },
+      {
+        "name": "pin_regression",
+        "description": "Preserve one confirmed current runtime failure as a private idempotent post-edit regression pin."
+      },
+      {
+        "name": "check_regression",
+        "description": "Recheck a private runtime pin as fixed, still_failing, or path_changed without spending search states."
       }
     ]
   },
-  "agentLoop": "edit .ink → compile_story → explore_story → fix confirmed failures → review coverage limitations → repeat. Never infer that a truncated, randomized, or externally driven story was completely verified."
+  "agentLoop": "inspect/compile → start_search or explore_story → inspect one finding → replay_witness → pin_regression for a confirmed runtime failure → edit → check_regression → begin a fresh broader search after the fix. Never infer that a truncated, randomized, or externally driven story was completely verified."
 }

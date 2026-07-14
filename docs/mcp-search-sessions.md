@@ -7,6 +7,7 @@ Inkcheck's MCP server can continue one exact base-shared search across calls and
 3. `continue_search` raises the cumulative state grant and continues the exact saved frontier.
 4. `cancel_search` marks the session cancelled between windows while retaining recoverability by default.
 5. `replay_witness` executes one stable finding from the latest report against current source.
+6. `pin_regression` and `check_regression` preserve and recheck one confirmed runtime failure across source edits.
 
 This is cooperative **result-window execution**, not a background job. A `start_search` or `continue_search` call runs until its durable boundary. `cancel_search` cannot interrupt a window already running; call it after that tool returns. Use hosted async jobs when mid-run reconnect/cancel behavior is required.
 
@@ -33,6 +34,18 @@ Every completed window writes a normal source-bound report under `.inkcheck/repo
 Search-session schema v2 adds that replay audit event. Inkcheck reads v1 foundation sessions and upgrades them atomically on the next mutation; unknown future schemas still fail closed.
 
 This is an explicit content-revealing execution boundary: the response includes the selected transcript, choice text, runtime result, and final variables. None of that payload is copied into session metadata or ordinary inspection. Stale revisions/source, missing or foreign IDs, findings without indexed replay, and concurrent session mutations fail instead of replaying approximately.
+
+## Regression pins
+
+`pin_regression` accepts one runtime-error finding from the latest current report. It verifies the witness, then stores indexed choices, story seed, baseline fingerprint, and SHA-256 hashes of the observed runtime errors under `.inkcheck/regressions/`. It stores no error text, choice labels, transcript, variables, ending text, or story prose. The deterministic pin ID makes retries idempotent.
+
+After an edit, `check_regression` recompiles current source and replays the saved indexed choices without spending search states:
+
+- `fixed`: the path completes without the pinned runtime failure;
+- `still_failing`: the pinned runtime-error hash is observed again;
+- `path_changed`: indexed choices no longer follow the path or a different runtime failure blocks it first.
+
+Compile failures are prerequisite errors, never `fixed`. The first pin schema intentionally rejects endings and assertion violations: ending reachability is not a failure, and assertions need assertion-aware evaluation rather than plain playtest. Pins are private `0700`/`0600` artifacts where supported, capped at 1 MiB each and 100 per project, session-bound, and ignored by the agent kit. Search-session schema v3 adds privacy-safe pin/check audit events while reading v1/v2 metadata.
 
 ## Capability and privacy
 

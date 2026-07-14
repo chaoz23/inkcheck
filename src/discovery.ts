@@ -17,6 +17,11 @@ import {
   MAX_MCP_SESSION_WINDOW_STATES,
   SEARCH_SESSION_SCHEMA_VERSION,
 } from "./search-session-contract";
+import {
+  MAX_REGRESSION_PIN_BYTES,
+  MAX_REGRESSION_PINS_PER_PROJECT,
+  REGRESSION_ARTIFACT_SCHEMA_VERSION,
+} from "./regression-contract";
 
 export const CAPABILITIES_SCHEMA_VERSION = 1;
 export const PROJECT_INSPECTION_SCHEMA_VERSION = 1;
@@ -34,7 +39,7 @@ export const MAX_INSPECT_EXTERNALS = 200;
 export interface InkcheckCapabilities {
   schemaVersion: number;
   inkcheckVersion: string;
-  schemas: { report: number; config: number; projectInspection: number; artifact: number; checkpointArtifact: number; searchSession: number };
+  schemas: { report: number; config: number; projectInspection: number; artifact: number; checkpointArtifact: number; searchSession: number; regressionArtifact: number };
   limits: {
     maxDepth: number;
     maxStates: number;
@@ -56,6 +61,8 @@ export interface InkcheckCapabilities {
     maxMcpSessionTotalStates: number;
     maxMcpSessionFiles: number;
     maxMcpSessionEvents: number;
+    maxRegressionPinBytes: number;
+    maxRegressionPinsPerProject: number;
   };
   searchModes: string[];
   resumableSearchSurfaces: string[];
@@ -71,6 +78,7 @@ export interface InkcheckCapabilities {
     resumableSearch: boolean;
     interactiveSearchSessions: boolean;
     sessionWitnessReplay: boolean;
+    sessionRegressionPins: boolean;
   };
 }
 
@@ -85,6 +93,7 @@ export function capabilities(): InkcheckCapabilities {
       artifact: ARTIFACT_SCHEMA_VERSION,
       checkpointArtifact: CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
       searchSession: SEARCH_SESSION_SCHEMA_VERSION,
+      regressionArtifact: REGRESSION_ARTIFACT_SCHEMA_VERSION,
     },
     limits: {
       maxDepth: 1_000,
@@ -107,6 +116,8 @@ export function capabilities(): InkcheckCapabilities {
       maxMcpSessionTotalStates: MAX_MCP_SESSION_TOTAL_STATES,
       maxMcpSessionFiles: MAX_MCP_SESSION_FILES,
       maxMcpSessionEvents: MAX_MCP_SESSION_EVENTS,
+      maxRegressionPinBytes: MAX_REGRESSION_PIN_BYTES,
+      maxRegressionPinsPerProject: MAX_REGRESSION_PINS_PER_PROJECT,
     },
     searchModes: ["portfolio", "shared", "shared-variable"],
     resumableSearchSurfaces: ["cli", "mcp"],
@@ -122,6 +133,7 @@ export function capabilities(): InkcheckCapabilities {
       resumableSearch: true,
       interactiveSearchSessions: true,
       sessionWitnessReplay: true,
+      sessionRegressionPins: true,
     },
   };
 }
