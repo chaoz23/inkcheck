@@ -44,7 +44,9 @@ const EMPTY_TRUNCATION = {
   maxDepth: false,
   maxStates: false,
   beamWidth: false,
+  frontier: false,
   memory: false,
+  time: false,
 };
 
 function ending(variables) {

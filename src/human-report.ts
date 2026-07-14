@@ -26,6 +26,9 @@ export function truncationAdvice(
     // Time is the binding constraint — a bigger budget would run out sooner.
     return "exploration stopped at its time budget; raise --max-time, or run locally without a wall-clock limit, for broader coverage";
   }
+  if (causes?.frontier) {
+    return "shared search reached its explicit pending-checkpoint envelope; raise the shared frontier state or byte limit only when the machine has headroom, or use portfolio search";
+  }
   if (causes?.maxDepth) {
     hints.push(
       `paths were cut at ${result.limits?.maxDepth ?? "the configured"} choices deep; raise --max-depth to follow longer trails`

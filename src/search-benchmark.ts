@@ -114,6 +114,7 @@ export interface SearchBenchmarkSummary {
       | "peakFrontier"
       | "peakPendingStates"
       | "peakPendingBytes"
+      | "sharedMemory"
       | "exhaustive"
     >
   >;
@@ -237,6 +238,7 @@ export function summarizeSearchResult(
       ...(pass.peakFrontier === undefined ? {} : { peakFrontier: pass.peakFrontier }),
       ...(pass.peakPendingStates === undefined ? {} : { peakPendingStates: pass.peakPendingStates }),
       ...(pass.peakPendingBytes === undefined ? {} : { peakPendingBytes: pass.peakPendingBytes }),
+      ...(pass.sharedMemory === undefined ? {} : { sharedMemory: pass.sharedMemory }),
       exhaustive: pass.exhaustive,
     })),
   };

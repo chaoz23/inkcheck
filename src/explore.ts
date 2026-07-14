@@ -75,6 +75,8 @@ export interface TruncationCauses {
   maxStates: boolean;
   /** The beam pass pruned reachable states at its frontier cap. */
   beamWidth: boolean;
+  /** The shared frontier reached an explicit pending-state or byte envelope. */
+  frontier: boolean;
   /** Exploration stopped early to stay under the memory guard. */
   memory: boolean;
   /** Exploration stopped early because the wall-clock time budget elapsed. */
@@ -493,6 +495,10 @@ export interface ExploreOptions {
   timeGuard?: () => boolean;
   /** Internal selector for the experimental variable-aware shared frontier. */
   sharedVariableAware?: boolean;
+  /** Shared search only: stop before retaining more pending checkpoints. No default cap. */
+  sharedMaxPendingStates?: number;
+  /** Shared search only: stop before retaining more serialized checkpoint bytes. No default cap. */
+  sharedMaxPendingBytes?: number;
   /** Prevalidated non-executable project assertions evaluated on visited states. */
   assertions?: AssertionDefinition[];
   /** Prevalidated goal conditions used only by an explicitly bounded goal slice. */
@@ -615,12 +621,44 @@ export interface PassTelemetry {
   peakPendingStates?: number;
   /** Shared search only: largest serialized-byte total awaiting expansion. */
   peakPendingBytes?: number;
+  /** Shared search only: deterministic retained-payload accounting, not process heap usage. */
+  sharedMemory?: SharedMemoryTelemetry;
   /** Shared search only: distinct variable snapshots observed. */
   variableStatesObserved?: number;
   /** Shared search only: distinct variable changes observed. */
   variableTransitionsObserved?: number;
   /** Shared search only: variable changes observed exactly once. */
   rareVariableTransitions?: number;
+}
+
+/** Deterministic payload accounting for the shared search's retained structures. */
+export interface SharedRetainedMemory {
+  pendingStateBytes: number;
+  pendingVariableBytes: number;
+  activeStateBytes: number;
+  activeVariableBytes: number;
+  ancestryBytes: number;
+  dedupeBytes: number;
+  semanticIndexBytes: number;
+  frontierReferenceBytes: number;
+  findingBytes: number;
+  totalAccountedBytes: number;
+  pendingStates: number;
+  retainedNodes: number;
+  frontierReferences: number;
+}
+
+export interface SharedMemoryTelemetry {
+  /** Current accounted payload at the end of the pass. */
+  current: SharedRetainedMemory;
+  /** Per-component high-water marks observed during the pass. */
+  peak: SharedRetainedMemory;
+  limits: {
+    maxPendingStates: number | null;
+    maxPendingBytes: number | null;
+  };
+  releasedNodes: number;
+  frontierCompactions: number;
 }
 
 export interface DiscoveryCounts {
@@ -865,7 +903,7 @@ function createSearchEngine(
   let statesExplored = 0;
   let totalGranted = 0;
   let truncated = false;
-  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false, memory: false, time: false };
+  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false, frontier: false, memory: false, time: false };
   let dedupeHits = 0;
   let maxDepthReached = 0;
   let lastDiscoveryAtState: number | null = null;
@@ -1192,6 +1230,11 @@ interface SharedNode {
   choiceText?: string;
   choiceIndex?: number;
   depth: number;
+  active: boolean;
+  childRefs: number;
+  stateBytes: number;
+  variableBytes: number;
+  ancestryBytes: number;
 }
 
 interface SharedHeapItem {
@@ -1202,6 +1245,10 @@ interface SharedHeapItem {
 
 class SharedMaxHeap {
   private readonly items: SharedHeapItem[] = [];
+
+  get size(): number {
+    return this.items.length;
+  }
 
   private higher(a: SharedHeapItem, b: SharedHeapItem): boolean {
     return a.score > b.score || (a.score === b.score && a.order < b.order);
@@ -1241,6 +1288,12 @@ class SharedMaxHeap {
     }
     return first;
   }
+
+  compact(valid: (id: number) => boolean): void {
+    const retained = this.items.filter((item) => valid(item.id));
+    this.items.length = 0;
+    for (const item of retained) this.push(item);
+  }
 }
 
 /**
@@ -1264,6 +1317,14 @@ function createSharedEngine(
   if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff) {
     throw new RangeError("seed must be an integer from 0 to 4294967295");
   }
+  const maxPendingStates = opts.sharedMaxPendingStates;
+  if (maxPendingStates !== undefined && (!Number.isSafeInteger(maxPendingStates) || maxPendingStates < 1 || maxPendingStates > 100_000_000)) {
+    throw new RangeError("sharedMaxPendingStates must be an integer from 1 to 100000000");
+  }
+  const maxPendingBytes = opts.sharedMaxPendingBytes;
+  if (maxPendingBytes !== undefined && (!Number.isSafeInteger(maxPendingBytes) || maxPendingBytes < 1)) {
+    throw new RangeError("sharedMaxPendingBytes must be a positive safe integer");
+  }
   const variableAware = opts.sharedVariableAware ?? false;
   const goalAware = opts.sharedGoalAware ?? false;
   const foundBy = goalAware
@@ -1286,8 +1347,7 @@ function createSharedEngine(
   const variableStateCounts = new Map<string, number>();
   const variableTransitionCounts = new Map<string, number>();
   const nonFunctionKnots = knots.filter((k) => !k.isFunction);
-  const nodes: SharedNode[] = [];
-  const expanded: boolean[] = [];
+  const nodes: Array<SharedNode | undefined> = [];
   const deep: number[] = [];
   const random: number[] = [];
   const novelty = new SharedMaxHeap();
@@ -1303,8 +1363,17 @@ function createSharedEngine(
   let insertionOrder = 0;
   let pendingStates = 0;
   let pendingBytes = 0;
+  let pendingVariableBytes = 0;
+  let activeStateBytes = 0;
+  let activeVariableBytes = 0;
   let peakPendingStates = 0;
   let peakPendingBytes = 0;
+  let retainedNodes = 0;
+  let dedupeBytes = 0;
+  let semanticIndexBytes = 0;
+  let releasedNodes = 0;
+  let frontierCompactions = 0;
+  let frontierStopped = false;
   let statesExplored = 0;
   let totalGranted = 0;
   let dedupeHits = 0;
@@ -1317,6 +1386,7 @@ function createSharedEngine(
     maxDepth: false,
     maxStates: false,
     beamWidth: false,
+    frontier: false,
     memory: false,
     time: false,
   };
@@ -1326,6 +1396,74 @@ function createSharedEngine(
   const memoryGuard = opts.memoryGuard;
   const timeGuard = opts.timeGuard;
   const guardInterval = timeGuard ? TIMED_RESOURCE_GUARD_INTERVAL : RESOURCE_GUARD_INTERVAL;
+  let findingBytes = 0;
+  let ancestryPayloadBytes = 0;
+  const emptyRetainedMemory = (): SharedRetainedMemory => ({
+    pendingStateBytes: 0,
+    pendingVariableBytes: 0,
+    activeStateBytes: 0,
+    activeVariableBytes: 0,
+    ancestryBytes: 0,
+    dedupeBytes: 0,
+    semanticIndexBytes: 0,
+    frontierReferenceBytes: 0,
+    findingBytes: 0,
+    totalAccountedBytes: 0,
+    pendingStates: 0,
+    retainedNodes: 0,
+    frontierReferences: 0,
+  });
+  let peakRetainedMemory = emptyRetainedMemory();
+  const byteLength = (value: string): number => Buffer.byteLength(value, "utf8");
+  const frontierReferenceCount = (): number =>
+    deep.length + random.length + novelty.size + variablePriority.size + goalPriority.size;
+  const retainedMemory = (): SharedRetainedMemory => {
+    const frontierReferences = frontierReferenceCount();
+    const snapshot: SharedRetainedMemory = {
+      pendingStateBytes: pendingBytes,
+      pendingVariableBytes,
+      activeStateBytes,
+      activeVariableBytes,
+      // Eight bytes per node-table slot remains accounted after its payload is released.
+      ancestryBytes: ancestryPayloadBytes + nodes.length * 8,
+      dedupeBytes,
+      semanticIndexBytes,
+      // Array ids are estimated at 8 bytes and heap entries at 24 bytes.
+      frontierReferenceBytes:
+        (deep.length + random.length) * 8
+        + (novelty.size + variablePriority.size + goalPriority.size) * 24,
+      findingBytes,
+      totalAccountedBytes: 0,
+      pendingStates,
+      retainedNodes,
+      frontierReferences,
+    };
+    snapshot.totalAccountedBytes = snapshot.pendingStateBytes
+      + snapshot.pendingVariableBytes
+      + snapshot.activeStateBytes
+      + snapshot.activeVariableBytes
+      + snapshot.ancestryBytes
+      + snapshot.dedupeBytes
+      + snapshot.semanticIndexBytes
+      + snapshot.frontierReferenceBytes
+      + snapshot.findingBytes;
+    return snapshot;
+  };
+  const observeRetainedMemory = (): void => {
+    const currentMemory = retainedMemory();
+    for (const key of Object.keys(currentMemory) as Array<keyof SharedRetainedMemory>) {
+      peakRetainedMemory[key] = Math.max(peakRetainedMemory[key], currentMemory[key]);
+    }
+  };
+  const refreshFindingBytes = (): void => {
+    findingBytes = byteLength(JSON.stringify({
+      endings: [...endings.values()],
+      errors: [...runtimeErrors.values()],
+      warnings: [...runtimeWarnings],
+      assertions: assertions.results(false),
+      goals: goals.results(false),
+    }));
+  };
 
   const noteDiscoveryProgress = () => {
     if (discoveryCurve.observe(statesExplored, {
@@ -1339,6 +1477,8 @@ function createSharedEngine(
       uniqueStatesObserved: seenStates.size,
     })) {
       lastDiscoveryAtState = statesExplored;
+      refreshFindingBytes();
+      observeRetainedMemory();
     }
   };
 
@@ -1366,7 +1506,8 @@ function createSharedEngine(
     const choiceIndices: number[] = [];
     let id: number | null = nodeId;
     while (id !== null) {
-      const node: SharedNode = nodes[id];
+      const node: SharedNode | undefined = nodes[id];
+      if (!node) throw new Error(`Shared witness ancestry ${id} was released too early`);
       if (node.choiceText !== undefined) {
         path.push(node.choiceText);
         choiceIndices.push(node.choiceIndex!);
@@ -1383,7 +1524,44 @@ function createSharedEngine(
   };
 
   const valid = (id: number | undefined): id is number =>
-    id !== undefined && !expanded[id] && nodes[id]?.stateJson !== undefined;
+    id !== undefined && nodes[id]?.active === true && nodes[id]?.stateJson !== undefined;
+
+  const releaseNode = (startId: number): void => {
+    let id: number | null = startId;
+    while (id !== null) {
+      const node: SharedNode | undefined = nodes[id];
+      if (!node || node.active || node.childRefs > 0) return;
+      const parent: number | null = node.parent;
+      ancestryPayloadBytes -= node.ancestryBytes;
+      retainedNodes--;
+      nodes[id] = undefined;
+      releasedNodes++;
+      if (parent !== null) {
+        const parentNode = nodes[parent];
+        if (!parentNode) throw new Error(`Shared ancestry parent ${parent} was released too early`);
+        parentNode.childRefs--;
+      }
+      id = parent;
+    }
+  };
+
+  const compactFrontiers = (force = false): void => {
+    const references = frontierReferenceCount();
+    const expected = pendingStates * (3 + (variableAware ? 1 : 0) + (goalAware ? 1 : 0));
+    if (!force && references <= expected * 2 + 1_024) return;
+    const compactArray = (items: number[]) => {
+      let write = 0;
+      for (const id of items) if (valid(id)) items[write++] = id;
+      items.length = write;
+    };
+    compactArray(deep);
+    compactArray(random);
+    novelty.compact(valid);
+    variablePriority.compact(valid);
+    goalPriority.compact(valid);
+    if (frontierReferenceCount() < references) frontierCompactions++;
+    observeRetainedMemory();
+  };
 
   const addNode = (
     stateJson: string,
@@ -1395,10 +1573,40 @@ function createSharedEngine(
     noveltyScore: number,
     variableScore = 0,
     goalScore = 0
-  ): void => {
+  ): boolean => {
+    const stateBytes = byteLength(stateJson);
+    const variableBytes = byteLength(JSON.stringify(variables));
+    if (
+      (maxPendingStates !== undefined && pendingStates + 1 > maxPendingStates)
+      || (maxPendingBytes !== undefined && pendingBytes + pendingVariableBytes + stateBytes + variableBytes > maxPendingBytes)
+    ) {
+      frontierStopped = true;
+      truncated = true;
+      truncatedBy.frontier = true;
+      return false;
+    }
     const id = nodes.length;
-    nodes.push({ stateJson, variables, parent, choiceText, choiceIndex, depth });
-    expanded.push(false);
+    const nodeAncestryBytes = 64 + (choiceText === undefined ? 0 : byteLength(choiceText));
+    nodes.push({
+      stateJson,
+      variables,
+      parent,
+      choiceText,
+      choiceIndex,
+      depth,
+      active: true,
+      childRefs: 0,
+      stateBytes,
+      variableBytes,
+      ancestryBytes: nodeAncestryBytes,
+    });
+    if (parent !== null) {
+      const parentNode = nodes[parent];
+      if (!parentNode) throw new Error(`Cannot retain released shared parent ${parent}`);
+      parentNode.childRefs++;
+    }
+    retainedNodes++;
+    ancestryPayloadBytes += nodeAncestryBytes;
     deep.push(id);
     random.push(id);
     novelty.push({
@@ -1417,9 +1625,12 @@ function createSharedEngine(
       goalPriority.push({ id, score: goalScore * 1_000 + noveltyScore, order: insertionOrder++ });
     }
     pendingStates++;
-    pendingBytes += stateJson.length;
+    pendingBytes += stateBytes;
+    pendingVariableBytes += variableBytes;
     peakPendingStates = Math.max(peakPendingStates, pendingStates);
     peakPendingBytes = Math.max(peakPendingBytes, pendingBytes);
+    observeRetainedMemory();
+    return true;
   };
 
   const takeDeep = (): number | undefined => {
@@ -1487,6 +1698,18 @@ function createSharedEngine(
     session.errors.length = 0;
     session.warnings.length = 0;
   };
+  const rememberDedupeKey = (set: Set<string>, key: string): boolean => {
+    if (set.has(key)) return false;
+    set.add(key);
+    dedupeBytes += byteLength(key) + 48;
+    return true;
+  };
+  const observeSemanticKey = (counts: Map<string, number>, key: string): number => {
+    const previous = counts.get(key) ?? 0;
+    if (previous === 0) semanticIndexBytes += byteLength(key) + 56;
+    counts.set(key, previous + 1);
+    return previous;
+  };
 
   const rootStep = continueMaximally(session);
   const assertions = assertionTracker(session.story, knots, opts.assertions, foundBy);
@@ -1513,7 +1736,7 @@ function createSharedEngine(
     state: 0,
   });
   goals.observe({ variables: rootVariables, path: [], choiceIndices: [], state: 0 });
-  variableStateCounts.set(variableStateKey(rootVariables), 1);
+  observeSemanticKey(variableStateCounts, variableStateKey(rootVariables));
 
   if (rootStep.choicesOffered.length === 0) {
     if (session.errors.length === 0) {
@@ -1530,8 +1753,8 @@ function createSharedEngine(
     finished = true;
   } else {
     const rootState = session.story.state.ToJson();
-    seenStates.add(stateKey(rootState, stateSensitivity));
-    seenChoiceSets.add(rootStep.choicesOffered.slice().sort().join("\u0001"));
+    rememberDedupeKey(seenStates, stateKey(rootState, stateSensitivity));
+    rememberDedupeKey(seenChoiceSets, rootStep.choicesOffered.slice().sort().join("\u0001"));
     addNode(rootState, rootVariables, null, undefined, undefined, 0, 1, 0, goals.priority(rootVariables));
   }
   noteDiscoveryProgress();
@@ -1546,9 +1769,15 @@ function createSharedEngine(
   const finishCurrent = () => {
     if (!current) return;
     const node = nodes[current.nodeId];
+    if (!node) throw new Error(`Shared active node ${current.nodeId} was released too early`);
     node.stateJson = undefined;
     node.variables = undefined;
+    activeStateBytes = 0;
+    activeVariableBytes = 0;
+    node.active = false;
+    releaseNode(current.nodeId);
     current = null;
+    observeRetainedMemory();
   };
 
   const advance = (): boolean => {
@@ -1559,9 +1788,12 @@ function createSharedEngine(
         return false;
       }
       const node = nodes[nodeId];
-      expanded[nodeId] = true;
+      if (!node) throw new Error(`Shared pending node ${nodeId} was released too early`);
       pendingStates--;
-      pendingBytes -= node.stateJson!.length;
+      pendingBytes -= node.stateBytes;
+      pendingVariableBytes -= node.variableBytes;
+      activeStateBytes = node.stateBytes;
+      activeVariableBytes = node.variableBytes;
       resetSession();
       try {
         session.story.state.LoadJson(node.stateJson!);
@@ -1575,6 +1807,10 @@ function createSharedEngine(
         });
         node.stateJson = undefined;
         node.variables = undefined;
+        activeStateBytes = 0;
+        activeVariableBytes = 0;
+        node.active = false;
+        releaseNode(nodeId);
         noteDiscoveryProgress();
         continue;
       }
@@ -1594,6 +1830,7 @@ function createSharedEngine(
 
     const active = current;
     const node = nodes[active.nodeId];
+    if (!node) throw new Error(`Shared active node ${active.nodeId} was released too early`);
     const choice = active.choices[active.cursor++];
     const lastChoice = active.cursor >= active.choices.length;
     const finishIfLast = () => {
@@ -1643,14 +1880,14 @@ function createSharedEngine(
     const variableState = variableStateKey(nextVariables);
     const previousVariableStateObservations = variableStateCounts.get(variableState) ?? 0;
     const newVariableState = previousVariableStateObservations === 0;
-    variableStateCounts.set(variableState, previousVariableStateObservations + 1);
+    observeSemanticKey(variableStateCounts, variableState);
     const changes = variableChanges(node.variables ?? {}, nextVariables);
     let rarestTransitionWeight = 0;
     for (const change of changes) {
       const key = variableTransitionKey(change);
       const previousObservations = variableTransitionCounts.get(key) ?? 0;
       rarestTransitionWeight = Math.max(rarestTransitionWeight, rarityWeight(previousObservations));
-      variableTransitionCounts.set(key, previousObservations + 1);
+      observeSemanticKey(variableTransitionCounts, key);
     }
     noteDiscoveryProgress();
 
@@ -1694,13 +1931,11 @@ function createSharedEngine(
       finishIfLast();
       return true;
     }
-    seenStates.add(key);
     const choiceSet = session.story.currentChoices
       .map((offered: { text?: string; sourcePath?: string }) => offered.sourcePath ?? offered.text ?? "")
       .sort()
       .join("\u0001");
     const newChoiceSet = !seenChoiceSets.has(choiceSet);
-    seenChoiceSets.add(choiceSet);
     let noveltyScore = newKnots * 8 + (newVariableState ? 4 : 0) + (newChoiceSet ? 2 : 0);
     const stateRarity = 3 * rarityWeight(previousVariableStateObservations);
     const transitionRarity = changes.length > 0 ? 3 * rarestTransitionWeight : 0;
@@ -1709,7 +1944,7 @@ function createSharedEngine(
       deepestStateDiscovered = path.length;
       noveltyScore++;
     }
-    addNode(
+    const retained = addNode(
       nextState,
       nextVariables,
       active.nodeId,
@@ -1720,11 +1955,17 @@ function createSharedEngine(
       variableScore,
       goals.priority(nextVariables)
     );
-    finishIfLast();
+    if (!retained) {
+      finishCurrent();
+    } else {
+      rememberDedupeKey(seenStates, key);
+      rememberDedupeKey(seenChoiceSets, choiceSet);
+      finishIfLast();
+    }
     return true;
   };
 
-  const done = () => finished || (!current && pendingStates === 0);
+  const done = () => frontierStopped || finished || (!current && pendingStates === 0);
 
   const buildResult = (): ExploreResult => {
     const exhaustive = done() && !truncated;
@@ -1757,6 +1998,7 @@ function createSharedEngine(
       const start = statesExplored;
       let sinceGuard = 0;
       while (statesExplored - start < grant) {
+        if (frontierStopped) break;
         if ((memoryGuard || timeGuard) && ++sinceGuard >= guardInterval) {
           sinceGuard = 0;
           if (memoryGuard && !memoryGuard()) {
@@ -1770,6 +2012,7 @@ function createSharedEngine(
         }
         if (!advance()) break;
       }
+      compactFrontiers();
       return statesExplored - start;
     },
     done,
@@ -1788,6 +2031,8 @@ function createSharedEngine(
         truncated = true;
         truncatedBy.maxStates = true;
       }
+      compactFrontiers(true);
+      observeRetainedMemory();
       return buildResult();
     },
     telemetry(): PassTelemetry {
@@ -1812,6 +2057,16 @@ function createSharedEngine(
         uniqueStates: seenStates.size,
         peakPendingStates,
         peakPendingBytes,
+        sharedMemory: {
+          current: retainedMemory(),
+          peak: { ...peakRetainedMemory },
+          limits: {
+            maxPendingStates: maxPendingStates ?? null,
+            maxPendingBytes: maxPendingBytes ?? null,
+          },
+          releasedNodes,
+          frontierCompactions,
+        },
         variableStatesObserved: variableStateCounts.size,
         variableTransitionsObserved: variableTransitionCounts.size,
         rareVariableTransitions: [...variableTransitionCounts.values()].filter((count) => count === 1).length,
@@ -1933,7 +2188,7 @@ function createRandomEngine(
   let statesExplored = 0;
   let totalGranted = 0;
   let truncated = false;
-  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false, memory: false, time: false };
+  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false, frontier: false, memory: false, time: false };
   let memoryStopped = false;
   const memoryGuard = opts.memoryGuard;
   let timeStopped = false;
@@ -2260,7 +2515,7 @@ function createBeamEngine(
   let statesExplored = 0;
   let totalGranted = 0;
   let truncated = false;
-  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false, memory: false, time: false };
+  const truncatedBy: TruncationCauses = { maxDepth: false, maxStates: false, beamWidth: false, frontier: false, memory: false, time: false };
   let memoryStopped = false;
   const memoryGuard = opts.memoryGuard;
   let timeStopped = false;
@@ -3192,6 +3447,7 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
     maxDepth: main.truncatedBy.maxDepth || other.truncatedBy.maxDepth,
     maxStates: main.truncatedBy.maxStates || other.truncatedBy.maxStates,
     beamWidth: main.truncatedBy.beamWidth || other.truncatedBy.beamWidth,
+    frontier: main.truncatedBy.frontier || other.truncatedBy.frontier,
     memory: main.truncatedBy.memory || other.truncatedBy.memory,
     time: main.truncatedBy.time || other.truncatedBy.time,
   };
@@ -3201,7 +3457,7 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
   main.exhaustive ||= other.exhaustive;
   if (main.exhaustive) {
     main.truncated = false;
-    main.truncatedBy = { maxDepth: false, maxStates: false, beamWidth: false, memory: false, time: false };
+    main.truncatedBy = { maxDepth: false, maxStates: false, beamWidth: false, frontier: false, memory: false, time: false };
   }
   for (const result of main.assertionResults) {
     result.status = result.violations.length

@@ -45,7 +45,7 @@ export interface ShadowDecision {
   policyVersion: number;
   action: ShadowAction;
   reason: string;
-  bindingConstraint: "exhaustive" | "memory" | "time" | "states" | "depth" | null;
+  bindingConstraint: "exhaustive" | "memory" | "time" | "frontier" | "states" | "depth" | null;
   uncertainty: {
     confidence: "low" | "moderate" | "high";
     curveCompacted: boolean;
@@ -154,6 +154,7 @@ function bindingConstraint(report: ExploreResult): ShadowDecision["bindingConstr
   if (report.exhaustive) return "exhaustive";
   if (report.truncatedBy.memory) return "memory";
   if (report.truncatedBy.time) return "time";
+  if (report.truncatedBy.frontier) return "frontier";
   if (report.truncatedBy.maxDepth) return "depth";
   if (report.truncatedBy.maxStates) return "states";
   return null;

@@ -70,6 +70,8 @@ Options:
   --search <mode>    Search: portfolio (default), shared, or shared-variable
   --max-memory <mb>  Stop cleanly before heap use exceeds <mb> (default: 85% of the V8 heap limit)
   --max-time <s>     Stop cleanly after <s> seconds and return a partial report (default: no time limit)
+  --max-frontier-states <n>  Shared search pending-checkpoint cap (default: none)
+  --max-frontier-memory <mb> Shared search pending-checkpoint payload cap (default: none)
   --profile          Print the story's shape profile and suggested settings, without exploring
   --auto             Apply the shape profile: suggested depth (unless --max-depth given) and pass weights
   --next             After the check, apply the recommended escalation automatically (up to 3 reruns)
@@ -176,6 +178,8 @@ async function main() {
   let searchSpecified = false;
   let maxMemoryMb: number | undefined;
   let maxTimeSec: number | undefined;
+  let maxFrontierStates: number | undefined;
+  let maxFrontierMb: number | undefined;
   const boundedInt = (flag: string, raw: string | undefined, max: number): number => {
     const value = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
     if (!Number.isSafeInteger(value) || value < 1 || value > max) {
@@ -200,6 +204,8 @@ async function main() {
     }
     else if (arg === "--max-memory") maxMemoryMb = boundedInt(arg, args[++i], 1_000_000);
     else if (arg === "--max-time") maxTimeSec = boundedInt(arg, args[++i], 86_400);
+    else if (arg === "--max-frontier-states") maxFrontierStates = boundedInt(arg, args[++i], 100_000_000);
+    else if (arg === "--max-frontier-memory") maxFrontierMb = boundedInt(arg, args[++i], 1_000_000);
     else if (arg === "--profile") profileOnly = true;
     else if (arg === "--auto") auto = true;
     else if (arg === "--next") followNext = true;
@@ -239,7 +245,7 @@ async function main() {
   if (inspectMode) {
     if (asMarkdown || asHuman || profileOnly || auto || followNext || strict || !minRepro ||
         maxDepth !== undefined || maxStates !== undefined || goalMaxStates !== undefined || seed !== undefined || storySeed !== undefined ||
-        maxMemoryMb !== undefined || maxTimeSec !== undefined || search !== "portfolio" ||
+        maxMemoryMb !== undefined || maxTimeSec !== undefined || maxFrontierStates !== undefined || maxFrontierMb !== undefined || search !== "portfolio" ||
         progressSpecified) {
       usage("inspect accepts a story path and optional --json only");
     }
@@ -261,9 +267,14 @@ async function main() {
   storySeed ??= DEFAULT_STORY_SEED;
   maxMemoryMb ??= configDefaults?.maxMemoryMb;
   maxTimeSec ??= configDefaults?.maxTimeSec;
+  maxFrontierStates ??= configDefaults?.maxFrontierStates;
+  maxFrontierMb ??= configDefaults?.maxFrontierMb;
   if (!searchSpecified && configDefaults?.search) search = configDefaults.search;
   if (!strict && configDefaults?.strict) strict = true;
   if (!minReproSpecified && configDefaults?.minRepro !== undefined) minRepro = configDefaults.minRepro;
+  if ((maxFrontierStates !== undefined || maxFrontierMb !== undefined) && search === "portfolio") {
+    usage("--max-frontier-states/--max-frontier-memory require --search shared or shared-variable");
+  }
 
   if (profileOnly) {
     const profile = scanShapeProfile(file);
@@ -295,6 +306,8 @@ async function main() {
     strict,
     maxMemoryMb: maxMemoryMb ?? null,
     maxTimeSec: maxTimeSec ?? null,
+    maxFrontierStates: maxFrontierStates ?? null,
+    maxFrontierMb: maxFrontierMb ?? null,
     goalMaxStates: additionalGoalStates,
     storySeed,
     ...(projectConfig?.config.assertions?.length ? { assertions: projectConfig.config.assertions } : {}),
@@ -422,6 +435,8 @@ async function main() {
       weights: profile?.suggested.weights,
       memoryGuard,
       timeGuard,
+      sharedMaxPendingStates: maxFrontierStates,
+      sharedMaxPendingBytes: maxFrontierMb === undefined ? undefined : maxFrontierMb * 1024 * 1024,
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
       randomnessDetected: semantics.usesRandomness,

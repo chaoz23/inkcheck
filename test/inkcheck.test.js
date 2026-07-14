@@ -224,6 +224,8 @@ ci:
   search: shared-variable
   maxMemoryMb: 512
   maxTimeSec: 60
+  maxFrontierStates: 20000
+  maxFrontierMb: 256
   strict: true
   minRepro: false
 `);
@@ -236,6 +238,8 @@ ci:
     storySeed: 17,
     maxMemoryMb: 512,
     maxTimeSec: 60,
+    maxFrontierStates: 20000,
+    maxFrontierMb: 256,
     search: "shared-variable",
     strict: true,
     minRepro: false,
@@ -982,6 +986,47 @@ test("shared search exhausts a finite variable-state lock with bounded telemetry
   assert.ok(telemetry.variableStatesObserved > 0);
   assert.ok(telemetry.variableTransitionsObserved > 0);
   assert.ok(telemetry.rareVariableTransitions > 0);
+  assert.strictEqual(telemetry.sharedMemory.current.pendingStateBytes, 0);
+  assert.strictEqual(telemetry.sharedMemory.current.pendingVariableBytes, 0);
+  assert.strictEqual(telemetry.sharedMemory.current.activeStateBytes, 0);
+  assert.strictEqual(telemetry.sharedMemory.current.activeVariableBytes, 0);
+  assert.strictEqual(telemetry.sharedMemory.current.pendingStates, 0);
+  assert.strictEqual(telemetry.sharedMemory.current.retainedNodes, 0);
+  assert.strictEqual(telemetry.sharedMemory.current.frontierReferences, 0);
+  assert.ok(telemetry.sharedMemory.releasedNodes > 0);
+  assert.ok(telemetry.sharedMemory.peak.totalAccountedBytes > 0);
+  assert.ok(telemetry.sharedMemory.peak.activeStateBytes > 0);
+  assert.deepStrictEqual(telemetry.sharedMemory.limits, {
+    maxPendingStates: null,
+    maxPendingBytes: null,
+  });
+});
+
+test("shared frontier envelopes stop cleanly without claiming state-budget exhaustion", async () => {
+  const file = path.join(SEARCH_FIXTURES, "storylet-machine.ink");
+  const compiled = await compile(file);
+  const knots = scanKnots(file);
+  const stateBound = exploreShared(compiled.storyJson, knots, [], {
+    maxDepth: 100,
+    maxStates: 10_000,
+    sharedMaxPendingStates: 1,
+  });
+  assert.strictEqual(stateBound.truncatedBy.frontier, true);
+  assert.strictEqual(stateBound.truncatedBy.maxStates, false);
+  assert.strictEqual(stateBound.exhaustive, false);
+  assert.ok(stateBound.statesExplored > 0);
+  assert.ok(stateBound.passes[0].sharedMemory.current.pendingStates <= 1);
+  assert.strictEqual(stateBound.passes[0].sharedMemory.limits.maxPendingStates, 1);
+  assert.ok(stateBound.passes[0].sharedMemory.frontierCompactions > 0);
+
+  const byteBound = exploreShared(compiled.storyJson, knots, [], {
+    maxStates: 10_000,
+    sharedMaxPendingBytes: 1,
+  });
+  assert.strictEqual(byteBound.truncatedBy.frontier, true);
+  assert.strictEqual(byteBound.truncatedBy.maxStates, false);
+  assert.strictEqual(byteBound.passes[0].sharedMemory.current.pendingStateBytes, 0);
+  assert.strictEqual(byteBound.passes[0].sharedMemory.limits.maxPendingBytes, 1);
 });
 
 test("shared search finds the deceptive plateau failure reproducibly", async () => {
@@ -1069,6 +1114,25 @@ test("CLI shared search is opt-in and validates its mode", () => {
   assert.ok(shared.status === 0 || shared.status === 1, shared.stderr);
   const report = JSON.parse(shared.stdout);
   assert.match(report.explore.passes[0].pass, /^shared:/);
+
+  const bounded = spawnSync(
+    process.execPath,
+    [CLI, path.join(SEARCH_FIXTURES, "storylet-machine.ink"), "--search=shared", "--max-states", "10000", "--max-frontier-states", "1", "--no-min-repro", "--json"],
+    { encoding: "utf8" }
+  );
+  assert.ok(bounded.status === 0 || bounded.status === 1, bounded.stderr);
+  const boundedReport = JSON.parse(bounded.stdout);
+  assert.strictEqual(boundedReport.bindingLimit, "frontier");
+  assert.strictEqual(boundedReport.effectiveConfiguration.maxFrontierStates, 1);
+  assert.strictEqual(boundedReport.explore.truncatedBy.frontier, true);
+
+  const wrongSearch = spawnSync(
+    process.execPath,
+    [CLI, MANOR, "--max-frontier-states", "1"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(wrongSearch.status, 2);
+  assert.match(wrongSearch.stderr, /require --search shared/);
 
   const variable = spawnSync(
     process.execPath,
@@ -1667,7 +1731,7 @@ test("recommendNextRun degrades to reseed or investigate at the ceilings", () =>
     externalFunctionsStubbed: [],
     randomnessDetected: false,
     truncated: true,
-    truncatedBy: { maxDepth: false, maxStates: true, beamWidth: false, memory: false },
+    truncatedBy: { maxDepth: false, maxStates: true, beamWidth: false, frontier: false, memory: false, time: false },
     // At the state ceiling (100M), so no broaden is possible.
     limits: { maxDepth: 1000, maxStates: 100_000_000, seed: 3 },
     exhaustive: false,
@@ -2129,6 +2193,7 @@ test("an exhaustive systematic pass clears sampling-slice truncation", async () 
     maxDepth: false,
     maxStates: false,
     beamWidth: false,
+    frontier: false,
     memory: false,
     time: false,
   });

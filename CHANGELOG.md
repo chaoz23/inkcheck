@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bound shared-search retained memory without imposing a low universal cap (#98). Expanded checkpoint JSON and dead witness ancestry are released when no pending descendant needs them, stale policy views compact deterministically, and pass telemetry separates pending/active payload, ancestry, indexes, references, and findings from process heap/RSS. Optional CLI/config/MCP checkpoint count and byte envelopes preserve partial evidence and report the distinct `truncatedBy.frontier` cause. Authored 5M-ceiling Intercept probes document release and compaction behavior.
+
 - Make Ink runtime randomness reproducible under an explicit initial seed (#117). `--story-seed`, project config, MCP exploration/playtest, capabilities, reports, replay instructions, and the promotion harness now distinguish Ink's runtime RNG from the existing `--seed` search-sampling control. Both default to 1; authored `SEED_RANDOM(...)` still works, and reports remain honest that one run does not enumerate every story seed.
 
 - Preserve production allocation whenever policy-v2 replay is warming up or gated off (#118). The cumulative integer floor now begins only when a previously approved policy overlay controls a window, so replay cannot change evidence while reporting `allocationApplied: false`; policy-controlled windows retain exact floor accounting. The 100-state/depth-300 deep-chain pair now keeps all seven baseline knots for both seeds.
