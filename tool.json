@@ -42,6 +42,10 @@
         "description": "List source-bound local base-shared checkpoints or inspect bounded freshness metadata without printing the frontier payload."
       },
       {
+        "flag": "artifacts findings|finding|replay <report-id> [<finding-id>] [--limit N] [--cursor C] [--json]",
+        "description": "Page through privacy-minimal saved-finding summaries, fetch one full stable finding, or replay one current indexed witness. Pages default to 20 and cap at 100; replay rejects stale or path-changed source."
+      },
+      {
         "flag": "resume <checkpoint-id> --max-states <n> [--json]",
         "description": "Resume an exact current base-shared checkpoint to a larger total state grant and save the next generation when work remains. CLI only."
       },
@@ -113,7 +117,8 @@
     },
     "jsonSchema": {
       "reportEnvelope": "{ schemaVersion: 1, inkcheckVersion, storyFingerprint: {algorithm, source, value}, effectiveConfiguration, bindingLimit, compile, stats?, profile?, explore?, nextRun?, runs?, checkpoint?: {saved, id?, path?, pruned?, resumedFrom?, reason?} }",
-      "capabilities": "{ schemaVersion, inkcheckVersion, schemas: {report, config, projectInspection, artifact, checkpointArtifact}, limits, searchModes, resumableSearchSurfaces, features: {projectInspection, indexedWitnesses, assertions, goals, resumableSearch} }",
+      "capabilities": "{ schemaVersion, inkcheckVersion, schemas: {report, config, projectInspection, artifact, checkpointArtifact}, limits, searchModes, resumableSearchSurfaces, features: {projectInspection, indexedWitnesses, assertions, goals, localReportArtifacts, savedFindingLookup, resumableSearch} }",
+      "savedFindings": "{ artifact: {id, entrypoint, freshness}, findings: [{id, kind, section, hasWitness, hasReplay, sourceLocation?}], page: {limit, returned, total, nextCursor} }; fetch returns one summary plus complete finding; replay returns summary plus playtest result",
       "inspection": "{ schemaVersion, inkcheckVersion, entrypoint, includes, shape, semantics, externals, knots, variables, truncation, recommendedNextOperation }",
       "compile": "{ success: bool, issues: [{severity, file, line, message}], errors: int, warnings: int, todos: int }",
       "stats": "{ words, knots, stitches, functions, choices, gathers, diverts }",

@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
-import { compile } from "./inklecate";
+import { compile, scanExternals } from "./inklecate";
+import { playtest, type PlaytestResult } from "./explore";
 import { ARTIFACT_SCHEMA_VERSION, REPORT_SCHEMA_VERSION } from "./discovery";
 import { VERSION } from "./version";
 
@@ -39,6 +40,29 @@ export interface ReportArtifactSummary extends ArtifactReference {
   inkcheckVersion: string;
   reportSchemaVersion: number;
   entrypoint: string;
+}
+
+export const DEFAULT_FINDING_PAGE_SIZE = 20;
+export const MAX_FINDING_PAGE_SIZE = 100;
+
+export interface SavedFindingSummary {
+  id: string;
+  kind: string;
+  section: string;
+  hasWitness: boolean;
+  hasReplay: boolean;
+  sourceLocation?: { file: string; line: number | null; approximate?: boolean };
+}
+
+interface SavedFindingRecord {
+  summary: SavedFindingSummary;
+  finding: Record<string, unknown>;
+}
+
+export interface FindingPage {
+  artifact: ReportArtifactSummary & { freshness: ArtifactFreshness; currentFingerprint?: StoryFingerprint };
+  findings: SavedFindingSummary[];
+  page: { limit: number; returned: number; total: number; nextCursor: string | null };
 }
 
 function canonical(value: unknown): string {
@@ -137,6 +161,96 @@ function loadArtifact(projectRoot: string, id: string): ReportArtifact {
   const file = artifactFile(projectRoot, id);
   if (!fs.existsSync(file)) throw new Error(`report artifact not found: ${id}`);
   return parseArtifact(fs.readFileSync(file, "utf8"), id);
+}
+
+function recordsFromReport(report: Record<string, unknown>): SavedFindingRecord[] {
+  const records: SavedFindingRecord[] = [];
+  const push = (value: unknown, section: string) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const finding = value as Record<string, unknown>;
+    if (typeof finding.id !== "string" || typeof finding.kind !== "string") return;
+    const witness = finding.witness;
+    const replay = finding.replay;
+    const rawLocation = (finding.sourceLocation ?? (witness && typeof witness === "object"
+      ? (witness as Record<string, unknown>).triggeringSourceLocation
+      : undefined) ?? (typeof finding.file === "string"
+      ? { file: finding.file, line: finding.line ?? null }
+      : undefined)) as Record<string, unknown> | undefined;
+    const sourceLocation = rawLocation && typeof rawLocation.file === "string"
+      && (rawLocation.line === null || Number.isSafeInteger(rawLocation.line))
+      ? {
+          file: rawLocation.file,
+          line: rawLocation.line as number | null,
+          ...(typeof rawLocation.approximate === "boolean" ? { approximate: rawLocation.approximate } : {}),
+        }
+      : undefined;
+    records.push({
+      summary: {
+        id: finding.id,
+        kind: finding.kind,
+        section,
+        hasWitness: Boolean(witness && typeof witness === "object"),
+        hasReplay: Boolean(replay && typeof replay === "object"),
+        ...(sourceLocation ? { sourceLocation } : {}),
+      },
+      finding,
+    });
+  };
+  const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
+  const compileReport = report.compile as Record<string, unknown> | undefined;
+  array(compileReport?.issues).forEach((finding, index) => push(finding, `compile.issues[${index}]`));
+  const explore = report.explore as Record<string, unknown> | undefined;
+  array(explore?.runtimeErrors).forEach((finding, index) => push(finding, `explore.runtimeErrors[${index}]`));
+  array(explore?.endingsFound).forEach((finding, index) => push(finding, `explore.endingsFound[${index}]`));
+  array(explore?.assertionResults).forEach((result, resultIndex) => {
+    const value = result as Record<string, unknown> | undefined;
+    array(value?.violations).forEach((finding, index) => push(
+      finding,
+      `explore.assertionResults[${resultIndex}].violations[${index}]`
+    ));
+  });
+  array(explore?.goalResults).forEach((result, resultIndex) => {
+    const value = result as Record<string, unknown> | undefined;
+    push(value?.witness, `explore.goalResults[${resultIndex}].witness`);
+    array(value?.stages).forEach((stage, stageIndex) => {
+      const stageValue = stage as Record<string, unknown> | undefined;
+      push(stageValue?.witness, `explore.goalResults[${resultIndex}].stages[${stageIndex}].witness`);
+    });
+  });
+  const seen = new Set<string>();
+  for (const record of records) {
+    if (seen.has(record.summary.id)) {
+      throw new Error(`saved report contains ambiguous duplicate finding ID: ${record.summary.id}`);
+    }
+    seen.add(record.summary.id);
+  }
+  return records;
+}
+
+function findingRecord(report: Record<string, unknown>, findingId: string): SavedFindingRecord {
+  const found = recordsFromReport(report).find((record) => record.summary.id === findingId);
+  if (!found) throw new Error(`finding not found in saved report: ${findingId}`);
+  return found;
+}
+
+function encodeCursor(reportId: string, offset: number): string {
+  return `finding-cursor-${Buffer.from(JSON.stringify({ v: 1, reportId, offset }), "utf8").toString("base64url")}`;
+}
+
+function decodeCursor(reportId: string, cursor?: string): number {
+  if (!cursor) return 0;
+  if (!cursor.startsWith("finding-cursor-")) throw new Error("invalid saved-finding cursor");
+  try {
+    const value = JSON.parse(Buffer.from(cursor.slice("finding-cursor-".length), "base64url").toString("utf8")) as {
+      v?: unknown; reportId?: unknown; offset?: unknown;
+    };
+    if (value.v !== 1 || value.reportId !== reportId || !Number.isSafeInteger(value.offset) || (value.offset as number) < 0) {
+      throw new Error();
+    }
+    return value.offset as number;
+  } catch {
+    throw new Error("invalid or foreign saved-finding cursor");
+  }
 }
 
 export function artifactProjectRoot(entrypoint: string, configFile?: string): string {
@@ -250,5 +364,77 @@ export async function openReportArtifact(projectRoot: string, id: string): Promi
       ...(currentFingerprint ? { currentFingerprint } : {}),
     },
     report: artifact.report,
+  };
+}
+
+export async function listReportFindings(
+  projectRoot: string,
+  id: string,
+  options: { limit?: number; cursor?: string } = {}
+): Promise<FindingPage> {
+  const limit = options.limit ?? DEFAULT_FINDING_PAGE_SIZE;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_FINDING_PAGE_SIZE) {
+    throw new RangeError(`finding page limit must be an integer from 1 to ${MAX_FINDING_PAGE_SIZE}`);
+  }
+  const opened = await openReportArtifact(projectRoot, id);
+  const records = recordsFromReport(opened.report);
+  const offset = decodeCursor(id, options.cursor);
+  if (offset > records.length) throw new Error("saved-finding cursor is beyond the immutable report");
+  const findings = records.slice(offset, offset + limit).map((record) => record.summary);
+  const nextOffset = offset + findings.length;
+  return {
+    artifact: opened.artifact,
+    findings,
+    page: {
+      limit,
+      returned: findings.length,
+      total: records.length,
+      nextCursor: nextOffset < records.length ? encodeCursor(id, nextOffset) : null,
+    },
+  };
+}
+
+export async function openReportFinding(projectRoot: string, id: string, findingId: string): Promise<{
+  artifact: FindingPage["artifact"];
+  summary: SavedFindingSummary;
+  finding: Record<string, unknown>;
+}> {
+  const opened = await openReportArtifact(projectRoot, id);
+  const record = findingRecord(opened.report, findingId);
+  return { artifact: opened.artifact, summary: record.summary, finding: record.finding };
+}
+
+export async function replayReportFinding(projectRoot: string, id: string, findingId: string): Promise<{
+  artifact: FindingPage["artifact"];
+  finding: SavedFindingSummary;
+  replay: PlaytestResult;
+}> {
+  const opened = await openReportFinding(projectRoot, id, findingId);
+  if (opened.artifact.freshness !== "current") {
+    throw new Error(`saved-finding replay requires current source; report is ${opened.artifact.freshness}`);
+  }
+  const replay = opened.finding.replay as Record<string, unknown> | undefined;
+  const choices = replay?.choices;
+  if (!Array.isArray(choices) || !choices.every((choice) => Number.isSafeInteger(choice) && (choice as number) >= 0)) {
+    throw new Error(`finding has no supported indexed replay witness: ${findingId}`);
+  }
+  const rawStorySeed = replay?.storySeed;
+  const storySeed = rawStorySeed === undefined ? undefined : rawStorySeed;
+  if (storySeed !== undefined && !Number.isSafeInteger(storySeed)) {
+    throw new Error(`finding has an invalid saved story seed: ${findingId}`);
+  }
+  const entrypoint = sourcePath(projectRoot, opened.artifact.entrypoint);
+  const compiled = await compile(entrypoint);
+  if (!compiled.success || !compiled.storyJson) {
+    throw new Error("current story no longer compiles; fix compilation before replaying the saved witness");
+  }
+  const replayFingerprint = createHash("sha256").update(compiled.storyJson).digest("hex");
+  if (replayFingerprint !== opened.artifact.currentFingerprint?.value) {
+    throw new Error("story source changed while preparing the saved witness replay; reopen the report and try again");
+  }
+  return {
+    artifact: opened.artifact,
+    finding: opened.summary,
+    replay: playtest(compiled.storyJson, choices as number[], scanExternals(entrypoint), storySeed as number | undefined),
   };
 }

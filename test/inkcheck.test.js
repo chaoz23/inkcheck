@@ -51,6 +51,10 @@ const {
   openCheckpointArtifact,
   saveCheckpointArtifact,
 } = require("../dist/checkpoints");
+const {
+  listReportFindings,
+  saveReportArtifact,
+} = require("../dist/artifacts");
 const { CONFIG_SCHEMA_VERSION, parseProjectConfig, loadProjectConfig } = require("../dist/config");
 const { initProject, createAgentKit } = require("../dist/scaffold");
 const {
@@ -225,6 +229,7 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.features.goals, true);
   assert.strictEqual(value.features.stagedGoals, true);
   assert.strictEqual(value.features.localReportArtifacts, true);
+  assert.strictEqual(value.features.savedFindingLookup, true);
   assert.strictEqual(value.features.resumableSearch, true);
 });
 
@@ -1073,6 +1078,143 @@ test("report artifacts fail closed on tampering, incompatible versions, and corr
     const corrupt = spawnSync(process.execPath, [CLI, "artifacts", "show", reference.id, "--json"], { cwd: tmp, encoding: "utf8" });
     assert.strictEqual(corrupt.status, 2);
     assert.match(corrupt.stderr, /corrupt JSON/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("saved findings support bounded lookup, exact replay, and freshness guards", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-saved-findings-"));
+  const story = path.join(tmp, "story.ink");
+  try {
+    fs.copyFileSync(DUPLICATE_CHOICE_TEXT, story);
+    const savedRun = spawnSync(process.execPath, [
+      CLI, "story.ink", "--max-states", "100", "--no-min-repro", "--progress=off", "--save-report", "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(savedRun.status, 1, savedRun.stderr);
+    const saved = JSON.parse(savedRun.stdout);
+    const reportId = saved.artifact.id;
+    const runtimeId = saved.explore.runtimeErrors[0].id;
+    const endingId = saved.explore.endingsFound[0].id;
+
+    const firstRun = spawnSync(process.execPath, [
+      CLI, "artifacts", "findings", reportId, "--limit", "1", "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(firstRun.status, 0, firstRun.stderr);
+    const first = JSON.parse(firstRun.stdout);
+    assert.strictEqual(first.findings.length, 1);
+    assert.strictEqual(first.page.limit, 1);
+    assert.strictEqual(first.page.total, 2);
+    assert.match(first.page.nextCursor, /^finding-cursor-/);
+    const summaryText = JSON.stringify(first);
+    for (const privateField of ["choiceText", "choiceIndices", "variables", "finalText", "message"]) {
+      assert.strictEqual(summaryText.includes(`\"${privateField}\"`), false, `${privateField} stays out of summaries`);
+    }
+
+    const secondRun = spawnSync(process.execPath, [
+      CLI, "artifacts", "findings", reportId, "--limit", "1", "--cursor", first.page.nextCursor, "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(secondRun.status, 0, secondRun.stderr);
+    const second = JSON.parse(secondRun.stdout);
+    assert.strictEqual(second.findings.length, 1);
+    assert.strictEqual(second.page.nextCursor, null);
+    assert.deepStrictEqual(new Set([first.findings[0].id, second.findings[0].id]), new Set([runtimeId, endingId]));
+
+    const foreignCursor = `finding-cursor-${Buffer.from(JSON.stringify({
+      v: 1, reportId: "report-000000000000000000000000", offset: 1,
+    })).toString("base64url")}`;
+    const foreign = spawnSync(process.execPath, [
+      CLI, "artifacts", "findings", reportId, "--cursor", foreignCursor, "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(foreign.status, 2);
+    assert.match(foreign.stderr, /invalid or foreign saved-finding cursor/);
+    const oversizedPage = spawnSync(process.execPath, [
+      CLI, "artifacts", "findings", reportId, "--limit", "101", "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(oversizedPage.status, 2);
+    assert.match(oversizedPage.stderr, /finding page limit must be an integer from 1 to 100/);
+
+    const fetched = spawnSync(process.execPath, [
+      CLI, "artifacts", "finding", reportId, runtimeId, "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(fetched.status, 0, fetched.stderr);
+    const fetchedFinding = JSON.parse(fetched.stdout);
+    assert.strictEqual(fetchedFinding.artifact.freshness, "current");
+    assert.strictEqual(fetchedFinding.finding.id, runtimeId);
+    assert.deepStrictEqual(fetchedFinding.finding.choiceIndices, saved.explore.runtimeErrors[0].choiceIndices);
+
+    for (const [findingId, expectedStatus, expectedEnded] of [
+      [runtimeId, "runtime_error", false],
+      [endingId, "completed", true],
+    ]) {
+      const replayed = spawnSync(process.execPath, [
+        CLI, "artifacts", "replay", reportId, findingId, "--json",
+      ], { cwd: tmp, encoding: "utf8" });
+      assert.strictEqual(replayed.status, 0, replayed.stderr);
+      const result = JSON.parse(replayed.stdout);
+      assert.strictEqual(result.replay.replayStatus, expectedStatus);
+      assert.strictEqual(result.replay.ended, expectedEnded);
+      assert.strictEqual(result.replay.storySeed, saved.effectiveConfiguration.limits.storySeed);
+    }
+
+    fs.appendFileSync(story, "\nChanged source text.\n");
+    const staleFinding = spawnSync(process.execPath, [
+      CLI, "artifacts", "finding", reportId, runtimeId, "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(staleFinding.status, 0, staleFinding.stderr);
+    assert.strictEqual(JSON.parse(staleFinding.stdout).artifact.freshness, "stale");
+    const staleReplay = spawnSync(process.execPath, [
+      CLI, "artifacts", "replay", reportId, runtimeId, "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(staleReplay.status, 2);
+    assert.match(staleReplay.stderr, /replay requires current source; report is stale/);
+
+    fs.renameSync(story, path.join(tmp, "moved.ink"));
+    const movedReplay = spawnSync(process.execPath, [
+      CLI, "artifacts", "replay", reportId, runtimeId, "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(movedReplay.status, 2);
+    assert.match(movedReplay.stderr, /report is path_changed/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("saved-finding indexes fail closed on duplicate IDs", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-saved-finding-duplicate-"));
+  const story = path.join(tmp, "story.ink");
+  try {
+    fs.writeFileSync(story, "Hello\n-> END\n");
+    const fingerprint = require("node:crypto").createHash("sha256").update("compiled").digest("hex");
+    const duplicate = { id: "ending.reached:duplicate", kind: "ending.reached", replay: { choices: [], storySeed: 1 } };
+    const reference = saveReportArtifact(tmp, story, {
+      schemaVersion: 1,
+      storyFingerprint: { algorithm: "sha256", source: "compiled-story", value: fingerprint },
+      effectiveConfiguration: {},
+      compile: { issues: [] },
+      explore: { runtimeErrors: [], endingsFound: [duplicate, duplicate], assertionResults: [], goalResults: [] },
+    });
+    await assert.rejects(() => listReportFindings(tmp, reference.id), /ambiguous duplicate finding ID/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("saved-finding replay rejects findings without indexed witnesses", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-saved-finding-no-witness-"));
+  try {
+    fs.copyFileSync(BROKEN, path.join(tmp, "broken.ink"));
+    const savedRun = spawnSync(process.execPath, [
+      CLI, "broken.ink", "--progress=off", "--save-report", "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(savedRun.status, 1, savedRun.stderr);
+    const saved = JSON.parse(savedRun.stdout);
+    const issueId = saved.compile.issues[0].id;
+    const replayed = spawnSync(process.execPath, [
+      CLI, "artifacts", "replay", saved.artifact.id, issueId, "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(replayed.status, 2);
+    assert.match(replayed.stderr, /no supported indexed replay witness/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
