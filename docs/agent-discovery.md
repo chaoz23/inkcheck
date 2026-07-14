@@ -20,7 +20,7 @@ The response is deterministic for an installed Inkcheck version and reports:
 
 Agents should check a feature flag instead of inferring support from missing documentation. Schema version `0` means that contract is not yet available.
 
-`localReportArtifacts: true` means the CLI can save and reopen source-bound reports by stable ID. `savedFindingLookup: true` means an agent can page through privacy-minimal finding summaries, fetch one full finding, and replay a current indexed witness without loading the full report. `resumableSearch: true` plus `resumableSearchSurfaces: ["cli"]` means exact base-shared continuation is available through local CLI checkpoint artifacts; it does **not** claim that MCP or hosted jobs can resume. Check `schemas.checkpointArtifact` and the checkpoint byte/generation limits before relying on that workflow.
+`localReportArtifacts: true` means the CLI can save and reopen source-bound reports by stable ID. `savedFindingLookup: true` means an agent can page through privacy-minimal finding summaries, fetch one full finding, and replay a current indexed witness without loading the full report. Report saves obey the advertised single/project byte ceilings; cleanup is preview-first and capped by `maxReportPrunePerRun`. `resumableSearch: true` plus `resumableSearchSurfaces: ["cli"]` means exact base-shared continuation is available through local CLI checkpoint artifacts; it does **not** claim that MCP or hosted jobs can resume. Check the artifact and checkpoint limits before relying on either workflow.
 
 ## Project inspection
 

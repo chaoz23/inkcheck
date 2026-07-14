@@ -52,7 +52,13 @@ const {
   saveCheckpointArtifact,
 } = require("../dist/checkpoints");
 const {
+  DEFAULT_MAX_PROJECT_REPORT_BYTES,
+  DEFAULT_MAX_REPORT_BYTES,
+  MAX_REPORT_PRUNE_PER_RUN,
+  deleteReportArtifact,
   listReportFindings,
+  listReportArtifacts,
+  pruneReportArtifacts,
   saveReportArtifact,
 } = require("../dist/artifacts");
 const { CONFIG_SCHEMA_VERSION, parseProjectConfig, loadProjectConfig } = require("../dist/config");
@@ -223,6 +229,9 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.limits.maxCheckpointBytes, 512 * 1024 * 1024);
   assert.strictEqual(value.limits.maxProjectCheckpointBytes, 1024 * 1024 * 1024);
   assert.strictEqual(value.limits.checkpointGenerationsPerEntrypoint, 3);
+  assert.strictEqual(value.limits.maxReportBytes, DEFAULT_MAX_REPORT_BYTES);
+  assert.strictEqual(value.limits.maxProjectReportBytes, DEFAULT_MAX_PROJECT_REPORT_BYTES);
+  assert.strictEqual(value.limits.maxReportPrunePerRun, MAX_REPORT_PRUNE_PER_RUN);
   assert.strictEqual(value.limits.defaultMaxDepth, 100);
   assert.strictEqual(value.features.indexedWitnesses, true);
   assert.strictEqual(value.features.assertions, true);
@@ -1004,6 +1013,10 @@ test("CLI saves, lists, and reopens source-bound report artifacts by stable ID",
     assert.match(savedRun.stderr, new RegExp(`saved report ${saved.artifact.id}`));
     const artifactFile = path.join(tmp, ...saved.artifact.path.split("/"));
     assert.strictEqual(fs.existsSync(artifactFile), true);
+    if (process.platform !== "win32") {
+      assert.strictEqual(fs.statSync(path.dirname(artifactFile)).mode & 0o777, 0o700);
+      assert.strictEqual(fs.statSync(artifactFile).mode & 0o777, 0o600);
+    }
     const withoutReference = { ...saved };
     delete withoutReference.artifact;
     assert.deepStrictEqual(withoutReference, JSON.parse(ordinary.stdout));
@@ -1215,6 +1228,139 @@ test("saved-finding replay rejects findings without indexed witnesses", () => {
     ], { cwd: tmp, encoding: "utf8" });
     assert.strictEqual(replayed.status, 2);
     assert.match(replayed.stderr, /no supported indexed replay witness/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("report storage quotas refuse growth without deleting or leaking temporary files", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-report-quota-"));
+  const story = path.join(tmp, "story.ink");
+  const report = (marker) => ({
+    schemaVersion: 1,
+    storyFingerprint: {
+      algorithm: "sha256",
+      source: "entry-source",
+      value: require("node:crypto").createHash("sha256").update(String(marker)).digest("hex"),
+    },
+    effectiveConfiguration: { marker },
+    compile: { issues: [] },
+  });
+  try {
+    fs.writeFileSync(story, "Hello\n-> END\n");
+    assert.throws(
+      () => saveReportArtifact(tmp, story, report("too-large"), { maxReportBytes: 1 }),
+      /single-report limit/
+    );
+    const directory = path.join(tmp, ".inkcheck", "reports");
+    assert.deepStrictEqual(fs.readdirSync(directory), []);
+
+    const first = saveReportArtifact(tmp, story, report("first"));
+    const firstFile = path.join(tmp, ...first.path.split("/"));
+    const firstBytes = fs.statSync(firstFile).size;
+    assert.deepStrictEqual(
+      saveReportArtifact(tmp, story, report("first"), { maxReportBytes: 1, maxProjectBytes: 1 }),
+      first,
+      "an idempotent save does not grow storage or lose an existing stable report"
+    );
+    assert.throws(
+      () => saveReportArtifact(tmp, story, report("second"), { maxProjectBytes: firstBytes + 1 }),
+      /project report quota; delete or prune reports explicitly/
+    );
+    assert.deepStrictEqual(fs.readdirSync(directory).filter((name) => name.endsWith(".json")), [`${first.id}.json`]);
+    assert.strictEqual(fs.readdirSync(directory).some((name) => name.endsWith(".tmp")), false);
+    assert.throws(() => saveReportArtifact(tmp, story, report("invalid"), { maxProjectBytes: 0 }), /positive safe integer/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("report delete and prune are deterministic, preview-first, and explicitly applied", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-report-lifecycle-"));
+  const storyA = path.join(tmp, "a.ink");
+  const storyB = path.join(tmp, "b.ink");
+  const report = (marker) => ({
+    schemaVersion: 1,
+    storyFingerprint: {
+      algorithm: "sha256",
+      source: "entry-source",
+      value: require("node:crypto").createHash("sha256").update(String(marker)).digest("hex"),
+    },
+    effectiveConfiguration: { marker },
+    compile: { issues: [] },
+  });
+  try {
+    fs.writeFileSync(storyA, "A\n-> END\n");
+    fs.writeFileSync(storyB, "B\n-> END\n");
+    for (const marker of ["a1", "a2", "a3"]) saveReportArtifact(tmp, storyA, report(marker));
+    for (const marker of ["b1", "b2"]) saveReportArtifact(tmp, storyB, report(marker));
+    const before = listReportArtifacts(tmp);
+    assert.strictEqual(before.length, 5);
+
+    const previewRun = spawnSync(process.execPath, [
+      CLI, "artifacts", "prune", "--keep", "1", "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(previewRun.status, 0, previewRun.stderr);
+    const preview = JSON.parse(previewRun.stdout);
+    assert.strictEqual(preview.applied, false);
+    assert.strictEqual(preview.candidateCount, 3);
+    assert.strictEqual(preview.selectedCount, 3);
+    assert.strictEqual(listReportArtifacts(tmp).length, 5);
+
+    const applyRun = spawnSync(process.execPath, [
+      CLI, "artifacts", "prune", "--keep", "1", "--apply", "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(applyRun.status, 0, applyRun.stderr);
+    const applied = JSON.parse(applyRun.stdout);
+    assert.strictEqual(applied.applied, true);
+    assert.deepStrictEqual(applied.candidates.map((item) => item.id), preview.candidates.map((item) => item.id));
+    const retained = listReportArtifacts(tmp);
+    assert.strictEqual(retained.length, 2);
+    assert.deepStrictEqual(new Set(retained.map((item) => item.entrypoint)), new Set(["a.ink", "b.ink"]));
+
+    const target = retained[0];
+    const deletePreview = deleteReportArtifact(tmp, target.id);
+    assert.strictEqual(deletePreview.applied, false);
+    assert.strictEqual(listReportArtifacts(tmp).length, 2);
+    const deleteApply = spawnSync(process.execPath, [
+      CLI, "artifacts", "delete", target.id, "--apply", "--json",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(deleteApply.status, 0, deleteApply.stderr);
+    assert.strictEqual(JSON.parse(deleteApply.stdout).applied, true);
+    assert.strictEqual(listReportArtifacts(tmp).length, 1);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("report pruning bounds each batch and fails closed on corrupt artifacts", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-report-prune-bound-"));
+  const story = path.join(tmp, "story.ink");
+  try {
+    fs.writeFileSync(story, "Hello\n-> END\n");
+    for (let marker = 0; marker < MAX_REPORT_PRUNE_PER_RUN + 2; marker += 1) {
+      saveReportArtifact(tmp, story, {
+        schemaVersion: 1,
+        storyFingerprint: {
+          algorithm: "sha256",
+          source: "entry-source",
+          value: require("node:crypto").createHash("sha256").update(String(marker)).digest("hex"),
+        },
+        effectiveConfiguration: { marker },
+        compile: { issues: [] },
+      });
+    }
+    const preview = pruneReportArtifacts(tmp, 0);
+    assert.strictEqual(preview.candidateCount, MAX_REPORT_PRUNE_PER_RUN + 2);
+    assert.strictEqual(preview.selectedCount, MAX_REPORT_PRUNE_PER_RUN);
+    assert.strictEqual(preview.remainingCandidates, 2);
+    assert.strictEqual(listReportArtifacts(tmp).length, MAX_REPORT_PRUNE_PER_RUN + 2);
+
+    const corrupt = path.join(tmp, ".inkcheck", "reports", `${preview.candidates[0].id}.json`);
+    fs.writeFileSync(corrupt, "{broken");
+    assert.throws(() => pruneReportArtifacts(tmp, 0, true), /corrupt JSON/);
+    assert.strictEqual(fs.readdirSync(path.dirname(corrupt)).filter((name) => name.endsWith(".json")).length,
+      MAX_REPORT_PRUNE_PER_RUN + 2, "cleanup never partially deletes around corrupt evidence");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

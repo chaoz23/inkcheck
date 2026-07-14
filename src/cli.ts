@@ -54,10 +54,12 @@ import { createAgentKit, initProject, renderScaffoldResult } from "./scaffold";
 import { createResourceGuards } from "./resource-guards";
 import {
   artifactProjectRoot,
+  deleteReportArtifact,
   listReportFindings,
   listReportArtifacts,
   openReportFinding,
   openReportArtifact,
+  pruneReportArtifacts,
   replayReportFinding,
   saveReportArtifact,
 } from "./artifacts";
@@ -84,6 +86,8 @@ Usage: inkcheck <story.ink> [options]
        inkcheck artifacts findings <report-id> [--limit N] [--cursor C] [--json]
        inkcheck artifacts finding <report-id> <finding-id> [--json]
        inkcheck artifacts replay <report-id> <finding-id> [--json]
+       inkcheck artifacts delete <report-id> [--apply] [--json]
+       inkcheck artifacts prune --keep N [--apply] [--json]
        inkcheck checkpoints list [--json]
        inkcheck checkpoints show <checkpoint-id> [--json]
        inkcheck resume <checkpoint-id> --max-states N [options]
@@ -166,17 +170,21 @@ async function main() {
     let json = false;
     let limit: number | undefined;
     let cursor: string | undefined;
+    let keep: number | undefined;
+    let apply = false;
     const values: string[] = [];
     for (let index = 2; index < args.length; index += 1) {
       const arg = args[index];
       if (arg === "--json") json = true;
-      else if (arg === "--limit" || arg === "--cursor") {
+      else if (arg === "--apply") apply = true;
+      else if (arg === "--limit" || arg === "--cursor" || arg === "--keep") {
         const value = args[index + 1];
         if (value === undefined || value.startsWith("--")) usage(`artifacts: ${arg} requires a value`);
         index += 1;
-        if (arg === "--limit") {
-          if (!/^\d+$/.test(value)) usage("artifacts: --limit must be an integer");
-          limit = Number(value);
+        if (arg === "--limit" || arg === "--keep") {
+          if (!/^\d+$/.test(value)) usage(`artifacts: ${arg} must be an integer`);
+          if (arg === "--limit") limit = Number(value);
+          else keep = Number(value);
         } else cursor = value;
       } else if (arg.startsWith("--")) usage(`artifacts: unknown option: ${arg}`);
       else values.push(arg);
@@ -186,7 +194,7 @@ async function main() {
       const config = findDefaultProjectConfig();
       if (config) projectRoot = path.dirname(config.path);
       if (command === "list" && values.length === 0) {
-        if (limit !== undefined || cursor !== undefined) usage("artifacts list does not accept finding pagination options");
+        if (limit !== undefined || cursor !== undefined || keep !== undefined || apply) usage("artifacts list does not accept pagination or mutation options");
         const artifacts = listReportArtifacts(projectRoot);
         console.log(json
           ? JSON.stringify({ artifactSchemaVersion: ARTIFACT_SCHEMA_VERSION, artifacts }, null, 2)
@@ -196,7 +204,7 @@ async function main() {
         return;
       }
       if (command === "show" && values.length === 1) {
-        if (limit !== undefined || cursor !== undefined) usage("artifacts show does not accept finding pagination options");
+        if (limit !== undefined || cursor !== undefined || keep !== undefined || apply) usage("artifacts show does not accept pagination or mutation options");
         const opened = await openReportArtifact(projectRoot, values[0]);
         console.log(json
           ? JSON.stringify(opened, null, 2)
@@ -204,6 +212,7 @@ async function main() {
         return;
       }
       if (command === "findings" && values.length === 1) {
+        if (keep !== undefined || apply) usage("artifacts findings does not accept mutation options");
         const page = await listReportFindings(projectRoot, values[0], { limit, cursor });
         console.log(json
           ? JSON.stringify(page, null, 2)
@@ -215,7 +224,7 @@ async function main() {
         return;
       }
       if (command === "finding" && values.length === 2) {
-        if (limit !== undefined || cursor !== undefined) usage("artifacts finding does not accept pagination options");
+        if (limit !== undefined || cursor !== undefined || keep !== undefined || apply) usage("artifacts finding does not accept pagination or mutation options");
         const opened = await openReportFinding(projectRoot, values[0], values[1]);
         console.log(json
           ? JSON.stringify(opened, null, 2)
@@ -223,14 +232,30 @@ async function main() {
         return;
       }
       if (command === "replay" && values.length === 2) {
-        if (limit !== undefined || cursor !== undefined) usage("artifacts replay does not accept pagination options");
+        if (limit !== undefined || cursor !== undefined || keep !== undefined || apply) usage("artifacts replay does not accept pagination or mutation options");
         const replayed = await replayReportFinding(projectRoot, values[0], values[1]);
         console.log(json
           ? JSON.stringify(replayed, null, 2)
           : `${replayed.finding.id}: ${replayed.replay.replayStatus}\nStory seed: ${replayed.replay.storySeed}\nRuntime errors: ${replayed.replay.runtimeErrors.length}`);
         return;
       }
-      usage("artifacts requires list, show <report-id>, findings <report-id>, finding <report-id> <finding-id>, or replay <report-id> <finding-id>");
+      if (command === "delete" && values.length === 1) {
+        if (limit !== undefined || cursor !== undefined || keep !== undefined) usage("artifacts delete accepts only <report-id>, --apply, and --json");
+        const result = deleteReportArtifact(projectRoot, values[0], apply);
+        console.log(json
+          ? JSON.stringify(result, null, 2)
+          : `${result.applied ? "Deleted" : "Would delete"} ${result.candidates[0].id} (${result.bytes} bytes)${result.applied ? "" : "\nRun again with --apply to delete it."}`);
+        return;
+      }
+      if (command === "prune" && values.length === 0 && keep !== undefined) {
+        if (limit !== undefined || cursor !== undefined) usage("artifacts prune accepts only --keep N, --apply, and --json");
+        const result = pruneReportArtifacts(projectRoot, keep, apply);
+        console.log(json
+          ? JSON.stringify(result, null, 2)
+          : `${result.applied ? "Deleted" : "Would delete"} ${result.selectedCount} report(s) (${result.bytes} bytes); ${result.remainingCandidates} candidate(s) remain.${result.applied || result.selectedCount === 0 ? "" : "\nRun again with --apply to delete this batch."}`);
+        return;
+      }
+      usage("artifacts requires list, show <report-id>, findings <report-id>, finding <report-id> <finding-id>, replay <report-id> <finding-id>, delete <report-id>, or prune --keep N");
     } catch (error) {
       usage(error instanceof Error ? error.message : String(error));
     }

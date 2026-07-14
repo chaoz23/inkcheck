@@ -26,6 +26,7 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 - Reopen saved evidence by stable ID: `npx -y inkcheck artifacts show <report-id> --json` and require `artifact.freshness == "current"` before treating it as current evidence
 - Page privacy-minimal saved findings: `npx -y inkcheck artifacts findings <report-id> --limit 20 --json`; follow `page.nextCursor` without loading the full report
 - Fetch or replay one stable finding: `npx -y inkcheck artifacts finding <report-id> <finding-id> --json` or `npx -y inkcheck artifacts replay <report-id> <finding-id> --json`; replay fails unless source freshness is current
+- Report storage is capped at 256 MiB per report and 1 GiB per project. Preview cleanup with `artifacts delete <id> --json` or `artifacts prune --keep N --json`; add `--apply` only after reviewing the deterministic, at-most-100-report selection.
 - Save an unfinished exact local frontier: `npx -y inkcheck story.ink --search=shared --no-min-repro --max-states 100000 --save-checkpoint --json`
 - Resume it to a larger total grant: `npx -y inkcheck resume <checkpoint-id> --max-states 1000000 --json`; require current freshness and treat checkpoint files as sensitive story data. This surface is CLI-only.
 - Human fix list: `npx -y inkcheck <story.ink> --human`

@@ -234,6 +234,8 @@ inkcheck artifacts show <report-id> [--json]
 inkcheck artifacts findings <report-id> [--limit N] [--cursor C] [--json]
 inkcheck artifacts finding <report-id> <finding-id> [--json]
 inkcheck artifacts replay <report-id> <finding-id> [--json]
+inkcheck artifacts delete <report-id> [--apply] [--json]
+inkcheck artifacts prune --keep N [--apply] [--json]
 inkcheck checkpoints list [--json]
 inkcheck checkpoints show <checkpoint-id> [--json]
 inkcheck resume <checkpoint-id> --max-states N [--json]
@@ -245,6 +247,8 @@ inkcheck mcp    # start the MCP server on stdio
 JSON checks use the versioned [report schema](docs/report-schema-v1.md). Findings have stable IDs and normalized kinds; ending and runtime-error witnesses carry both human choice text and zero-based choice indices, so duplicate labels remain exactly replayable through `playtest_story`. The envelope records the Inkcheck version, compiled-story fingerprint, effective configuration, binding limit, and an observation-only `shadowDecision` while retaining the established `compile`, `stats`, `explore`, and `nextRun` sections.
 
 Saved reports support bounded finding drill-down without loading the full report. `artifacts findings` returns at most 20 privacy-minimal summaries by default (maximum 100) and a report-bound cursor; summaries omit story prose, variables, choice text, and witness paths. `artifacts finding` fetches one complete stable finding. `artifacts replay` recompiles the saved entrypoint and follows that finding's indexed choices with its saved story seed, but only while artifact freshness is `current`; stale or moved source fails closed.
+
+Report storage is private and bounded: one report may use at most 256 MiB and all reports in one project may use at most 1 GiB. A save over either ceiling fails without deleting old evidence. `artifacts delete` and `artifacts prune --keep N` preview by default and mutate only with `--apply`; prune keeps the newest N reports for each entrypoint and removes at most 100 per invocation. This explicit lifecycle prevents a stable report ID from disappearing merely because another run finished.
 
 Maintainers can compare shadow recommendations across independent budget runs with the manifest-driven [shadow policy evaluator](docs/shadow-policy-evaluation.md). The separate [search promotion benchmark](docs/promotion-benchmark.md) runs matched baseline/candidate matrices across a checked-in 20-family corpus plus a pinned consent-safe authored-project tier, reports resource observations and worst-family/project losses, and never declares a winner. The first [authored-project evaluation](docs/authored-project-promotion-evaluation.md) found parity where cells completed and meaningful project-shape resource limits, not a policy-v2 advantage. Neither tool calls a bounded larger run an oracle or changes the default policy.
 

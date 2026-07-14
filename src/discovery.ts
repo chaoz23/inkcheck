@@ -14,6 +14,9 @@ export const CAPABILITIES_SCHEMA_VERSION = 1;
 export const PROJECT_INSPECTION_SCHEMA_VERSION = 1;
 export const REPORT_SCHEMA_VERSION = 1;
 export const ARTIFACT_SCHEMA_VERSION = 1;
+export const DEFAULT_MAX_REPORT_BYTES = 256 * 1024 * 1024;
+export const DEFAULT_MAX_PROJECT_REPORT_BYTES = 1024 * 1024 * 1024;
+export const MAX_REPORT_PRUNE_PER_RUN = 100;
 export const MAX_INSPECT_VARIABLES = 200;
 export const MAX_INSPECT_LOCATIONS = 20;
 export const MAX_INSPECT_INCLUDES = 500;
@@ -37,6 +40,9 @@ export interface InkcheckCapabilities {
     maxCheckpointBytes: number;
     maxProjectCheckpointBytes: number;
     checkpointGenerationsPerEntrypoint: number;
+    maxReportBytes: number;
+    maxProjectReportBytes: number;
+    maxReportPrunePerRun: number;
   };
   searchModes: string[];
   resumableSearchSurfaces: string[];
@@ -77,6 +83,9 @@ export function capabilities(): InkcheckCapabilities {
       maxCheckpointBytes: DEFAULT_MAX_CHECKPOINT_BYTES,
       maxProjectCheckpointBytes: DEFAULT_MAX_PROJECT_CHECKPOINT_BYTES,
       checkpointGenerationsPerEntrypoint: DEFAULT_CHECKPOINT_GENERATIONS,
+      maxReportBytes: DEFAULT_MAX_REPORT_BYTES,
+      maxProjectReportBytes: DEFAULT_MAX_PROJECT_REPORT_BYTES,
+      maxReportPrunePerRun: MAX_REPORT_PRUNE_PER_RUN,
     },
     searchModes: ["portfolio", "shared", "shared-variable"],
     resumableSearchSurfaces: ["cli"],

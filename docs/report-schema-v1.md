@@ -19,6 +19,8 @@ When the explicit CLI `--save-report` option is used, emitted JSON additionally 
 
 Saved-finding collection responses are a separate bounded view over an immutable report. They contain `artifact`, privacy-minimal `findings`, and `page: { limit, returned, total, nextCursor }`. Fetch-by-ID returns one `summary` plus its complete `finding`; replay returns the summary plus a normal playtest result. Response pagination never changes or implies exploration coverage.
 
+Artifact summaries include stored `sizeBytes`. Delete/prune lifecycle responses are separate from report schema v1 and contain `operation`, `applied`, candidate/selection/remaining counts, selected bytes, and bounded candidate summaries. Preview and apply return the same deterministic selection while the artifact set is unchanged.
+
 When local CLI checkpoint persistence is active, emitted JSON additionally contains `checkpoint`. A saved live frontier reports `{ saved: true, id, path, pruned, resumedFrom? }`; a run without supported resumable state reports `{ saved: false, resumedFrom?, reason: "complete"|"not_resumable" }`. The frontier payload is never embedded in stdout. Checkpoint artifacts use their own schema and privacy/retention contract; see [local resumable checkpoints](local-checkpoints.md).
 
 ## Findings
