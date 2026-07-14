@@ -38,6 +38,14 @@
         "description": "Scaffold config, pinned CI, artifact ignore rules, and compact version-matched Codex instructions after a no-overwrite preflight."
       },
       {
+        "flag": "checkpoints list|show <checkpoint-id> [--json]",
+        "description": "List source-bound local base-shared checkpoints or inspect bounded freshness metadata without printing the frontier payload."
+      },
+      {
+        "flag": "resume <checkpoint-id> --max-states <n> [--json]",
+        "description": "Resume an exact current base-shared checkpoint to a larger total state grant and save the next generation when work remains. CLI only."
+      },
+      {
         "flag": "--json",
         "description": "Emit the full report as a single JSON object on stdout. Use this for programmatic consumption."
       },
@@ -92,6 +100,10 @@
       {
         "flag": "--no-min-repro",
         "description": "Skip the small BFS repro-shortening slice and spend that budget on the DFS portfolio instead."
+      },
+      {
+        "flag": "--save-checkpoint",
+        "description": "Persist an unfinished exact frontier. Requires --search=shared --no-min-repro without assertions, goals, --auto, --next, or --save-report."
       }
     ],
     "exitCodes": {
@@ -100,8 +112,8 @@
       "2": "Usage error — no story file given or bad arguments."
     },
     "jsonSchema": {
-      "reportEnvelope": "{ schemaVersion: 1, inkcheckVersion, storyFingerprint: {algorithm, source, value}, effectiveConfiguration, bindingLimit, compile, stats?, profile?, explore?, nextRun?, runs? }",
-      "capabilities": "{ schemaVersion, inkcheckVersion, schemas: {report, config, projectInspection}, limits, searchModes, features: {projectInspection, indexedWitnesses, assertions, goals, resumableSearch} }",
+      "reportEnvelope": "{ schemaVersion: 1, inkcheckVersion, storyFingerprint: {algorithm, source, value}, effectiveConfiguration, bindingLimit, compile, stats?, profile?, explore?, nextRun?, runs?, checkpoint?: {saved, id?, path?, pruned?, resumedFrom?, reason?} }",
+      "capabilities": "{ schemaVersion, inkcheckVersion, schemas: {report, config, projectInspection, artifact, checkpointArtifact}, limits, searchModes, resumableSearchSurfaces, features: {projectInspection, indexedWitnesses, assertions, goals, resumableSearch} }",
       "inspection": "{ schemaVersion, inkcheckVersion, entrypoint, includes, shape, semantics, externals, knots, variables, truncation, recommendedNextOperation }",
       "compile": "{ success: bool, issues: [{severity, file, line, message}], errors: int, warnings: int, todos: int }",
       "stats": "{ words, knots, stitches, functions, choices, gathers, diverts }",

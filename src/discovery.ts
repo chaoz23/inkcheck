@@ -3,6 +3,12 @@ import * as path from "path";
 import { scanExternals, scanShapeProfile, scanStorySemantics } from "./inklecate";
 import { VERSION } from "./version";
 import { CONFIG_SCHEMA_VERSION } from "./config";
+import {
+  CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
+  DEFAULT_CHECKPOINT_GENERATIONS,
+  DEFAULT_MAX_CHECKPOINT_BYTES,
+  DEFAULT_MAX_PROJECT_CHECKPOINT_BYTES,
+} from "./checkpoints";
 
 export const CAPABILITIES_SCHEMA_VERSION = 1;
 export const PROJECT_INSPECTION_SCHEMA_VERSION = 1;
@@ -17,7 +23,7 @@ export const MAX_INSPECT_EXTERNALS = 200;
 export interface InkcheckCapabilities {
   schemaVersion: number;
   inkcheckVersion: string;
-  schemas: { report: number; config: number; projectInspection: number; artifact: number };
+  schemas: { report: number; config: number; projectInspection: number; artifact: number; checkpointArtifact: number };
   limits: {
     maxDepth: number;
     maxStates: number;
@@ -28,8 +34,12 @@ export interface InkcheckCapabilities {
     defaultGoalMaxStates: number;
     maxStorySeed: number;
     defaultStorySeed: number;
+    maxCheckpointBytes: number;
+    maxProjectCheckpointBytes: number;
+    checkpointGenerationsPerEntrypoint: number;
   };
   searchModes: string[];
+  resumableSearchSurfaces: string[];
   features: {
     projectInspection: boolean;
     indexedWitnesses: boolean;
@@ -51,6 +61,7 @@ export function capabilities(): InkcheckCapabilities {
       config: CONFIG_SCHEMA_VERSION,
       projectInspection: PROJECT_INSPECTION_SCHEMA_VERSION,
       artifact: ARTIFACT_SCHEMA_VERSION,
+      checkpointArtifact: CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
     },
     limits: {
       maxDepth: 1_000,
@@ -62,8 +73,12 @@ export function capabilities(): InkcheckCapabilities {
       defaultGoalMaxStates: 0,
       maxStorySeed: 2_147_483_646,
       defaultStorySeed: 1,
+      maxCheckpointBytes: DEFAULT_MAX_CHECKPOINT_BYTES,
+      maxProjectCheckpointBytes: DEFAULT_MAX_PROJECT_CHECKPOINT_BYTES,
+      checkpointGenerationsPerEntrypoint: DEFAULT_CHECKPOINT_GENERATIONS,
     },
     searchModes: ["portfolio", "shared", "shared-variable"],
+    resumableSearchSurfaces: ["cli"],
     features: {
       projectInspection: true,
       indexedWitnesses: true,
@@ -72,7 +87,7 @@ export function capabilities(): InkcheckCapabilities {
       stagedGoals: true,
       anytimeShadowDecision: true,
       localReportArtifacts: true,
-      resumableSearch: false,
+      resumableSearch: true,
     },
   };
 }

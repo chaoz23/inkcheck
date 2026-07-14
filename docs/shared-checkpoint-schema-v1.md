@@ -31,8 +31,19 @@ The checkpoint is bound to:
 
 A mismatch or malformed reference fails closed. A checkpoint is returned only when a state-budget boundary leaves live work. Exhausted searches and memory-, time-, or frontier-stopped searches return their final result without a resumable checkpoint.
 
+## CLI persistence
+
+The local CLI stores this schema inside a separate versioned artifact envelope:
+
+```sh
+inkcheck story.ink --search=shared --no-min-repro --max-states 100000 --save-checkpoint --json
+inkcheck resume checkpoint-0123456789abcdef01234567 --max-states 1000000 --json
+```
+
+See [local resumable checkpoints](local-checkpoints.md) for freshness, privacy, atomic-write, quota, and retention behavior.
+
 ## Deliberate limits
 
-This is an engine API foundation. Inkcheck does not yet write checkpoint files from the CLI, reconnect hosted jobs from one, partition a frontier across workers, or apply retention/cleanup policy. Schema v1 supports only base `shared:deep-novelty-v1`; assertions, goals, variable-aware steering, goal-aware steering, and the default portfolio are rejected rather than resumed approximately.
+Schema v1 supports only base `shared:deep-novelty-v1`; assertions, goals, variable-aware steering, goal-aware steering, and the default portfolio are rejected rather than resumed approximately. Hosted/MCP resume, frontier partitioning, and cross-version migration remain future work.
 
-Checkpoint JSON can contain authored choice text, ending text, variable snapshots, serialized Ink runtime state, and exact witness paths. Treat it as sensitive project data. Callers that persist it should use atomic replacement, restrictive access, explicit retention, and source-bound stale checks. Do not commit checkpoints by default.
+Checkpoint JSON can contain authored choice text, ending text, variable snapshots, serialized Ink runtime state, and exact witness paths. Treat it as sensitive project data and do not commit checkpoints by default.

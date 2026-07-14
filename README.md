@@ -90,7 +90,9 @@ For a late compound dependency, replace `condition` with two or more ordered `st
 
 For a new project containing one `.ink` file, `inkcheck init` creates this config. Multi-file projects must name the root with `--entrypoint`. `inkcheck agent-kit --format codex` adds the config when needed, a pinned GitHub Actions example, `.inkcheck/` artifact ignore rules, and compact version-matched agent instructions. Both commands are idempotent and preflight every target; they refuse the whole operation rather than overwrite or partially modify existing authored files.
 
-`--save-report` atomically stores a versioned report under `.inkcheck/reports/` and returns its stable content-and-entrypoint-derived ID. A later session can use `inkcheck artifacts list --json` and `inkcheck artifacts show <report-id> --json`; reopening reports whether the saved evidence is `current`, `stale`, or `path_changed` against the present entrypoint. Reports can contain story text, variables, and exact witnesses, so the agent kit ignores them by default. See [local report artifacts](docs/local-artifacts.md) for the trust, privacy, and compatibility contract. The base shared engine now has an exact in-memory JSON resume format, but durable CLI checkpoint files and resumable assertions/goals remain future work.
+`--save-report` atomically stores a versioned report under `.inkcheck/reports/` and returns its stable content-and-entrypoint-derived ID. A later session can use `inkcheck artifacts list --json` and `inkcheck artifacts show <report-id> --json`; reopening reports whether the saved evidence is `current`, `stale`, or `path_changed` against the present entrypoint. Reports can contain story text, variables, and exact witnesses, so the agent kit ignores them by default. See [local report artifacts](docs/local-artifacts.md) for the trust, privacy, and compatibility contract.
+
+Long base-shared runs can also persist their exact live frontier locally. Start with `--search=shared --no-min-repro --save-checkpoint`, then continue later with `inkcheck resume <checkpoint-id> --max-states N`; `N` is the larger total grant, not extra hidden work. `inkcheck checkpoints list/show` reports bounded metadata and source freshness. Checkpoint files are private, atomic, source/config-bound, ignored by default, and retention-capped; they may contain authored text and runtime state. See [local resumable checkpoints](docs/local-checkpoints.md). Portfolio, shared-variable, assertions, goals, hosted jobs, and MCP do not resume yet.
 
 ## Hosted checker
 
@@ -226,9 +228,12 @@ The intended loop for an agent editing a story: edit `.ink` → `compile_story` 
 ```
 inkcheck capabilities [--json]
 inkcheck inspect <story.ink> [--json]
-inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--story-seed N] [--search=portfolio|shared|shared-variable] [--max-frontier-states N] [--max-frontier-memory MB] [--auto] [--profile] [--next] [--no-min-repro] [--strict] [--save-report] [--progress=auto|human|ndjson|off] [--human|--json|--markdown]
+inkcheck <story.ink> [--max-depth N] [--max-states N] [--seed N] [--story-seed N] [--search=portfolio|shared|shared-variable] [--max-frontier-states N] [--max-frontier-memory MB] [--auto] [--profile] [--next] [--no-min-repro] [--strict] [--save-report] [--save-checkpoint] [--progress=auto|human|ndjson|off] [--human|--json|--markdown]
 inkcheck artifacts list [--json]
 inkcheck artifacts show <report-id> [--json]
+inkcheck checkpoints list [--json]
+inkcheck checkpoints show <checkpoint-id> [--json]
+inkcheck resume <checkpoint-id> --max-states N [--json]
 inkcheck mcp    # start the MCP server on stdio
 ```
 
@@ -245,6 +250,8 @@ Maintainers can compare shadow recommendations across independent budget runs wi
 `--seed` (default 1) controls only Inkcheck's random-sampling search slice. `--story-seed` (default 1) independently sets Ink's initial runtime RNG state for `RANDOM()` and shuffle behavior. Keep both fixed for repeatable CI and exact witness replay; change `--seed` to sample different choice walks, or deliberately change `--story-seed` to exercise another valid story-randomness sequence. Authored `SEED_RANDOM(...)` commands still take effect and can override the initial story seed. Inkcheck records both seeds and carries `storySeed` in replay instructions, but one run does not enumerate every possible story seed. Each finding's `foundBy` field in `--json` output names the pass that discovered it, e.g. `dfs:last` or `random:seed=1`.
 
 `--search=shared` selects the experimental shared-state multi-frontier engine; `--search=portfolio` is the unchanged default. Shared mode remains deterministic for a fixed seed and still honors depth, state, memory, time, progress, and repro-shortening controls.
+
+`--save-checkpoint` is deliberately narrower than ordinary shared search: it requires `--search=shared --no-min-repro` and no assertions, goals, `--auto`, `--next`, or report artifact in the same command. When live work remains, JSON output includes a source-bound checkpoint ID. `inkcheck resume <id> --max-states N` requires the source and search bindings to match and `N` to exceed the checkpoint's prior total grant; it automatically saves the next generation. Completed and resource-stopped searches return their report without inventing a resumable checkpoint.
 
 `--search=shared-variable` adds a small variable-rarity frontier to shared search. It prioritizes observed uncommon variable values and changes mechanically; it does not use AI, understand story meaning, or infer which values are desirable.
 
