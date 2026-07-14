@@ -49,6 +49,7 @@
     "docs/config-schema-v1.json",
     "docs/report-schema-v1.md",
     "docs/local-artifacts.md",
+    "docs/shared-checkpoint-schema-v1.md",
     "docs/product-engineering-scorecard.md",
     "docs/shadow-policy-evaluation.md",
     "docs/promotion-benchmark.md",

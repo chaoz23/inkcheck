@@ -20,7 +20,7 @@ The response is deterministic for an installed Inkcheck version and reports:
 
 Agents should check a feature flag instead of inferring support from missing documentation. Schema version `0` means that contract is not yet available.
 
-`localReportArtifacts: true` means the CLI can save and reopen source-bound reports by stable ID. `resumableSearch: false` remains separate: saved reports do not yet contain a runnable frontier checkpoint.
+`localReportArtifacts: true` means the CLI can save and reopen source-bound reports by stable ID. `resumableSearch: false` remains separate: saved reports do not contain a runnable frontier checkpoint, and neither the CLI nor MCP currently accepts one. The experimental base shared engine has a library-level JSON resume contract, but capabilities stay false until a supported user/agent persistence workflow ships.
 
 ## Project inspection
 

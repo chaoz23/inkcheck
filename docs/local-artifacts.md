@@ -31,4 +31,4 @@ Only `current` evidence describes the current source. Stale reports remain usefu
 
 `inkcheck agent-kit` places `reports/` and `checkpoints/` in `.inkcheck/.gitignore`. Reports may contain authored choice text, ending text, variable snapshots, and exact witnesses. Keep them ignored by default. Commit a report only when the project explicitly wants a reviewable regression fixture and its repository privacy policy permits that content.
 
-This first artifact slice stores reports, not executable runtime state. Resumable frontier/checkpoint artifacts require a separate schema, bounded retention, and resume-equivalence tests before Inkcheck advertises resumable search.
+This artifact slice stores reports, not executable runtime state. The experimental base shared engine now has a separate source-bound checkpoint schema and resume-equivalence tests, but durable artifacts still require atomic persistence, bounded retention/cleanup, and a supported CLI/MCP lifecycle before Inkcheck advertises `resumableSearch: true`. See [shared checkpoint schema v1](shared-checkpoint-schema-v1.md).
