@@ -44,6 +44,7 @@
   "files": [
     "dist",
     "web",
+    "skills/inkcheck",
     "docs/inkjam-qa-guide.md",
     "docs/hosted-checker.md",
     "docs/agent-discovery.md",

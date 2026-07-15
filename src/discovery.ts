@@ -89,6 +89,7 @@ export interface InkcheckCapabilities {
     campaignDirectedChildren: boolean;
     campaignResultWindows: boolean;
     campaignPolicyControls: boolean;
+    bundledAgentSkill: boolean;
   };
 }
 
@@ -153,6 +154,7 @@ export function capabilities(): InkcheckCapabilities {
       campaignDirectedChildren: true,
       campaignResultWindows: true,
       campaignPolicyControls: true,
+      bundledAgentSkill: true,
     },
   };
 }
