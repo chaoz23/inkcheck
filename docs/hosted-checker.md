@@ -8,7 +8,7 @@ The hosted checker lowers the terminal barrier, but it changes the privacy bound
 - Require separate authorization and temporary-processing confirmations.
 - Reject absolute, parent-traversing, duplicate, oversized, or non-`.ink` paths.
 - Require every `INCLUDE` target to exist inside the uploaded bundle.
-- Run Inkcheck in a child process with generous hosted ceilings, a memory ceiling, an output ceiling, and a hard timeout.
+- Run Inkcheck in a child process with generous hosted ceilings, a memory ceiling, an output ceiling, a separately capped portfolio-worker ceiling, and a hard timeout.
 - Process one story at a time by default and rate-limit each client address.
 - Support a runtime-only pilot access code and a global hourly capacity ceiling.
 - Return reports only in the request that created them.
@@ -44,6 +44,8 @@ Internet → Caddy (TLS) → internal Docker network → Inkcheck web container
 Caddy is attached to public and internal networks. The application is attached only to Docker's `internal` network, so it has no runtime route to the internet or the host LAN. The official inklecate 1.2.1 binary is downloaded and SHA-256 verified while building the image, then baked into the image.
 
 The container runs as a non-root user with a read-only root filesystem, all Linux capabilities dropped, `no-new-privileges`, a 1.5 GiB memory ceiling, one CPU, and a PID ceiling. These controls reduce risk; they are not a substitute for timely host and image updates.
+
+`INKCHECK_WEB_CONCURRENCY` limits simultaneous hosted jobs. `INKCHECK_WEB_PORTFOLIO_CONCURRENCY` separately limits explorer workers inside each job from 1 to 4 and defaults to 1. The local CLI's ceiling cannot raise this hosted setting. On the production one-CPU container, higher values still fall back safely to one effective worker.
 
 ## Deploy on a small VPS
 
