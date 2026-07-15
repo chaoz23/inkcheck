@@ -4,6 +4,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const { explorePortfolioConcurrent } = require("../dist/concurrent-portfolio");
+const { explorePortfolio } = require("../dist/explore");
 const { bindingLimit } = require("../dist/report-contract");
 const { compile, scanKnots } = require("../dist/inklecate");
 
@@ -36,6 +37,10 @@ function stableEvidence(result) {
   };
 }
 
+function canonical(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 test("concurrent portfolio grants and final evidence are deterministic across worker ceilings", async () => {
   const compiled = await story(GRID);
   const options = { maxStates: 1_000, seed: 7, storySeed: 1, memoryCapBytes: ONE_GIB };
@@ -44,9 +49,26 @@ test("concurrent portfolio grants and final evidence are deterministic across wo
   assert.deepStrictEqual(stableEvidence(two), stableEvidence(four));
   assert.strictEqual(two.execution.mode, "concurrent");
   assert.strictEqual(two.execution.effectiveConcurrency, 2);
-  assert.strictEqual(two.execution.workers.reduce((total, worker) => total + worker.granted, 0), 1_000);
+  const issued = two.schedule.flatMap((round) => round.entries).reduce((total, entry) => total + entry.granted, 0);
+  assert.strictEqual(two.execution.workers.reduce((total, worker) => total + worker.granted, 0), issued);
+  assert.ok(issued <= 1_000);
   assert.ok(two.execution.workers.every((worker) => worker.consumed <= worker.granted));
   assert.ok(two.discoverySummary.discoveryEvents > 0);
+
+  const sequential = explorePortfolio(compiled.storyJson, compiled.knots, [], options);
+  assert.deepStrictEqual({
+    endings: two.endingsFound,
+    runtimeErrors: two.runtimeErrors,
+    assertions: two.assertionResults,
+    visitedKnots: two.visitedKnots,
+    exhaustive: two.exhaustive,
+  }, {
+    endings: sequential.endingsFound,
+    runtimeErrors: sequential.runtimeErrors,
+    assertions: sequential.assertionResults,
+    visitedKnots: sequential.visitedKnots,
+    exhaustive: sequential.exhaustive,
+  });
 });
 
 test("concurrent worker failure retains surviving evidence with a distinct binding reason", async () => {
@@ -65,6 +87,15 @@ test("concurrent worker failure retains surviving evidence with a distinct bindi
   assert.strictEqual(result.truncated, true);
   assert.strictEqual(result.truncatedBy.worker, true);
   assert.strictEqual(bindingLimit(result), "worker");
+});
+
+test("persistent workers preserve the complete adaptive bounded report", async () => {
+  const compiled = await story(GRID);
+  const options = { maxStates: 100, seed: 7, storySeed: 1, memoryCapBytes: ONE_GIB };
+  const sequential = explorePortfolio(compiled.storyJson, compiled.knots, [], options);
+  const concurrent = explorePortfolioConcurrent(compiled.storyJson, compiled.knots, [], { ...options, concurrency: 4 });
+  assert.strictEqual(sequential.exhaustive, false);
+  assert.deepStrictEqual(canonical(stableEvidence(concurrent)), canonical(stableEvidence(sequential)));
 });
 
 test("concurrent workers stream monotonic aggregate budget progress before the final report", async () => {
