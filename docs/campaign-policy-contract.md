@@ -1,6 +1,6 @@
 # Campaign policy foundation
 
-Inkcheck 0.6 is building toward project-level campaigns that spend a large shared budget across many useful result windows. The deterministic policy and ledger has an MCP execution surface over exact shared-search checkpoints plus versioned high-level controls and compact decision explanations. It is not a CLI, hosted, concurrent, or multi-strategy mode.
+Inkcheck 0.6 is building toward project-level campaigns that spend a large shared budget across many useful result windows. The deterministic policy and ledger has MCP and CLI execution surfaces over exact shared-search checkpoints plus versioned high-level controls and compact decision explanations. Hosted Quick and Balanced are currently one bounded result window rather than resumable campaigns; concurrent and multi-strategy campaign execution remain future work.
 
 ## Contract
 
@@ -37,7 +37,7 @@ The next-window range is a zero-to-upper empirical range derived from the last t
 
 The module accepts deterministic partitions by strategy, seed, indexed path prefix, checkpoint/frontier, approved goal, or depth policy. `start_campaign` executes the first bounded shared-search window and returns the same opaque capability model as ordinary MCP sessions. `continue_campaign` resumes that exact checkpoint under the persisted aggregate policy; `inspect_search` and `cancel_search` understand both surfaces. Metadata stores a canonical ledger digest, compact marginal yield, measured elapsed/heap/disk evidence, and immutable report/checkpoint IDs, but never the capability or frontier payload.
 
-This execution slice intentionally uses one exact shared frontier with concurrency fixed at one. It does not yet dispatch independent portfolio/seed/goal children, merge or deduplicate findings across child runs, or integrate a cost provider. Campaign-directed goals and assertion-aware children are #151; measured provider-attributed cost ceilings are #152. They remain unavailable rather than reporting decorative zeroes. Broader campaign/parallel work remains #93/#94, and human deadline/result-window UX remains #96.
+This execution slice intentionally uses one exact shared frontier with concurrency fixed at one. It does not yet dispatch independent portfolio/seed/goal children, merge or deduplicate findings across child runs, or integrate a cost provider. Campaign-directed goals and assertion-aware children are #151; measured provider-attributed cost ceilings are #152. They remain unavailable rather than reporting decorative zeroes. Broader campaign/parallel work remains #93/#94; the CLI and hosted human surfaces now expose bounded intents and result-window evidence without changing those engine limits.
 
 ## Promotion rule
 

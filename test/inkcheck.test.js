@@ -3239,8 +3239,13 @@ test("hosted runner checks an uploaded story and deletes its job", async () => {
   assert.strictEqual(result.report.compile.success, true);
   assert.strictEqual(result.report.explore.endingsFound.length, 2);
   assert.deepStrictEqual(result.humanFindings, []);
+  assert.strictEqual(result.resultWindow.searchContinuing, false);
+  assert.strictEqual(result.resultWindow.uncertainty, "exhaustive");
+  assert.strictEqual(result.resultWindow.work.stateCeiling, 500);
+  assert.match(result.resultWindow.id, /^window-[0-9a-f]{24}$/);
   assert.strictEqual(result.meta.uploadedFiles, 1);
   assert.strictEqual(result.meta.retained, false);
+  assert.strictEqual(result.meta.runIntent, "balanced");
   assert.doesNotMatch(JSON.stringify(result.report), /inkcheck-web-/);
 });
 
@@ -3261,6 +3266,8 @@ test("hosted runner returns truncated exploration as a useful partial report", a
   const result = await runSubmission(submission, config);
   assert.strictEqual(result.report.compile.success, true);
   assert.strictEqual(result.report.explore.truncated, true);
+  assert.strictEqual(result.resultWindow.trigger, "resource_ceiling");
+  assert.strictEqual(result.resultWindow.uncertainty, "bounded_partial");
   assert.strictEqual(result.meta.coverageLimitHit, true);
   assert.ok(
     !result.humanFindings.some(
@@ -3301,6 +3308,7 @@ test("hosted runner returns a partial report when the time budget is hit, not a 
   const result = await runSubmission(submission, config);
   assert.strictEqual(result.report.compile.success, true);
   assert.strictEqual(result.report.explore.truncatedBy.time, true, "time was the binding limit");
+  assert.strictEqual(result.resultWindow.trigger, "deadline");
   assert.strictEqual(result.report.explore.truncatedBy.maxStates, false);
   assert.ok(result.meta.coverageLimitHit, "partial coverage is flagged");
 });
@@ -3320,6 +3328,8 @@ test("hosted runner returns compile failures as reports", async () => {
   const result = await runSubmission(submission, config);
   assert.strictEqual(result.report.compile.success, false);
   assert.strictEqual(result.report.compile.errors, 3);
+  assert.strictEqual(result.resultWindow.trigger, "compile_error");
+  assert.strictEqual(result.resultWindow.yield.compileErrors, 3);
   assert.strictEqual(result.meta.retained, false);
 });
 

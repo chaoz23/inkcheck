@@ -14,9 +14,12 @@ export interface HostedFile {
   bytes: number;
 }
 
+export type HostedRunIntent = "quick" | "balanced";
+
 export interface HostedSubmission {
   root: string;
   files: HostedFile[];
+  runIntent: HostedRunIntent;
   maxDepth: number;
   maxStates: number;
 }
@@ -151,10 +154,19 @@ export function validateSubmission(input: unknown, limits: HostedLimits): Hosted
   const root = safeInkPath(body.root, "root");
   if (!seen.has(root)) throw new SubmissionError("root must name one of the uploaded files", 422);
 
+  const runIntent = body.runIntent ?? "balanced";
+  if (runIntent !== "quick" && runIntent !== "balanced") {
+    throw new SubmissionError("runIntent must be quick or balanced");
+  }
+  const intentStateDefault = runIntent === "quick"
+    ? Math.min(250_000, limits.maxStates)
+    : limits.maxStates;
+
   return {
     root,
     files,
+    runIntent,
     maxDepth: boundedInteger(body.maxDepth, limits.maxDepth, 1, limits.maxDepth, "maxDepth"),
-    maxStates: boundedInteger(body.maxStates, limits.maxStates, 1, limits.maxStates, "maxStates"),
+    maxStates: boundedInteger(body.maxStates, intentStateDefault, 1, limits.maxStates, "maxStates"),
   };
 }

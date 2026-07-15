@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, ChildProcess } from "child_process";
-import { randomUUID, timingSafeEqual } from "crypto";
+import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import * as fs from "fs";
 import { createServer, IncomingMessage, Server, ServerResponse } from "http";
 import * as os from "os";
@@ -37,13 +37,28 @@ export interface WebConfig extends HostedLimits {
 export interface HostedCheckResponse {
   report: unknown;
   humanFindings?: HumanFinding[];
+  resultWindow?: HostedResultWindow;
   meta: {
     durationMs: number;
     uploadedFiles: number;
     uploadedBytes: number;
     retained: false;
+    runIntent?: HostedSubmission["runIntent"];
     coverageLimitHit?: boolean;
   };
+}
+
+export interface HostedResultWindow {
+  schemaVersion: 1;
+  id: string;
+  sourceFingerprint: unknown;
+  trigger: "compile_error" | "actionable_evidence" | "review_interval" | "exhaustive" | "deadline" | "resource_ceiling" | "cancelled";
+  searchContinuing: false;
+  work: { statesExplored: number; stateCeiling: number; elapsedMs: number };
+  yield: { meaningfulFindings: number; compileErrors: number; runtimeErrors: number; assertionViolations: number; endings: number };
+  stableFindingIds: string[];
+  omittedFindingCount: number;
+  uncertainty: "bounded_partial" | "exhaustive";
 }
 
 export interface HostedProgressEvent {
@@ -58,7 +73,15 @@ export interface HostedProgressEvent {
   budgetFraction: number;
   endingsFound?: number;
   runtimeErrorsFound?: number;
+  assertionViolations?: number;
   unvisitedKnots?: number;
+  meaningfulYield?: number;
+  statesSinceLastYield?: number | null;
+  forecast?: {
+    status: "learning" | "active" | "quiet";
+    uncertainty: "high";
+    disclosure: string;
+  };
   status?: "queued" | "running" | "complete" | "cancelled" | "failed";
 }
 
@@ -159,6 +182,108 @@ export function gracefulTimeoutSeconds(timeoutMs: number): number {
   return Math.max(1, Math.floor(totalSeconds - margin));
 }
 
+function hostedIntentTimeoutSeconds(submission: HostedSubmission, timeoutMs: number): number {
+  const graceful = gracefulTimeoutSeconds(timeoutMs);
+  return submission.runIntent === "quick" ? Math.min(60, graceful) : graceful;
+}
+
+function numberArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function hostedResultWindow(
+  report: unknown,
+  findings: HumanFinding[],
+  submission: HostedSubmission,
+  elapsedMs: number
+): HostedResultWindow {
+  const envelope = report && typeof report === "object" ? report as Record<string, unknown> : {};
+  const explore = envelope.explore && typeof envelope.explore === "object"
+    ? envelope.explore as Record<string, unknown>
+    : {};
+  const runtimeErrors = numberArray(explore.runtimeErrors).length;
+  const endings = numberArray(explore.endingsFound).length;
+  const assertionResults = numberArray(explore.assertionResults);
+  const assertionViolations = assertionResults.filter((value) =>
+    value && typeof value === "object" && (value as { status?: unknown }).status === "violated"
+  ).length;
+  const compile = envelope.compile && typeof envelope.compile === "object"
+    ? envelope.compile as Record<string, unknown>
+    : {};
+  const compileErrors = typeof compile.errors === "number" ? compile.errors : 0;
+  const exhaustive = explore.exhaustive === true;
+  const truncatedBy = explore.truncatedBy && typeof explore.truncatedBy === "object"
+    ? explore.truncatedBy as Record<string, unknown>
+    : {};
+  const trigger: HostedResultWindow["trigger"] = compileErrors > 0
+    ? "compile_error"
+    : runtimeErrors + assertionViolations > 0
+      ? "actionable_evidence"
+    : exhaustive
+      ? "exhaustive"
+      : truncatedBy.time === true
+        ? "deadline"
+        : explore.truncated === true
+          ? "resource_ceiling"
+          : "review_interval";
+  const keyed = findings.map((finding) => ({
+    id: `finding-${createHash("sha256").update(JSON.stringify(finding)).digest("hex").slice(0, 24)}`,
+    finding,
+  }));
+  const stableFindingIds = keyed.slice(0, 100).map((item) => item.id);
+  const sourceFingerprint = envelope.storyFingerprint ?? null;
+  const statesExplored = typeof explore.statesExplored === "number" ? explore.statesExplored : 0;
+  return {
+    schemaVersion: 1,
+    id: `window-${createHash("sha256").update(JSON.stringify({ sourceFingerprint, statesExplored, stableFindingIds })).digest("hex").slice(0, 24)}`,
+    sourceFingerprint,
+    trigger,
+    searchContinuing: false,
+    work: { statesExplored, stateCeiling: submission.maxStates, elapsedMs },
+    yield: {
+      meaningfulFindings: compileErrors + runtimeErrors + assertionViolations,
+      compileErrors,
+      runtimeErrors,
+      assertionViolations,
+      endings,
+    },
+    stableFindingIds,
+    omittedFindingCount: Math.max(0, keyed.length - stableFindingIds.length),
+    uncertainty: exhaustive ? "exhaustive" : "bounded_partial",
+  };
+}
+
+function cancelledResultWindow(submission: HostedSubmission, event: HostedProgressEvent): HostedResultWindow {
+  const root = submission.files.find((file) => file.name === submission.root);
+  const sourceFingerprint = {
+    algorithm: "sha256" as const,
+    source: "entry-source" as const,
+    value: createHash("sha256").update(root?.content ?? "").digest("hex"),
+  };
+  const runtimeErrors = event.runtimeErrorsFound ?? 0;
+  const assertionViolations = event.assertionViolations ?? 0;
+  const endings = event.endingsFound ?? 0;
+  const omittedFindingCount = runtimeErrors + assertionViolations + (event.unvisitedKnots ?? 0);
+  return {
+    schemaVersion: 1,
+    id: `window-${createHash("sha256").update(JSON.stringify({ sourceFingerprint, statesExplored: event.statesExplored, trigger: "cancelled" })).digest("hex").slice(0, 24)}`,
+    sourceFingerprint,
+    trigger: "cancelled",
+    searchContinuing: false,
+    work: { statesExplored: event.statesExplored, stateCeiling: submission.maxStates, elapsedMs: event.elapsedMs },
+    yield: {
+      meaningfulFindings: runtimeErrors + assertionViolations,
+      compileErrors: 0,
+      runtimeErrors,
+      assertionViolations,
+      endings,
+    },
+    stableFindingIds: [],
+    omittedFindingCount,
+    uncertainty: "bounded_partial",
+  };
+}
+
 function stopProcessTree(child: ChildProcess): void {
   if (!child.pid) return;
   try {
@@ -220,7 +345,7 @@ export async function runSubmission(
     // Give the CLI a wall-clock budget a bit under the hard SIGKILL deadline so
     // it stops cleanly and prints a partial report (truncatedBy.time) before the
     // backstop kill fires; the kill only ever triggers for a genuinely wedged run.
-    const gracefulSeconds = gracefulTimeoutSeconds(config.timeoutMs);
+    const gracefulSeconds = hostedIntentTimeoutSeconds(submission, config.timeoutMs);
     const args = [
       "--max-old-space-size=768",
       cli,
@@ -329,16 +454,20 @@ export async function runSubmission(
       typeof report === "object" &&
       "explore" in report &&
       (report as { explore?: { truncated?: unknown } }).explore?.truncated === true;
+    const humanFindings = buildHumanFindings(report as Parameters<typeof buildHumanFindings>[0], {
+      audience: "hosted",
+    });
+    const durationMs = Date.now() - started;
     return {
       report,
-      humanFindings: buildHumanFindings(report as Parameters<typeof buildHumanFindings>[0], {
-        audience: "hosted",
-      }),
+      humanFindings,
+      resultWindow: hostedResultWindow(report, humanFindings, submission, durationMs),
       meta: {
-        durationMs: Date.now() - started,
+        durationMs,
         uploadedFiles: submission.files.length,
         uploadedBytes: submission.files.reduce((sum, file) => sum + file.bytes, 0),
         retained: false,
+        runIntent: submission.runIntent,
         ...(coverageLimitHit ? { coverageLimitHit: true } : {}),
       },
     };
@@ -441,6 +570,9 @@ class HostedJobManager {
         createdAt: job.createdAt,
         ...(latest ? { progress: latest } : {}),
         ...(job.result ? { result: job.result } : {}),
+        ...(job.status === "cancelled" && latest
+          ? { resultWindow: cancelledResultWindow(job.submission, latest) }
+          : {}),
         ...(job.error ? { error: job.error } : {}),
       },
     };
@@ -452,14 +584,42 @@ class HostedJobManager {
 
   private emit(job: HostedJob, patch: Omit<HostedProgressEvent, "schemaVersion" | "sequence" | "elapsedMs" | "statesExplored" | "stateBudget" | "budgetFraction"> & Partial<HostedProgressEvent>): void {
     const previous = job.events[job.events.length - 1];
+    const statesExplored = patch.statesExplored ?? previous?.statesExplored ?? 0;
+    const meaningfulYield = (patch.endingsFound ?? previous?.endingsFound ?? 0)
+      + (patch.runtimeErrorsFound ?? previous?.runtimeErrorsFound ?? 0)
+      + (patch.assertionViolations ?? previous?.assertionViolations ?? 0);
+    const previousYield = previous?.meaningfulYield ?? 0;
+    const statesSinceLastYield = meaningfulYield > previousYield
+      ? 0
+      : previous?.statesSinceLastYield === null || previous?.statesSinceLastYield === undefined
+        ? statesExplored
+        : previous.statesSinceLastYield + Math.max(0, statesExplored - (previous.statesExplored ?? 0));
+    const forecastStatus = statesExplored === 0
+      ? "learning"
+      : meaningfulYield > previousYield
+        ? "active"
+        : statesSinceLastYield > Math.max(10_000, job.submission.maxStates * 0.1)
+          ? "quiet"
+          : "learning";
     const event: HostedProgressEvent = {
       ...patch,
       schemaVersion: 1,
       sequence: ++job.nextSequence,
       elapsedMs: patch.elapsedMs ?? Date.now() - job.createdAt,
-      statesExplored: patch.statesExplored ?? previous?.statesExplored ?? 0,
+      statesExplored,
       stateBudget: patch.stateBudget ?? previous?.stateBudget ?? job.submission.maxStates,
       budgetFraction: patch.budgetFraction ?? previous?.budgetFraction ?? 0,
+      endingsFound: patch.endingsFound ?? previous?.endingsFound,
+      runtimeErrorsFound: patch.runtimeErrorsFound ?? previous?.runtimeErrorsFound,
+      assertionViolations: patch.assertionViolations ?? previous?.assertionViolations,
+      unvisitedKnots: patch.unvisitedKnots ?? previous?.unvisitedKnots,
+      meaningfulYield,
+      statesSinceLastYield,
+      forecast: {
+        status: forecastStatus,
+        uncertainty: "high",
+        disclosure: "Discovery pace is a planning signal, not a coverage estimate.",
+      },
     } as HostedProgressEvent;
     job.events.push(event);
     if (job.events.length > 160) job.events.shift();
@@ -602,6 +762,7 @@ export async function parseMultipartBody(contentType: string, body: Buffer): Pro
     return {
       root: fields.get("root"),
       files,
+      runIntent: fields.get("runIntent"),
       maxDepth: optionalNumber("maxDepth"),
       maxStates: optionalNumber("maxStates"),
       authorized: fields.get("authorized") === "true",

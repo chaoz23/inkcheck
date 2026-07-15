@@ -75,6 +75,12 @@
           <input id="access-code" type="password" autocomplete="off" inputmode="text">
         </section>
 
+        <fieldset class="run-intent">
+          <legend>Choose a result window</legend>
+          <label><input type="radio" name="run-intent" value="quick"><span><strong>Quick</strong><small>Earlier bounded review, up to 250K states</small></span></label>
+          <label><input type="radio" name="run-intent" value="balanced" checked><span><strong>Balanced</strong><small>Deeper hosted review, up to 1M states</small></span></label>
+        </fieldset>
+
         <button id="submit" type="submit">Run Inkcheck</button>
         <p id="form-status" role="status" aria-live="polite"></p>
       </form>
