@@ -86,6 +86,7 @@ export interface InkcheckCapabilities {
     sessionWitnessReplay: boolean;
     sessionRegressionPins: boolean;
     sessionGoalProbes: boolean;
+    campaignDirectedChildren: boolean;
     campaignResultWindows: boolean;
     campaignPolicyControls: boolean;
   };
@@ -132,7 +133,7 @@ export function capabilities(): InkcheckCapabilities {
     },
     searchModes: ["portfolio", "shared", "shared-variable"],
     campaignModes: ["quick", "balanced", "deep", "overnight", "campaign", "fixed"],
-    campaignValuePreferences: ["broad_qa", "runtime_assertions", "outcomes"],
+    campaignValuePreferences: ["broad_qa", "runtime_assertions", "outcomes", "approved_goals"],
     campaignStopPolicies: ["ceilings", "knee"],
     resumableSearchSurfaces: ["cli", "mcp"],
     features: {
@@ -149,6 +150,7 @@ export function capabilities(): InkcheckCapabilities {
       sessionWitnessReplay: true,
       sessionRegressionPins: true,
       sessionGoalProbes: true,
+      campaignDirectedChildren: true,
       campaignResultWindows: true,
       campaignPolicyControls: true,
     },

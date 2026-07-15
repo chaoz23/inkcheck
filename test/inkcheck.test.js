@@ -254,10 +254,11 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.features.sessionWitnessReplay, true);
   assert.strictEqual(value.features.sessionRegressionPins, true);
   assert.strictEqual(value.features.sessionGoalProbes, true);
+  assert.strictEqual(value.features.campaignDirectedChildren, true);
   assert.strictEqual(value.features.campaignResultWindows, true);
   assert.strictEqual(value.features.campaignPolicyControls, true);
   assert.deepStrictEqual(value.campaignModes, ["quick", "balanced", "deep", "overnight", "campaign", "fixed"]);
-  assert.deepStrictEqual(value.campaignValuePreferences, ["broad_qa", "runtime_assertions", "outcomes"]);
+  assert.deepStrictEqual(value.campaignValuePreferences, ["broad_qa", "runtime_assertions", "outcomes", "approved_goals"]);
   assert.deepStrictEqual(value.campaignStopPolicies, ["ceilings", "knee"]);
 });
 

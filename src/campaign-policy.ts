@@ -7,7 +7,7 @@ export type CampaignIntent = "scarce" | "balanced" | "abundant";
 export type CampaignMode = "quick" | "balanced" | "deep" | "overnight" | "campaign" | "fixed";
 export type CampaignValuePreference = "broad_qa" | "runtime_assertions" | "outcomes" | "approved_goals";
 export type CampaignStopPolicy = "ceilings" | "knee";
-export type CampaignPurpose = "typical" | "long_tail" | "regression";
+export type CampaignPurpose = "typical" | "long_tail" | "regression" | "assertion" | "approved_goal";
 export type CampaignRecommendation = "continue" | "stop_at_knee";
 export type CampaignStopReason =
   | "exhaustive"
@@ -144,6 +144,14 @@ export interface PlanCampaignInput {
   exhaustive?: boolean;
   partition?: CampaignPartition;
   pendingRegressionReplays?: number;
+}
+
+export interface AllocateDirectedCampaignRunInput {
+  now: string;
+  bindingFingerprint: string;
+  purpose: "assertion" | "approved_goal";
+  grantedStates: number;
+  partition: CampaignPartition;
 }
 
 export interface CommitCampaignRunInput {
@@ -412,6 +420,8 @@ export function planCampaignRun(ledger: CampaignLedger, input: PlanCampaignInput
   const longTailOutstanding = Math.max(0, ledger.policy.longTail.reservedStates - longTailConsumed
     - active.filter((allocation) => allocation.purpose === "long_tail").reduce((sum, allocation) => sum + allocation.grantedStates, 0));
   const ordinaryAvailable = Math.max(0, statesRemaining - regressionOutstanding - longTailOutstanding);
+  const baseAllocationCount = ledger.allocations.filter((allocation) => allocation.purpose === "typical"
+    || allocation.purpose === "long_tail" || allocation.purpose === "regression").length;
 
   let purpose: CampaignPurpose = "typical";
   let reason = "ordinary window continues broad bounded QA";
@@ -421,7 +431,7 @@ export function planCampaignRun(ledger: CampaignLedger, input: PlanCampaignInput
   } else {
     const minimumTailOutstanding = longTailCompleted + longTailActive < ledger.policy.longTail.minProbes;
     const tailShareOutstanding = longTailConsumed < ledger.policy.longTail.reservedStates;
-    if ((minimumTailOutstanding && ledger.allocations.length > 0)
+    if ((minimumTailOutstanding && baseAllocationCount > 0)
       || (ordinaryAvailable === 0 && longTailOutstanding > 0)
       || (input.recommendation === "stop_at_knee" && tailShareOutstanding)) {
       purpose = "long_tail";
@@ -463,12 +473,69 @@ export function planCampaignRun(ledger: CampaignLedger, input: PlanCampaignInput
   return { action: "allocate", ledger: next, allocation: clone(allocation) };
 }
 
+export function allocateDirectedCampaignRun(
+  ledger: CampaignLedger,
+  input: AllocateDirectedCampaignRunInput
+): { ledger: CampaignLedger; allocation: CampaignAllocation } {
+  const exhaustiveBase = ledger.status === "complete" && ledger.stopReason === "exhaustive";
+  if (ledger.status !== "active" && !exhaustiveBase) throw new Error(`campaign is ${ledger.status}`);
+  positiveFingerprint(input.bindingFingerprint);
+  if (input.bindingFingerprint !== ledger.bindingFingerprint) {
+    throw new Error("source/config fingerprint changed; invalidate the campaign before allocating directed work");
+  }
+  integer(input.grantedStates, "grantedStates", 1);
+  const elapsedMs = elapsed(ledger, input.now);
+  if (ledger.policy.ceilings.deadlineAt && isoTime(input.now, "now") >= isoTime(ledger.policy.ceilings.deadlineAt, "deadlineAt")) {
+    throw new Error("campaign deadline reached before directed work could be allocated");
+  }
+  if (elapsedMs >= ledger.policy.ceilings.maxElapsedMs) throw new Error("campaign elapsed-time ceiling reached");
+  if (ledger.spend.peakMemoryBytes >= ledger.policy.ceilings.maxMemoryBytes) throw new Error("campaign memory ceiling reached");
+  if (ledger.spend.currentDiskBytes >= ledger.policy.ceilings.maxDiskBytes) throw new Error("campaign disk ceiling reached");
+  if (ledger.policy.ceilings.maxCostMicrounits !== undefined
+    && ledger.spend.costMicrounits >= ledger.policy.ceilings.maxCostMicrounits) {
+    throw new Error("campaign cost ceiling reached");
+  }
+  if (activeAllocations(ledger).length >= ledger.policy.ceilings.maxConcurrency) {
+    throw new Error("campaign concurrency ceiling is occupied");
+  }
+  const next = clone(ledger);
+  next.spend.elapsedMs = elapsedMs;
+  const sequence = next.allocations.length + 1;
+  const partition = validatePartition(input.partition);
+  const reason = input.purpose === "assertion"
+    ? "explicit additive assertion window preserves protected broad QA"
+    : "explicit additive approved-goal window preserves protected broad QA";
+  const allocation: CampaignAllocation = {
+    sequence,
+    id: `run-${stableHash({ campaignId: next.campaignId, sequence, purpose: input.purpose, grantedStates: input.grantedStates, partition }).slice(0, 24)}`,
+    purpose: input.purpose,
+    grantedStates: input.grantedStates,
+    createdAt: new Date(input.now).toISOString(),
+    reason,
+    partition,
+    status: "allocated",
+  };
+  next.allocations.push(allocation);
+  next.events.push({
+    sequence: next.events.length + 1,
+    at: allocation.createdAt,
+    type: "run_allocated",
+    allocationId: allocation.id,
+    purpose: allocation.purpose,
+    states: allocation.grantedStates,
+    reason,
+  });
+  return { ledger: next, allocation: clone(allocation) };
+}
+
 export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignRunInput): CampaignLedger {
-  if (ledger.status !== "active") throw new Error(`campaign is ${ledger.status}`);
   positiveFingerprint(input.bindingFingerprint);
   if (input.bindingFingerprint !== ledger.bindingFingerprint) throw new Error("source/config fingerprint changed; invalidate the campaign before committing work");
   const allocation = ledger.allocations.find((item) => item.id === input.allocationId);
   if (!allocation) throw new Error("campaign allocation was not found");
+  const directed = allocation.purpose === "assertion" || allocation.purpose === "approved_goal";
+  const exhaustiveBase = ledger.status === "complete" && ledger.stopReason === "exhaustive";
+  if (ledger.status !== "active" && !(directed && exhaustiveBase)) throw new Error(`campaign is ${ledger.status}`);
   if (allocation.status !== "allocated") throw new Error("campaign allocation was already completed");
   if (isoTime(input.now, "now") < isoTime(allocation.createdAt, "allocation.createdAt")) {
     throw new Error("run completion must not precede its allocation");
@@ -494,7 +561,9 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
   }
   if (input.peakMemoryBytes > ledger.policy.ceilings.maxMemoryBytes) throw new Error("child result crossed the campaign memory ceiling");
   if (input.currentDiskBytes > ledger.policy.ceilings.maxDiskBytes) throw new Error("child result crossed the campaign disk ceiling");
-  if (ledger.spend.states + input.consumedStates > ledger.policy.ceilings.totalStates) throw new Error("child result crossed the campaign state ceiling");
+  if (!directed && ledger.spend.states + input.consumedStates > ledger.policy.ceilings.totalStates) {
+    throw new Error("child result crossed the campaign state ceiling");
+  }
   if (ledger.policy.ceilings.maxCostMicrounits !== undefined
     && ledger.spend.costMicrounits + cost > ledger.policy.ceilings.maxCostMicrounits) {
     throw new Error("child result crossed the campaign cost ceiling");
@@ -516,7 +585,7 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
     };
   }
   next.spend = {
-    states: next.spend.states + input.consumedStates,
+    states: next.spend.states + (directed ? 0 : input.consumedStates),
     elapsedMs,
     peakMemoryBytes: Math.max(next.spend.peakMemoryBytes, input.peakMemoryBytes),
     currentDiskBytes: input.currentDiskBytes,

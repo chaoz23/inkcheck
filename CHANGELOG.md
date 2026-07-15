@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add explicit assertion and approved-goal campaign children. Matching MCP campaigns can spend separately accounted root-started specialist windows without mutating or reducing the exact resumable base frontier; deterministic ledger purposes, source-bound child reports, hard campaign resource ceilings, privacy-minimal metadata, and cross-report evidence deduplication keep the work attributable. Exhaustive base campaigns can still run an explicitly requested specialist while retaining the base proof boundary.
+
 ## 0.6.0-beta.2 — 2026-07-14
 
 This prerelease adds policy-bound campaigns for agents and humans without changing the fixed portfolio default. Campaign forecasts and knee observations remain bounded planning evidence, never coverage claims. It is published under npm's `next` tag; stable `latest` remains 0.5.1.

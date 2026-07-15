@@ -17,11 +17,14 @@ import {
   MAX_STORY_SEED,
   classifyUnvisitedKnots,
   exploreGoalProbe,
+  exploreShared,
   exploreSharedResumable,
+  validateAssertionsForStory,
   validateGoalsForStory,
   type ExploreResult,
   type SharedSearchCheckpoint,
 } from "./explore";
+import { parseAssertionDefinitions, type AssertionDefinition, type AssertionResult } from "./assertions";
 import { parseGoalDefinitions, type GoalDefinition, type GoalResult } from "./goals";
 import {
   compile,
@@ -35,6 +38,7 @@ import {
 import { buildReportEnvelope, type EffectiveReportConfiguration } from "./report-contract";
 import { createResourceGuards } from "./resource-guards";
 import {
+  allocateDirectedCampaignRun,
   campaignLedgerDigest,
   commitCampaignRun,
   createCampaignLedger,
@@ -84,7 +88,7 @@ export {
 } from "./search-session-contract";
 
 type SessionStatus = "paused" | "complete" | "stopped" | "cancelled";
-type SessionEventType = "started" | "continued" | "cancelled" | "replayed" | "regression_pinned" | "regression_checked" | "goal_added";
+type SessionEventType = "started" | "continued" | "cancelled" | "replayed" | "regression_pinned" | "regression_checked" | "goal_added" | "assertions_added";
 
 interface GoalProbeSummary {
   goalHandle: string;
@@ -333,6 +337,32 @@ export interface AddGoalResponse {
   nextOperation: { tool: "inspect_search"; reason: string };
 }
 
+export interface AddAssertionsInput {
+  file: string;
+  sessionCapability: string;
+  revision: number;
+  assertions: unknown[];
+  maxStates: number;
+}
+
+export interface AddAssertionsResponse {
+  schemaVersion: number;
+  inkcheckVersion: string;
+  session: SearchSessionResponse["session"];
+  assertionReportId: string;
+  assertions: AssertionDefinition[];
+  results: AssertionResult[];
+  budget: {
+    directedGranted: number;
+    directedConsumed: number;
+    campaignGranted: number;
+    campaignConsumed: number;
+  };
+  disclosure: string;
+  semantics: string;
+  nextOperation: { tool: "inspect_search"; reason: string };
+}
+
 export interface PinRegressionResponse {
   schemaVersion: number;
   inkcheckVersion: string;
@@ -450,7 +480,7 @@ function parseRecord(raw: string, expectedHash?: string): SearchSessionRecord {
             : item.findingId === undefined && item.pinId === undefined
               && item.replayStatus === undefined && item.regressionStatus === undefined && noGoalDetails;
     return Number.isSafeInteger(item.sequence) && (item.sequence as number) >= 1
-      && ["started", "continued", "cancelled", "replayed", "regression_pinned", "regression_checked", "goal_added"].includes(String(item.type))
+      && ["started", "continued", "cancelled", "replayed", "regression_pinned", "regression_checked", "goal_added", "assertions_added"].includes(String(item.type))
       && Number.isSafeInteger(item.revision) && (item.revision as number) >= 1
       && Number.isSafeInteger(item.totalGranted) && (item.totalGranted as number) >= 1
       && Number.isSafeInteger(item.statesExplored) && (item.statesExplored as number) >= 0
@@ -956,6 +986,52 @@ function campaignYield(
   };
 }
 
+function directedEvidence(result: ExploreResult): { critical: Set<string>; goals: Set<string> } {
+  const critical = new Set<string>();
+  for (const error of result.runtimeErrors) {
+    critical.add(`runtime:${createHash("sha256").update(JSON.stringify({ message: error.message, choiceIndices: error.choiceIndices })).digest("hex")}`);
+  }
+  for (const assertion of result.assertionResults) {
+    for (const violation of assertion.violations) {
+      critical.add(`assertion:${createHash("sha256").update(JSON.stringify({
+        ruleId: violation.ruleId,
+        choiceIndices: violation.choiceIndices,
+        observedValues: violation.observedValues,
+      })).digest("hex")}`);
+    }
+  }
+  const goals = new Set((result.goalResults ?? [])
+    .filter((goal) => goal.status === "reached")
+    .map((goal) => goal.id));
+  return { critical, goals };
+}
+
+async function directedCampaignYield(
+  projectRoot: string,
+  ledger: CampaignLedger,
+  result: ExploreResult
+): Promise<NonNullable<Parameters<typeof commitCampaignRun>[1]["yield"]>> {
+  const priorCritical = new Set<string>();
+  const priorGoals = new Set<string>();
+  for (const allocation of ledger.allocations) {
+    const reportId = allocation.provenance?.reportId;
+    if (!reportId) continue;
+    const artifact = await openReportArtifact(projectRoot, reportId);
+    const explore = (artifact.report as { explore?: ExploreResult }).explore;
+    if (!explore) continue;
+    const evidence = directedEvidence(explore);
+    evidence.critical.forEach((value) => priorCritical.add(value));
+    evidence.goals.forEach((value) => priorGoals.add(value));
+  }
+  const current = directedEvidence(result);
+  return {
+    critical: [...current.critical].filter((value) => !priorCritical.has(value)).length,
+    intent: [...current.goals].filter((value) => !priorGoals.has(value)).length,
+    authoredCoverage: 0,
+    terminalVariants: 0,
+  };
+}
+
 function terminalCampaignReason(result: ExploreResult, diskLimited = false): Parameters<typeof finishCampaignLedger>[1]["reason"] {
   if (diskLimited) return "disk_ceiling";
   if (result.exhaustive) return "exhaustive";
@@ -994,9 +1070,6 @@ export async function startCampaign(input: StartCampaignInput): Promise<SearchSe
     minLongTailProbes: input.minLongTailProbes,
     regressionReserveStates: input.regressionReserveStates,
   }, defaultMemoryMb);
-  if (control.valuePreference === "approved_goals") {
-    throw new RangeError("approved_goals is not available for exact resumable campaigns; use add_goal on an ordinary session until directed campaign children are supported");
-  }
   if (!Number.isSafeInteger(control.totalStates) || control.totalStates < 10 || control.totalStates > MAX_MCP_SESSION_TOTAL_STATES) {
     throw new RangeError(`totalStates must be an integer from 10 to ${MAX_MCP_SESSION_TOTAL_STATES}`);
   }
@@ -1307,20 +1380,23 @@ export async function continueCampaign(input: ContinueCampaignInput): Promise<Se
 
 export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalResponse> {
   const { projectRoot, record } = loadSession(input.file, input.sessionCapability);
-  if (record.campaign) throw new Error("add_goal is not available inside a campaign until directed probes are ledger-accounted; use an ordinary session or continue_campaign");
   if (record.revision !== input.revision) {
     throw new Error(`search session revision is ${record.revision}, not ${input.revision}; inspect it before retrying`);
   }
   if (!Number.isSafeInteger(input.maxStates) || input.maxStates < 1 || input.maxStates > MAX_MCP_SESSION_WINDOW_STATES) {
     throw new RangeError(`maxStates must be an integer from 1 to ${MAX_MCP_SESSION_WINDOW_STATES}`);
   }
-  if (record.totalGranted + record.directedGranted + input.maxStates > MAX_MCP_SESSION_TOTAL_STATES) {
+  const protectedBaseGrant = record.campaign?.ledger.policy.ceilings.totalStates ?? record.totalGranted;
+  if (protectedBaseGrant + record.directedGranted + input.maxStates > MAX_MCP_SESSION_TOTAL_STATES) {
     throw new RangeError(`base plus directed grants must not exceed ${MAX_MCP_SESSION_TOTAL_STATES} states`);
   }
   const issues: string[] = [];
   const goals = parseGoalDefinitions([input.goal], "goals", issues) ?? [];
   if (issues.length || goals.length !== 1) {
     throw new RangeError(`Invalid goals:\n${issues.map((issue) => `- ${issue}`).join("\n")}`);
+  }
+  if (record.campaign && record.campaign.ledger.policy.control.valuePreference !== "approved_goals") {
+    throw new Error("campaign add_goal requires valuePreference=approved_goals so directed intent is explicit");
   }
   const currentBase = await openReportArtifact(projectRoot, record.latestReportId);
   if (currentBase.artifact.freshness !== "current") {
@@ -1334,6 +1410,20 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
   const knots = scanKnots(input.file);
   const externals = scanExternals(input.file);
   validateGoalsForStory(storyJson, knots, externals, goals);
+  const startedAtMs = Date.now();
+  const campaignAllocation = record.campaign
+    ? allocateDirectedCampaignRun(record.campaign.ledger, {
+      now: new Date(startedAtMs).toISOString(),
+      bindingFingerprint: record.campaign.ledger.bindingFingerprint,
+      purpose: "approved_goal",
+      grantedStates: input.maxStates,
+      partition: {
+        strategy: "shared",
+        goalId: `goal-${createHash("sha256").update(JSON.stringify(goals[0])).digest("hex").slice(0, 24)}`,
+        maxDepth: (currentBase.report.effectiveConfiguration as { limits?: { maxDepth?: number } }).limits?.maxDepth ?? DEFAULT_MAX_DEPTH,
+      },
+    })
+    : undefined;
   const baseConfiguration = currentBase.report.effectiveConfiguration as {
     limits?: { maxDepth?: number; seed?: number; storySeed?: number };
     maxFrontierStates?: number | null;
@@ -1341,14 +1431,22 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
   };
   const limits = baseConfiguration.limits ?? {};
   const semantics = scanStorySemantics(input.file);
-  const { memoryGuard } = createResourceGuards();
+  const campaignRemainingMs = campaignAllocation && record.campaign
+    ? Math.max(1, record.campaign.ledger.policy.ceilings.maxElapsedMs - campaignAllocation.ledger.spend.elapsedMs - 100)
+    : undefined;
+  const guards = createResourceGuards({
+    ...(record.campaign ? { maxMemoryMb: Math.max(1, Math.floor(record.campaign.ledger.policy.ceilings.maxMemoryBytes / (1024 * 1024) * 0.95)) } : {}),
+    ...(campaignRemainingMs === undefined ? {} : { maxTimeMs: campaignRemainingMs }),
+    startedAtMs,
+  });
   const result = exploreGoalProbe(storyJson, knots, externals, {
     maxDepth: limits.maxDepth ?? DEFAULT_MAX_DEPTH,
     seed: limits.seed,
     storySeed: limits.storySeed ?? DEFAULT_STORY_SEED,
     goalMaxStates: input.maxStates,
     goals,
-    memoryGuard,
+    memoryGuard: guards.memoryGuard,
+    timeGuard: guards.timeGuard,
     preserveTurnState: semantics.usesTurns,
     preserveRandomState: semantics.usesRandomness,
     randomnessDetected: semantics.usesRandomness,
@@ -1391,7 +1489,9 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
   const goalReport = saveReportArtifact(projectRoot, input.file, report);
   const goalResult = result.goalResults?.[0];
   if (!goalResult) throw new Error("goal probe completed without a goal result");
-  const goalHandle = `goal-${randomBytes(12).toString("hex")}`;
+  const goalHandle = record.campaign
+    ? `goal-${createHash("sha256").update(`${record.campaign.ledger.campaignId}\0${JSON.stringify(goals[0])}`).digest("hex").slice(0, 24)}`
+    : `goal-${randomBytes(12).toString("hex")}`;
   const summary: GoalProbeSummary = {
     goalHandle,
     status: goalResult.status,
@@ -1399,6 +1499,9 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
     directedGranted: input.maxStates,
     directedConsumed: result.statesExplored,
   };
+  const childYield = campaignAllocation && record.campaign
+    ? await directedCampaignYield(projectRoot, record.campaign.ledger, result)
+    : undefined;
   const nextRevision = record.revision + 1;
   const updated: SearchSessionRecord = {
     ...record,
@@ -1407,6 +1510,23 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
     directedGranted: record.directedGranted + input.maxStates,
     directedStatesExplored: record.directedStatesExplored + result.statesExplored,
     goalProbes: [...record.goalProbes, summary].slice(-MAX_MCP_SESSION_EVENTS),
+    ...(campaignAllocation && record.campaign ? {
+      campaign: persistedCampaign(commitCampaignRun(campaignAllocation.ledger, {
+        now: new Date().toISOString(),
+        bindingFingerprint: record.campaign.ledger.bindingFingerprint,
+        allocationId: campaignAllocation.allocation.id,
+        consumedStates: result.statesExplored,
+        peakMemoryBytes: guards.peakMemoryBytes(),
+        currentDiskBytes: campaignDiskBytes(projectRoot, campaignAllocation.ledger, goalReport.id),
+        stopReason: result.truncatedBy.memory ? "memory_ceiling"
+          : result.truncatedBy.time ? "time_ceiling"
+            : result.truncatedBy.frontier ? "frontier_ceiling"
+              : result.exhaustive ? "exhaustive" : "window_complete",
+        yield: childYield,
+        reportId: goalReport.id,
+        windowElapsedMs: Date.now() - startedAtMs,
+      })),
+    } : {}),
   };
   appendEvent(updated, {
     type: "goal_added",
@@ -1441,6 +1561,161 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
       tool: "inspect_search",
       reason: "Inspect the committed revision and separate base/directed totals before choosing the next bounded operation.",
     },
+  };
+}
+
+export async function addCampaignAssertions(input: AddAssertionsInput): Promise<AddAssertionsResponse> {
+  const { projectRoot, record } = loadSession(input.file, input.sessionCapability);
+  if (record.revision !== input.revision) {
+    throw new Error(`search session revision is ${record.revision}, not ${input.revision}; inspect it before retrying`);
+  }
+  if (!record.campaign) throw new Error("add_assertions requires a campaign; ordinary runs can pass assertions directly to check_story");
+  if (record.campaign.ledger.policy.control.valuePreference !== "runtime_assertions") {
+    throw new Error("campaign add_assertions requires valuePreference=runtime_assertions so directed intent is explicit");
+  }
+  if (!Number.isSafeInteger(input.maxStates) || input.maxStates < 1 || input.maxStates > MAX_MCP_SESSION_WINDOW_STATES) {
+    throw new RangeError(`maxStates must be an integer from 1 to ${MAX_MCP_SESSION_WINDOW_STATES}`);
+  }
+  if (record.campaign.ledger.policy.ceilings.totalStates + record.directedGranted + input.maxStates > MAX_MCP_SESSION_TOTAL_STATES) {
+    throw new RangeError(`protected base plus directed grants must not exceed ${MAX_MCP_SESSION_TOTAL_STATES} states`);
+  }
+  const issues: string[] = [];
+  const assertions = parseAssertionDefinitions(input.assertions, "assertions", issues) ?? [];
+  if (issues.length || assertions.length === 0) {
+    throw new RangeError(`Invalid assertions:\n${issues.length ? issues.map((issue) => `- ${issue}`).join("\n") : "- assertions: expected at least one rule"}`);
+  }
+  const currentBase = await openReportArtifact(projectRoot, record.latestReportId);
+  if (currentBase.artifact.freshness !== "current") {
+    throw new Error("add_assertions requires the exact source used by the campaign's latest base report; start a fresh campaign after source changes");
+  }
+  const compiled = await compile(input.file);
+  if (!compiled.success || !compiled.storyJson) {
+    throw new Error(`Compilation failed; run compile_story and fix ${compiled.issues.length} issue(s) before adding assertions`);
+  }
+  const { storyJson, ...compileReport } = compiled;
+  const knots = scanKnots(input.file);
+  const externals = scanExternals(input.file);
+  validateAssertionsForStory(storyJson, knots, externals, assertions);
+  const baseConfiguration = currentBase.report.effectiveConfiguration as {
+    limits?: { maxDepth?: number; seed?: number; storySeed?: number };
+    maxFrontierStates?: number | null;
+    maxFrontierMb?: number | null;
+  };
+  const limits = baseConfiguration.limits ?? {};
+  const definitionHash = createHash("sha256").update(JSON.stringify(assertions)).digest("hex");
+  const startedAtMs = Date.now();
+  const allocation = allocateDirectedCampaignRun(record.campaign.ledger, {
+    now: new Date(startedAtMs).toISOString(),
+    bindingFingerprint: record.campaign.ledger.bindingFingerprint,
+    purpose: "assertion",
+    grantedStates: input.maxStates,
+    partition: {
+      strategy: "shared",
+      frontier: `assertions-${definitionHash.slice(0, 24)}`,
+      maxDepth: limits.maxDepth ?? DEFAULT_MAX_DEPTH,
+    },
+  });
+  const semantics = scanStorySemantics(input.file);
+  const remainingMs = Math.max(1, record.campaign.ledger.policy.ceilings.maxElapsedMs - allocation.ledger.spend.elapsedMs - 100);
+  const guards = createResourceGuards({
+    maxMemoryMb: Math.max(1, Math.floor(record.campaign.ledger.policy.ceilings.maxMemoryBytes / (1024 * 1024) * 0.95)),
+    maxTimeMs: remainingMs,
+    startedAtMs,
+  });
+  const result = exploreShared(storyJson, knots, externals, {
+    maxDepth: limits.maxDepth ?? DEFAULT_MAX_DEPTH,
+    maxStates: input.maxStates,
+    seed: limits.seed,
+    storySeed: limits.storySeed ?? DEFAULT_STORY_SEED,
+    assertions,
+    memoryGuard: guards.memoryGuard,
+    timeGuard: guards.timeGuard,
+    preserveTurnState: semantics.usesTurns,
+    preserveRandomState: semantics.usesRandomness,
+    randomnessDetected: semantics.usesRandomness,
+    sharedMaxPendingStates: baseConfiguration.maxFrontierStates ?? undefined,
+    sharedMaxPendingBytes: baseConfiguration.maxFrontierMb === null || baseConfiguration.maxFrontierMb === undefined
+      ? undefined
+      : baseConfiguration.maxFrontierMb * 1024 * 1024,
+  });
+  classifyUnvisitedKnots(result, scanInboundDiverts(input.file));
+  const configuration: EffectiveReportConfiguration = {
+    search: "shared",
+    executionScope: "assertion-probe",
+    minRepro: false,
+    strict: false,
+    maxMemoryMb: null,
+    maxTimeSec: null,
+    maxFrontierStates: baseConfiguration.maxFrontierStates ?? null,
+    maxFrontierMb: baseConfiguration.maxFrontierMb ?? null,
+    goalMaxStates: 0,
+    storySeed: limits.storySeed ?? DEFAULT_STORY_SEED,
+    assertions,
+  };
+  const report = buildReportEnvelope({
+    compile: compileReport,
+    explore: result,
+    nextRun: {
+      recommendation: "investigate",
+      stop: true,
+      flags: { maxDepth: result.limits.maxDepth, maxStates: input.maxStates, ...(result.limits.seed === undefined ? {} : { seed: result.limits.seed }) },
+      rationale: "This report is one additive assertion window from the story root, not the resumable base search.",
+      expectedGain: "Inspect new assertion/runtime evidence, then explicitly choose another specialist window or continue protected broad QA.",
+    },
+    storyJson,
+    configuration,
+  });
+  const assertionReport = saveReportArtifact(projectRoot, input.file, report);
+  const childYield = await directedCampaignYield(projectRoot, record.campaign.ledger, result);
+  const completedLedger = commitCampaignRun(allocation.ledger, {
+    now: new Date().toISOString(),
+    bindingFingerprint: record.campaign.ledger.bindingFingerprint,
+    allocationId: allocation.allocation.id,
+    consumedStates: result.statesExplored,
+    peakMemoryBytes: guards.peakMemoryBytes(),
+    currentDiskBytes: campaignDiskBytes(projectRoot, allocation.ledger, assertionReport.id),
+    stopReason: result.truncatedBy.memory ? "memory_ceiling"
+      : result.truncatedBy.time ? "time_ceiling"
+        : result.truncatedBy.frontier ? "frontier_ceiling"
+          : result.exhaustive ? "exhaustive" : "window_complete",
+    yield: childYield,
+    reportId: assertionReport.id,
+    windowElapsedMs: Date.now() - startedAtMs,
+  });
+  const nextRevision = record.revision + 1;
+  const updated: SearchSessionRecord = {
+    ...record,
+    updatedAt: new Date().toISOString(),
+    revision: nextRevision,
+    directedGranted: record.directedGranted + input.maxStates,
+    directedStatesExplored: record.directedStatesExplored + result.statesExplored,
+    campaign: persistedCampaign(completedLedger),
+  };
+  appendEvent(updated, {
+    type: "assertions_added",
+    revision: nextRevision,
+    totalGranted: updated.totalGranted,
+    statesExplored: updated.statesExplored,
+    reportId: assertionReport.id,
+    ...(updated.latestCheckpointId ? { checkpointId: updated.latestCheckpointId } : {}),
+  });
+  writeRecord(projectRoot, updated, record.revision);
+  return {
+    schemaVersion: SEARCH_SESSION_SCHEMA_VERSION,
+    inkcheckVersion: VERSION,
+    session: responseSession(updated),
+    assertionReportId: assertionReport.id,
+    assertions,
+    results: result.assertionResults,
+    budget: {
+      directedGranted: input.maxStates,
+      directedConsumed: result.statesExplored,
+      campaignGranted: updated.totalGranted + updated.directedGranted,
+      campaignConsumed: updated.statesExplored + updated.directedStatesExplored,
+    },
+    disclosure: "This explicit assertion response may include variable names and observed values plus witness paths. Ordinary inspect_search metadata remains privacy-minimal.",
+    semantics: "The assertion work started at the story root and was additive. It did not resume, reduce, reorder, or mutate the exact base-search frontier.",
+    nextOperation: { tool: "inspect_search", reason: "Inspect the committed revision and separate base/directed totals before choosing the next bounded operation." },
   };
 }
 

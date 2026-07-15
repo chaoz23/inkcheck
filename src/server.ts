@@ -16,6 +16,7 @@ import { parseAssertionDefinitions } from "./assertions";
 import { parseGoalDefinitions } from "./goals";
 import { createResourceGuards } from "./resource-guards";
 import {
+  addCampaignAssertions,
   addSessionGoal,
   cancelSearchSession,
   checkSessionRegression,
@@ -312,7 +313,7 @@ server.registerTool(
       file: z.string().describe("Path to the root .ink file"),
       mode: z.enum(["quick", "balanced", "deep", "overnight", "campaign", "fixed"]).optional().describe("High-level latency/resource posture; defaults to balanced. Fixed requires explicit ceilings and windowStates"),
       resourcePreference: z.enum(["scarce", "balanced", "abundant"]).optional().describe("Optional resource posture override"),
-      valuePreference: z.enum(["broad_qa", "runtime_assertions", "outcomes"]).optional().describe("Evidence class used to interpret marginal yield and knee candidates; runtime_assertions currently observes runtime errors because exact resumable campaigns exclude configured assertions"),
+      valuePreference: z.enum(["broad_qa", "runtime_assertions", "outcomes", "approved_goals"]).optional().describe("Evidence class used to interpret marginal yield. Assertions and approved goals run only through explicit additive child windows, leaving exact base resume unchanged"),
       stopPolicy: z.enum(["ceilings", "knee"]).optional().describe("Stop only at hard ceilings, or after three dry preferred-yield windows and protected long-tail obligations"),
       intent: z.enum(["scarce", "balanced", "abundant"]).optional().describe("Deprecated fixed-mode resource posture retained for compatibility"),
       totalStates: z.number().int().min(10).max(MAX_MCP_SESSION_TOTAL_STATES).optional().describe("Optional aggregate campaign state ceiling override"),
@@ -485,7 +486,7 @@ server.registerTool(
   "add_goal",
   {
     description:
-      "Run one safe typed goal as an explicit additive directed probe on an existing session. The probe starts at the story root and preserves the exact base checkpoint/report and base budget; it does not resume or reprioritize that frontier.",
+      "Run one safe typed goal as an explicit additive directed probe on an existing session or approved_goals campaign. The probe starts at the story root and preserves the exact base checkpoint/report and protected base budget.",
     inputSchema: {
       file: z.string().describe("The same root .ink file used to start the session"),
       sessionCapability: z.string().describe("Opaque bearer capability returned by start_search"),
@@ -498,6 +499,29 @@ server.registerTool(
   async (input) => {
     try {
       return json(await addSessionGoal(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
+
+server.registerTool(
+  "add_assertions",
+  {
+    description:
+      "Run validated safe typed assertions as one explicit additive child window on a runtime_assertions campaign. The child starts at the story root, deduplicates yield credit against earlier campaign reports, and never mutates the exact base frontier.",
+    inputSchema: {
+      file: z.string().describe("The same root .ink file used to start the campaign"),
+      sessionCapability: z.string().describe("Opaque bearer capability returned by start_campaign"),
+      revision: z.number().int().min(1).describe("Last observed campaign revision"),
+      assertions: z.array(z.unknown()).min(1).describe("Validated safe typed assertion definitions"),
+      maxStates: z.number().int().min(1).max(MAX_MCP_SESSION_WINDOW_STATES)
+        .describe("Explicit additional assertion-window grant (max 5000000)"),
+    },
+  },
+  async (input) => {
+    try {
+      return json(await addCampaignAssertions(input));
     } catch (error) {
       return err(error instanceof Error ? error.message : String(error));
     }

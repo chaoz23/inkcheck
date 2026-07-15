@@ -7,8 +7,9 @@ Inkcheck's MCP server can continue one exact base-shared search across calls and
 3. `start_search` runs an explicitly granted synchronous window and returns a bearer `sessionCapability`.
 4. `inspect_search` reopens bounded status and privacy-minimal finding summaries for either surface.
 5. `continue_search` raises an ordinary session's cumulative state grant and continues the exact saved frontier.
-6. `add_goal` spends an explicit additional budget on one safe typed goal from the story root without mutating that frontier.
-7. `cancel_search` terminates a campaign with its latest report provenance, or marks an ordinary session cancelled while retaining recoverability by default.
+6. `add_goal` spends an explicit additional budget on one safe typed goal from the story root without mutating that frontier; campaign use requires `approved_goals`.
+7. `add_assertions` spends an explicit additional budget on validated rules for a `runtime_assertions` campaign without mutating that frontier.
+8. `cancel_search` terminates a campaign with its latest report provenance, or marks an ordinary session cancelled while retaining recoverability by default.
 8. `replay_witness` executes one stable finding from the latest report against current source.
 9. `pin_regression` and `check_regression` preserve and recheck one confirmed runtime failure across source edits.
 
@@ -39,7 +40,7 @@ Campaign state lives inside the same private, revisioned session artifact as the
 
 `campaign.decision` is the default compact explanation: stable policy ID/version, named mode and sorted overrides, latest allocation reason, preferred-yield rate, three-window empirical next range, high/medium uncertainty, throughput/resources, binding constraint, changes that permit more work, and the latest report ID. Use `open_report` for full curves and `get_finding` for one finding rather than expanding every report by default.
 
-Source edits invalidate continuation and retain prior evidence. Deadlines, cancellation, and hard resource boundaries keep the latest report reference. `stopPolicy: knee` becomes eligible only after three consecutive preferred-yield-dry windows, then spends protected long-tail obligations before stopping; the response repeatedly states that this is not coverage proof. `ceilings` ignores the knee. Campaign capabilities cannot be passed to ordinary `continue_search` or `add_goal`, which would bypass aggregate accounting. This slice is one exact shared trajectory: independent strategy/seed/goal children, cross-run finding merge, concurrent workers, specialist dispatch, and cost-provider accounting are not yet implemented.
+Source edits invalidate continuation and retain prior evidence. Deadlines, cancellation, and hard resource boundaries keep the latest report reference. `stopPolicy: knee` becomes eligible only after three consecutive preferred-yield-dry windows, then spends protected long-tail obligations before stopping; the response repeatedly states that this is not coverage proof. `ceilings` ignores the knee. Campaign capabilities cannot be passed to ordinary `continue_search`. `add_goal` and `add_assertions` are ledger-accounted additive child windows: they preserve the base report/checkpoint and protected base ceiling, keep full child evidence in separate reports, and deduplicate repeated critical/goal evidence before yield credit. Concurrent workers, broad specialist dispatch, merged child/base reports, and cost-provider accounting are not yet implemented.
 
 ## Additive goal probes
 
