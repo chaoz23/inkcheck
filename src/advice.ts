@@ -77,6 +77,18 @@ export function recommendNextRun(
     };
   }
 
+  if (report.truncatedBy.worker) {
+    return {
+      recommendation: "investigate",
+      stop: true,
+      flags: sameFlags,
+      rationale:
+        "truncatedBy.worker is true: at least one concurrent explorer failed, so the surviving findings are useful partial evidence but this run did not spend its declared portfolio grant as planned.",
+      expectedGain:
+        "retry with --concurrency 1 for deterministic fallback, or inspect the per-worker execution evidence before retrying the bounded concurrent run",
+    };
+  }
+
   // Memory-bound runs must be handled before any "raise a limit" branch:
   // broadening or deepening only grows the frontier and state-hash set that
   // triggered the guard, so more budget makes an OOM more likely, not less.

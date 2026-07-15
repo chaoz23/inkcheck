@@ -13,6 +13,8 @@ export interface InkcheckCiConfig {
   seed?: number;
   storySeed?: number;
   search?: "portfolio" | "shared" | "shared-variable";
+  /** Experimental fixed-allocation portfolio worker ceiling. */
+  concurrency?: number;
   maxMemoryMb?: number;
   maxTimeSec?: number;
   /** Shared search only: explicit retained-checkpoint count envelope. */
@@ -103,7 +105,7 @@ export function parseProjectConfig(source: string): InkcheckProjectConfig {
     } else {
       unknownKeys(
         value.ci,
-        ["maxDepth", "maxStates", "goalMaxStates", "seed", "storySeed", "search", "maxMemoryMb", "maxTimeSec", "maxFrontierStates", "maxFrontierMb", "strict", "minRepro"],
+        ["maxDepth", "maxStates", "goalMaxStates", "seed", "storySeed", "search", "concurrency", "maxMemoryMb", "maxTimeSec", "maxFrontierStates", "maxFrontierMb", "strict", "minRepro"],
         "ci",
         issues
       );
@@ -113,6 +115,7 @@ export function parseProjectConfig(source: string): InkcheckProjectConfig {
         goalMaxStates: boundedInteger(value.ci.goalMaxStates, "ci.goalMaxStates", 0, 100_000_000, issues),
         seed: boundedInteger(value.ci.seed, "ci.seed", 1, 4_294_967_295, issues),
         storySeed: boundedInteger(value.ci.storySeed, "ci.storySeed", 1, 2_147_483_646, issues),
+        concurrency: boundedInteger(value.ci.concurrency, "ci.concurrency", 1, 16, issues),
         maxMemoryMb: boundedInteger(value.ci.maxMemoryMb, "ci.maxMemoryMb", 1, 1_000_000, issues),
         maxTimeSec: boundedInteger(value.ci.maxTimeSec, "ci.maxTimeSec", 1, 86_400, issues),
         maxFrontierStates: boundedInteger(value.ci.maxFrontierStates, "ci.maxFrontierStates", 1, 100_000_000, issues),
@@ -133,6 +136,9 @@ export function parseProjectConfig(source: string): InkcheckProjectConfig {
       }
       if ((ci.maxFrontierStates !== undefined || ci.maxFrontierMb !== undefined) && (ci.search ?? "portfolio") === "portfolio") {
         issues.push("ci.maxFrontierStates/ci.maxFrontierMb: require search: shared or shared-variable");
+      }
+      if ((ci.concurrency ?? 1) > 1 && (ci.search ?? "portfolio") !== "portfolio") {
+        issues.push("ci.concurrency greater than 1 requires search: portfolio");
       }
     }
   }

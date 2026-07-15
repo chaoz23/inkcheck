@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "evaluation": "concurrency-intercept-5m-v1",
+  "date": "2026-07-15",
+  "baseCommit": "bcae2661db0eb10766685376cc53c494a6410494",
+  "story": {
+    "name": "The Intercept",
+    "source": "benchmarks/authored/the-intercept/TheIntercept.ink"
+  },
+  "configuration": {
+    "maxDepth": 100,
+    "maxStates": 5000000,
+    "searchSeed": 7,
+    "storySeed": 1,
+    "minimizeRepro": false,
+    "node": "24.14.0",
+    "oldSpaceMiB": 4096,
+    "architecture": "arm64",
+    "os": "macOS 26.3.1"
+  },
+  "promotionGate": {
+    "passed": false,
+    "reasons": [
+      "fixed concurrent allocation lost 1890 of 4456 exact terminal identities",
+      "rolling worker slots were slower than the adaptive sequential baseline"
+    ]
+  },
+  "runs": [
+    {
+      "executor": "adaptive-sequential",
+      "elapsedMs": 744219,
+      "maxRssKiB": 394496,
+      "statesExplored": 5000000,
+      "terminalIdentities": 4456,
+      "runtimeErrors": 0,
+      "visitedKnots": 29,
+      "unvisitedKnots": 1,
+      "truncatedBy": ["maxStates", "beamWidth"],
+      "passes": [
+        { "pass": "dfs:last", "granted": 522445, "consumed": 522445, "terminalIdentities": 37, "visitedKnots": 26 },
+        { "pass": "dfs:first", "granted": 517401, "consumed": 517401, "terminalIdentities": 41, "visitedKnots": 28 },
+        { "pass": "dfs:inside-out", "granted": 542424, "consumed": 542424, "terminalIdentities": 24, "visitedKnots": 27 },
+        { "pass": "beam:diversity", "granted": 75000, "consumed": 6165, "terminalIdentities": 134, "visitedKnots": 25 },
+        { "pass": "random:7", "granted": 3411565, "consumed": 3411565, "terminalIdentities": 4390, "visitedKnots": 29 }
+      ]
+    },
+    {
+      "executor": "barrier-fixed-v1",
+      "requestedConcurrency": 4,
+      "effectiveConcurrency": 4,
+      "elapsedMs": 569268,
+      "maxRssKiB": 805072,
+      "statesExplored": 4256165,
+      "terminalIdentities": 2566,
+      "runtimeErrors": 0,
+      "visitedKnots": 29,
+      "unvisitedKnots": 1,
+      "truncatedBy": ["maxStates", "beamWidth"]
+    },
+    {
+      "executor": "rolling-fixed-v1",
+      "requestedConcurrency": 4,
+      "effectiveConcurrency": 4,
+      "elapsedMs": 876697,
+      "maxRssKiB": 734864,
+      "statesExplored": 4256165,
+      "terminalIdentities": 2566,
+      "runtimeErrors": 0,
+      "visitedKnots": 29,
+      "unvisitedKnots": 1,
+      "truncatedBy": ["maxStates", "beamWidth"],
+      "workers": [
+        { "pass": "dfs:last", "granted": 975000, "consumed": 975000, "status": "completed" },
+        { "pass": "dfs:first", "granted": 975000, "consumed": 975000, "status": "completed" },
+        { "pass": "dfs:inside-out", "granted": 1300000, "consumed": 1300000, "status": "completed" },
+        { "pass": "beam:diversity", "granted": 750000, "consumed": 6165, "status": "completed" },
+        { "pass": "random:7", "granted": 1000000, "consumed": 1000000, "status": "completed" }
+      ]
+    }
+  ]
+}

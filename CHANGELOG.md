@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add the first #94 worker-backed portfolio executor behind explicit CLI/config/MCP concurrency. It uses rolling bounded worker slots, deterministic weighted grants and canonical merge order, aggregate budget heartbeats, state/memory/deadline controls, safe constrained-machine fallback, compact execution evidence, and a distinct worker-failure partial-report contract. Concurrency remains one by default: matched fixed-allocation 5M *The Intercept* candidates lost 42.4% of terminal identities, and the shipped rolling form was slower than the adaptive sequential baseline. Adaptive concurrent allocation remains required before default promotion.
 - Add the versioned agent-readiness benchmark foundation: a deterministic unfamiliar-project runtime/assertion repair fixture, no-hidden-hints protocol, checked expected evidence, machine scorer, bootstrap/call/reference/safety/proof targets, and separate tool/skill/model/environment failure attribution. The default five-tool MCP profile and bundled skill measure 2,738 bootstrap tokens under the preregistered byte estimate, while `INKCHECK_MCP_PROFILE=full` preserves named-tool compatibility. Real results from two distinct agents remain a release gate rather than synthetic evidence.
 - Make MCP inspection, compilation, statistics, and one-shot exploration compact and privacy-minimal by default with explicit drill-down/full detail, source-bound inventory pages, and incremental session-event cursors. Raise the bounded campaign-window ceiling to 1,024 while retaining byte/resource guards.
 

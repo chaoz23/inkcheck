@@ -52,6 +52,7 @@ import {
 import { findDefaultProjectConfig, loadProjectConfig } from "./config";
 import { createAgentKit, initProject, renderScaffoldResult } from "./scaffold";
 import { createResourceGuards } from "./resource-guards";
+import { explorePortfolioConcurrent } from "./concurrent-portfolio";
 import {
   artifactProjectRoot,
   deleteReportArtifact,
@@ -103,6 +104,7 @@ Options:
   --seed <n>         Seed for the random-sampling slice, 1–4294967295 (default 1)
   --story-seed <n>   Initial Ink runtime RNG seed, 1–2147483646 (default 1)
   --search <mode>    Search: portfolio (default), shared, or shared-variable
+  --concurrency <n>  Portfolio worker ceiling, 1-16 (default 1; experimental)
   --max-memory <mb>  Stop cleanly before heap use exceeds <mb> (default: 85% of the V8 heap limit)
   --max-time <s>     Stop cleanly after <s> seconds and return a partial report (default: no time limit)
   --max-frontier-states <n>  Shared search pending-checkpoint cap (default: none)
@@ -446,6 +448,7 @@ async function main() {
   let seed: number | undefined;
   let storySeed: number | undefined;
   let search: "portfolio" | "shared" | "shared-variable" = "portfolio";
+  let concurrency: number | undefined;
   let strict = false;
   let asJson = false;
   let asMarkdown = false;
@@ -491,6 +494,7 @@ async function main() {
       search = mode;
     }
     else if (arg === "--max-memory") maxMemoryMb = boundedInt(arg, args[++i], 1_000_000);
+    else if (arg === "--concurrency") concurrency = boundedInt(arg, args[++i], 16);
     else if (arg === "--max-time") maxTimeSec = boundedInt(arg, args[++i], 86_400);
     else if (arg === "--max-frontier-states") maxFrontierStates = boundedInt(arg, args[++i], 100_000_000);
     else if (arg === "--max-frontier-memory") maxFrontierMb = boundedInt(arg, args[++i], 1_000_000);
@@ -563,7 +567,7 @@ async function main() {
   if (inspectMode) {
     if (asMarkdown || asHuman || profileOnly || auto || followNext || strict || !minRepro ||
         maxDepth !== undefined || maxStates !== undefined || goalMaxStates !== undefined || seed !== undefined || storySeed !== undefined ||
-        maxMemoryMb !== undefined || maxTimeSec !== undefined || maxFrontierStates !== undefined || maxFrontierMb !== undefined || search !== "portfolio" ||
+        concurrency !== undefined || maxMemoryMb !== undefined || maxTimeSec !== undefined || maxFrontierStates !== undefined || maxFrontierMb !== undefined || search !== "portfolio" ||
         progressSpecified || saveReport || saveCheckpoint || resumeCheckpointId !== undefined) {
       usage("inspect accepts a story path and optional --json only");
     }
@@ -584,6 +588,8 @@ async function main() {
   storySeed ??= configDefaults?.storySeed;
   storySeed ??= DEFAULT_STORY_SEED;
   maxMemoryMb ??= configDefaults?.maxMemoryMb;
+  concurrency ??= configDefaults?.concurrency;
+  concurrency ??= 1;
   maxTimeSec ??= configDefaults?.maxTimeSec;
   maxFrontierStates ??= configDefaults?.maxFrontierStates;
   maxFrontierMb ??= configDefaults?.maxFrontierMb;
@@ -592,6 +598,12 @@ async function main() {
   if (!resumeCheckpointId && !minReproSpecified && configDefaults?.minRepro !== undefined) minRepro = configDefaults.minRepro;
   if ((maxFrontierStates !== undefined || maxFrontierMb !== undefined) && search === "portfolio") {
     usage("--max-frontier-states/--max-frontier-memory require --search shared or shared-variable");
+  }
+  if (concurrency > 1 && search !== "portfolio") {
+    usage("--concurrency greater than 1 currently requires --search portfolio");
+  }
+  if (concurrency > 1 && (goalMaxStates ?? 0) > 0) {
+    usage("--concurrency greater than 1 does not yet support additive --goal-states");
   }
   if (saveCheckpoint && (search !== "shared" || minRepro || auto || followNext || (goalMaxStates ?? 0) > 0 || saveReport)) {
     usage("checkpoint persistence requires --search=shared --no-min-repro and does not support --auto, --next, --goal-states, or --save-report");
@@ -627,6 +639,7 @@ async function main() {
   const totalMaxStates = baselineMaxStates + additionalGoalStates;
   const reportConfiguration: EffectiveReportConfiguration = {
     search,
+    concurrency,
     minRepro,
     strict,
     maxMemoryMb: maxMemoryMb ?? null,
@@ -748,7 +761,7 @@ async function main() {
   // Memory guard: a V8 heap OOM cannot be caught after the fact, so stop
   // cleanly before it. The cap is an explicit --max-memory, or 85% of the
   // V8 old-space limit (which honors any --max-old-space-size the user set).
-  const { memoryCapBytes, memoryGuard, timeGuard } = createResourceGuards({
+  const { memoryCapBytes, deadlineMs, memoryGuard, timeGuard } = createResourceGuards({
     maxMemoryMb,
     ...(maxTimeSec === undefined ? {} : { maxTimeMs: maxTimeSec * 1000 }),
   });
@@ -806,13 +819,21 @@ async function main() {
       checked = continuation.result;
       nextCheckpoint = continuation.checkpoint;
     } else {
-      checked = exploreWithGoals(compiled.storyJson!, knots, externals, {
+      const configuredOptions = {
         ...exploreOptions,
         weights: profile?.suggested.weights,
         assertions: configuredAssertions,
         goals: configuredGoals,
         goalMaxStates: additionalGoalStates,
-      }, search);
+      };
+      checked = search === "portfolio" && concurrency > 1 && additionalGoalStates === 0
+        ? explorePortfolioConcurrent(compiled.storyJson!, knots, externals, {
+            ...configuredOptions,
+            concurrency,
+            memoryCapBytes,
+            deadlineMs,
+          })
+        : exploreWithGoals(compiled.storyJson!, knots, externals, configuredOptions, search);
     }
     statesExplored = saveCheckpoint ? checked.statesExplored : statesBase + checked.statesExplored;
     emitProgress("phase_end", { phase: "explore" });

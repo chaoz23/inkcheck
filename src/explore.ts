@@ -81,6 +81,24 @@ export interface TruncationCauses {
   memory: boolean;
   /** Exploration stopped early because the wall-clock time budget elapsed. */
   time: boolean;
+  /** One concurrent explorer failed before returning its complete bounded result. */
+  worker?: boolean;
+}
+
+export interface ConcurrentWorkerEvidence {
+  pass: string;
+  granted: number;
+  consumed: number;
+  status: "completed" | "memory" | "time" | "failed";
+  error?: string;
+}
+
+export interface PortfolioExecutionEvidence {
+  mode: "sequential" | "concurrent";
+  requestedConcurrency: number;
+  effectiveConcurrency: number;
+  fallbackReason?: "single_core" | "memory_headroom" | "single_pass";
+  workers: ConcurrentWorkerEvidence[];
 }
 
 export interface UnvisitedKnotReport {
@@ -145,6 +163,8 @@ export interface ExploreResult {
   discoverySummary?: DiscoveryCurveSummary;
   /** Research-only replay of shadow reallocation decisions; never emitted by the default portfolio. */
   policyReplay?: PolicyReplayRound[];
+  /** Optional deterministic provenance for worker-backed portfolio execution. */
+  execution?: PortfolioExecutionEvidence;
 }
 
 /**
@@ -3911,6 +3931,7 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
     frontier: main.truncatedBy.frontier || other.truncatedBy.frontier,
     memory: main.truncatedBy.memory || other.truncatedBy.memory,
     time: main.truncatedBy.time || other.truncatedBy.time,
+    worker: main.truncatedBy.worker || other.truncatedBy.worker || undefined,
   };
   // One systematic pass finishing without truncation proves every reachable
   // state was visited, so partial-coverage flags from budget-bound sampling
