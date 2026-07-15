@@ -106,11 +106,32 @@ function configurationSummary(configuration: Record<string, unknown> | undefined
   const limits = record(configuration?.limits);
   return {
     search: configuration?.search,
+    concurrency: configuration?.concurrency,
     minRepro: configuration?.minRepro,
     storySeed: configuration?.storySeed,
     ...(limits ? { limits } : {}),
     assertionCount: array(configuration?.assertions).length,
     goalCount: array(configuration?.goals).length,
+  };
+}
+
+function executionSummary(value: unknown) {
+  const execution = record(value);
+  if (!execution) return undefined;
+  return {
+    mode: execution.mode,
+    requestedConcurrency: execution.requestedConcurrency,
+    effectiveConcurrency: execution.effectiveConcurrency,
+    ...(execution.fallbackReason === undefined ? {} : { fallbackReason: execution.fallbackReason }),
+    workers: array(execution.workers).map((value) => {
+      const worker = record(value);
+      return {
+        pass: worker?.pass,
+        granted: worker?.granted,
+        consumed: worker?.consumed,
+        status: worker?.status,
+      };
+    }),
   };
 }
 
@@ -136,6 +157,7 @@ function explorationSummary(explore: Record<string, unknown> | undefined) {
     truncatedBy: explore.truncatedBy,
     exhaustive: explore.exhaustive === true,
     limits: explore.limits,
+    ...(explore.execution ? { execution: executionSummary(explore.execution) } : {}),
   };
 }
 

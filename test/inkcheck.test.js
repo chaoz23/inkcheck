@@ -252,6 +252,9 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.features.goals, true);
   assert.strictEqual(value.features.stagedGoals, true);
   assert.strictEqual(value.features.bundledAgentSkill, true);
+  assert.strictEqual(value.features.concurrentPortfolio, true);
+  assert.strictEqual(value.limits.defaultConcurrency, 1);
+  assert.strictEqual(value.limits.maxConcurrency, 16);
   assert.strictEqual(value.features.localReportArtifacts, true);
   assert.strictEqual(value.features.savedFindingLookup, true);
   assert.strictEqual(value.features.resumableSearch, true);
@@ -309,6 +312,10 @@ test("config rejects unknown keys, unsafe entrypoints, and invalid bounds", () =
   assert.throws(
     () => parseProjectConfig("schemaVersion: 2\nentrypoint: story.ink\nentrypoint: other.ink\n"),
     /Map keys must be unique/
+  );
+  assert.throws(
+    () => parseProjectConfig("schemaVersion: 1\nentrypoint: story.ink\nci:\n  search: shared\n  concurrency: 2\n"),
+    /ci\.concurrency greater than 1 requires search: portfolio/
   );
 });
 

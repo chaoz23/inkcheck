@@ -125,6 +125,7 @@ function enrichGoalResult(result: GoalResult, storySeed?: number) {
 
 export function bindingLimit(explore: ExploreResult): string | null {
   if (!explore.truncated) return null;
+  if (explore.truncatedBy.worker) return "worker";
   if (explore.truncatedBy.memory) return "memory";
   if (explore.truncatedBy.time) return "time";
   if (explore.truncatedBy.frontier) return "frontier";
@@ -136,6 +137,8 @@ export function bindingLimit(explore: ExploreResult): string | null {
 
 export interface EffectiveReportConfiguration {
   search: "portfolio" | "shared" | "shared-variable";
+  /** Requested portfolio worker ceiling; one preserves legacy sequential execution. */
+  concurrency?: number;
   /** Present only for a root-started additive specialist report, never a base run. */
   executionScope?: "goal-probe" | "assertion-probe";
   minRepro: boolean;

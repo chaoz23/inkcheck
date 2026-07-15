@@ -37,6 +37,7 @@ function largeReport() {
     storyFingerprint: { algorithm: "sha256", source: "compiled-story", value: "a".repeat(64) },
     effectiveConfiguration: {
       search: "portfolio",
+      concurrency: 4,
       minRepro: true,
       storySeed: 1,
       limits: { maxDepth: 100, maxStates: 1_000_000, storySeed: 1 },
@@ -60,6 +61,15 @@ function largeReport() {
       truncatedBy: { maxDepth: false, maxStates: true, beamWidth: false, frontier: false, memory: false, time: false },
       exhaustive: false,
       limits: { maxDepth: 100, maxStates: 1_000_000, storySeed: 1 },
+      execution: {
+        mode: "concurrent",
+        requestedConcurrency: 4,
+        effectiveConcurrency: 4,
+        workers: [
+          { pass: "dfs:last", granted: 200_000, consumed: 200_000, status: "completed", error: "PRIVATE WORKER ERROR" },
+          { pass: "random:7", granted: 200_000, consumed: 150_000, status: "time" },
+        ],
+      },
       passes: Array.from({ length: 1_000 }, (_, index) => ({ pass: `PRIVATE PASS ${index}` })),
     },
     nextRun: {
@@ -85,11 +95,22 @@ test("default machine detail stays bounded and keeps response truncation separat
   assert.strictEqual(projected.findings.length, 20);
   assert.strictEqual(projected.explore.runtimeErrorCount, 2_000);
   assert.strictEqual(projected.explore.endingCount, 2_000);
+  assert.strictEqual(projected.effectiveConfiguration.concurrency, 4);
+  assert.deepStrictEqual(projected.explore.execution, {
+    mode: "concurrent",
+    requestedConcurrency: 4,
+    effectiveConcurrency: 4,
+    workers: [
+      { pass: "dfs:last", granted: 200_000, consumed: 200_000, status: "completed" },
+      { pass: "random:7", granted: 200_000, consumed: 150_000, status: "time" },
+    ],
+  });
   assert.ok(!serialized.includes("PRIVATE STORY"));
   assert.ok(!serialized.includes("PRIVATE VARIABLE"));
   assert.ok(!serialized.includes("PRIVATE WITNESS"));
   assert.ok(!serialized.includes("PRIVATE ASSERTION"));
   assert.ok(!serialized.includes("PRIVATE POLICY"));
+  assert.ok(!serialized.includes("PRIVATE WORKER ERROR"));
   assert.strictEqual(projected.findings[0].sourceLocation.pathTruncated, true);
 });
 

@@ -45,7 +45,7 @@ export interface ShadowDecision {
   policyVersion: number;
   action: ShadowAction;
   reason: string;
-  bindingConstraint: "exhaustive" | "memory" | "time" | "frontier" | "states" | "depth" | null;
+  bindingConstraint: "exhaustive" | "worker" | "memory" | "time" | "frontier" | "states" | "depth" | null;
   uncertainty: {
     confidence: "low" | "moderate" | "high";
     curveCompacted: boolean;
@@ -152,6 +152,7 @@ function hasValue(value: ValueTiers): boolean {
 
 function bindingConstraint(report: ExploreResult): ShadowDecision["bindingConstraint"] {
   if (report.exhaustive) return "exhaustive";
+  if (report.truncatedBy.worker) return "worker";
   if (report.truncatedBy.memory) return "memory";
   if (report.truncatedBy.time) return "time";
   if (report.truncatedBy.frontier) return "frontier";
@@ -251,6 +252,7 @@ export function recommendShadowDecision(report: ExploreResult): ShadowDecision {
   };
 
   if (report.exhaustive) return { ...base, action: "stop_exhaustive", reason: "a systematic pass proved every reachable state exhausted" };
+  if (report.truncatedBy.worker) return { ...base, action: "stop_at_resource_limit", reason: "a concurrent explorer failed; surviving evidence is partial and retry policy must be explicit" };
   if (report.truncatedBy.memory) return { ...base, action: "stop_at_resource_limit", reason: "the memory guard is binding; more state budget would not be safe" };
   if (report.truncatedBy.time) return { ...base, action: "stop_at_deadline", reason: "the configured wall-clock limit is binding" };
   if (!summary || summary.discoveryEvents === 0) return { ...base, action: "probe", reason: "no meaningful discovery has been observed; retain complementary probe floors" };

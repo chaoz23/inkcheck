@@ -56,6 +56,8 @@ export interface InkcheckCapabilities {
     defaultMaxDepth: number;
     defaultMaxStates: number;
     defaultGoalMaxStates: number;
+    defaultConcurrency: number;
+    maxConcurrency: number;
     maxStorySeed: number;
     defaultStorySeed: number;
     maxCheckpointBytes: number;
@@ -86,6 +88,7 @@ export interface InkcheckCapabilities {
     goals: boolean;
     stagedGoals: boolean;
     anytimeShadowDecision: boolean;
+    concurrentPortfolio: boolean;
     localReportArtifacts: boolean;
     savedFindingLookup: boolean;
     resumableSearch: boolean;
@@ -123,6 +126,8 @@ export function capabilities(): InkcheckCapabilities {
       defaultMaxDepth: 100,
       defaultMaxStates: 10_000_000,
       defaultGoalMaxStates: 0,
+      defaultConcurrency: 1,
+      maxConcurrency: 16,
       maxStorySeed: 2_147_483_646,
       defaultStorySeed: 1,
       maxCheckpointBytes: DEFAULT_MAX_CHECKPOINT_BYTES,
@@ -153,6 +158,7 @@ export function capabilities(): InkcheckCapabilities {
       goals: true,
       stagedGoals: true,
       anytimeShadowDecision: true,
+      concurrentPortfolio: true,
       localReportArtifacts: true,
       savedFindingLookup: true,
       resumableSearch: true,
