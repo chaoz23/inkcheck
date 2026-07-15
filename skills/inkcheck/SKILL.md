@@ -7,16 +7,16 @@ description: Use Inkcheck to inspect, compile, mechanically explore, replay, rep
 
 Use this skill when a project contains `.ink` files or asks for Ink compile checks, runtime-path reproduction, assertions, unreachable-content review, or repeatable narrative CI. Inkcheck is a deterministic, non-AI QA engine. It does not generate prose, judge story quality, or model a human player. It does not prove complete coverage unless its systematic pass explicitly reports `exhaustive: true`.
 
-This skill targets Inkcheck 0.6.x, capabilities schema 1, report schema 1, search-session schema 5, and campaign-policy schema 1. Begin with `inkcheck_capabilities`; use reported feature flags and schema versions rather than assuming optional behavior. If the installed contract differs, prefer its bundled docs and avoid unsupported operations.
+This skill targets Inkcheck 0.6.x, capabilities schema 1, report schema 1, search-session schema 5, and campaign-policy schema 1. Begin with `inkcheck_capabilities`; use reported feature flags and schema versions rather than assuming optional behavior. The default compact MCP profile exposes typed `inkcheck_capabilities`, `inspect_story`, `compile_story`, and `start_search` entry calls plus `inkcheck_workflow` for later operations. If the installed contract differs, prefer its bundled docs and avoid unsupported operations.
 
 ## Default Loop
 
 1. **Discover.** Call `inkcheck_capabilities`, then `inspect_story` once on the project entrypoint. Inspection reads a compact structural overview without compiling, executing, or returning narrative prose. Request only the needed inventory section when the overview shows more knots or variables.
 2. **Compile.** Call `compile_story`. Compile issues are prerequisite failures. Fix syntax or structural defects before interpreting exploration results.
-3. **Explore in a result window.** Prefer `start_search` for agent work. Its response is bounded, durable, source-bound, and paginated. Use `start_campaign` only when the user has chosen a campaign posture or deadline. Avoid loading a full one-shot report merely to find the first action.
-4. **Select and replay.** Inspect privacy-minimal finding summaries. Fetch one finding with `get_finding`, then use `replay_witness` before editing a runtime defect. Keep the search seed and Ink `storySeed` fixed.
+3. **Explore in a result window.** Prefer typed `start_search` for agent work. Its response is bounded, durable, source-bound, and paginated. Use `inkcheck_workflow` with `operation: "start_campaign"` only when the user has chosen a campaign posture or deadline. Avoid loading a full one-shot report merely to find the first action.
+4. **Select and replay.** Inspect privacy-minimal finding summaries. Through `inkcheck_workflow`, fetch one finding with `operation: "get_finding"`, then use `operation: "replay_witness"` before editing a runtime defect. Keep the search seed and Ink `storySeed` fixed.
 5. **Repair narrowly.** Change mechanical logic only when the intended behavior is unambiguous. Ask before changing story prose, choice wording, narrative outcomes, puzzle difficulty, or which branch should be canonical.
-6. **Verify.** Compile again. For a runtime defect, pin it before editing when useful, then call `check_regression`. Otherwise replay the same indexed witness and continue or repeat the same source/config/seed window. State whether the result is fixed, still failing, path changed, partial, or exhaustive.
+6. **Verify.** Compile again. For a runtime defect, pin it before editing when useful, then route `check_regression` through `inkcheck_workflow`. Otherwise replay the same indexed witness and continue or repeat the same source/config/seed window. State whether the result is fixed, still failing, path changed, partial, or exhaustive.
 
 ## Evidence Rules
 
@@ -31,7 +31,7 @@ This skill targets Inkcheck 0.6.x, capabilities schema 1, report schema 1, searc
 
 ## Choosing Work
 
-Use the smallest content-revealing call that answers the question:
+Use the smallest content-revealing call that answers the question. Names below are logical operations; in the default compact profile, route every operation after `start_search` through `inkcheck_workflow { operation, request }`. Set `INKCHECK_MCP_PROFILE=full` only for compatibility with clients that require separate named tools.
 
 - Need project shape or feature detection: `inspect_story`.
 - Need authoritative syntax diagnostics: `compile_story`.

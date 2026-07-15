@@ -1,5 +1,7 @@
 # Compact machine output
 
+The default compact MCP registration profile contains five tools: typed capabilities, inspection, compilation, and search entry calls plus the `inkcheck_workflow` router. The router changes only bootstrap schema size; each logical operation keeps the response bounds and disclosure rules below. `INKCHECK_MCP_PROFILE=full` restores separate named tools for compatibility.
+
 Inkcheck separates the amount of search performed from the amount of report data returned. `explore.truncated` and its binding limit describe bounded exploration. `response.dataTruncated`, page counts, and cursors describe only output projection. Neither implies the other.
 
 ## Default bounds

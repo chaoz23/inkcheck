@@ -141,6 +141,60 @@ test("large compile diagnostics remain actionable without exceeding the standard
   assert.strictEqual(projected.response.findings.omitted, 4_980);
 });
 
+test("MCP compact profile stays below the agent bootstrap target and routes later workflow operations", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-compact-mcp-"));
+  const story = path.join(root, "story.ink");
+  fs.writeFileSync(story, "A bounded opening.\n* [Continue] A bounded ending.\n  -> END\n");
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.join(__dirname, "..", "dist", "server.js")],
+    cwd: root,
+    env: { ...process.env, INKCHECK_MCP_PROFILE: "compact" },
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "inkcheck-compact-profile-test", version: "1" }, { capabilities: {} });
+  try {
+    await client.connect(transport);
+    const catalog = await client.listTools();
+    assert.deepStrictEqual(
+      catalog.tools.map((tool) => tool.name).sort(),
+      ["compile_story", "inkcheck_capabilities", "inkcheck_workflow", "inspect_story", "start_search"]
+    );
+    const skillBytes = fs.readFileSync(path.join(__dirname, "..", "skills", "inkcheck", "SKILL.md")).byteLength;
+    const toolCatalogBytes = Buffer.byteLength(JSON.stringify(catalog.tools), "utf8");
+    const estimatedBootstrapTokens = Math.ceil((skillBytes + toolCatalogBytes) / 4);
+    assert.ok(estimatedBootstrapTokens <= 3_000, `estimated bootstrap was ${estimatedBootstrapTokens} tokens`);
+
+    const capabilitiesCall = await client.callTool({ name: "inkcheck_capabilities", arguments: {} });
+    const discovered = JSON.parse(capabilitiesCall.content[0].text);
+    assert.strictEqual(discovered.mcp.profile, "compact");
+    assert.deepStrictEqual(discovered.mcp.fullProfileEnvironment, { INKCHECK_MCP_PROFILE: "full" });
+    assert.deepStrictEqual(discovered.mcp.workflowOperations.inspect_search.required, ["file", "sessionCapability"]);
+
+    const startedCall = await client.callTool({ name: "start_search", arguments: { file: story, maxStates: 100 } });
+    const started = JSON.parse(startedCall.content[0].text);
+    const inspectedCall = await client.callTool({
+      name: "inkcheck_workflow",
+      arguments: {
+        operation: "inspect_search",
+        request: { file: story, sessionCapability: started.sessionCapability },
+      },
+    });
+    const inspected = JSON.parse(inspectedCall.content[0].text);
+    assert.strictEqual(inspected.session.id, started.session.id);
+
+    const invalidCall = await client.callTool({
+      name: "inkcheck_workflow",
+      arguments: { operation: "inspect_search", request: { file: story } },
+    });
+    assert.strictEqual(invalidCall.isError, true);
+    assert.match(invalidCall.content[0].text, /sessionCapability/);
+  } finally {
+    await client.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("MCP explore_story defaults to compact standard detail and requires explicit full disclosure", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-machine-output-mcp-"));
   const story = path.join(root, "story.ink");
@@ -149,12 +203,16 @@ test("MCP explore_story defaults to compact standard detail and requires explici
     command: process.execPath,
     args: [path.join(__dirname, "..", "dist", "server.js")],
     cwd: root,
-    env: { ...process.env },
+    env: { ...process.env, INKCHECK_MCP_PROFILE: "full" },
     stderr: "pipe",
   });
   const client = new Client({ name: "inkcheck-machine-output-test", version: "1" }, { capabilities: {} });
   try {
     await client.connect(transport);
+    const catalog = await client.listTools();
+    assert.ok(catalog.tools.some((tool) => tool.name === "story_stats"));
+    assert.ok(catalog.tools.some((tool) => tool.name === "explore_story"));
+    assert.ok(catalog.tools.some((tool) => tool.name === "inkcheck_workflow"));
     const inspectionCall = await client.callTool({ name: "inspect_story", arguments: { file: story } });
     const inspection = JSON.parse(inspectionCall.content[0].text);
     assert.strictEqual(inspection.response.detail, "summary");

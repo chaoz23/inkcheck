@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/chaoz23/inkcheck/benchmarks/agent-readiness-v1/submission.schema.json",
+  "title": "Inkcheck agent-readiness result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "benchmarkId", "agent", "inkcheck", "bootstrap", "trace", "outcomes", "failures", "evidence"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "benchmarkId": { "const": "inkcheck-agent-readiness-v1" },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation", "provider", "model", "version"],
+      "properties": {
+        "implementation": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "inkcheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "mcpProfile", "capabilitiesSchema", "reportSchema", "projectInspectionSchema", "searchSessionSchema", "campaignPolicySchema"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "mcpProfile": { "const": "compact" },
+        "capabilitiesSchema": { "type": "integer", "minimum": 1 },
+        "reportSchema": { "type": "integer", "minimum": 1 },
+        "projectInspectionSchema": { "type": "integer", "minimum": 1 },
+        "searchSessionSchema": { "type": "integer", "minimum": 1 },
+        "campaignPolicySchema": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tokens", "measurement", "skillBytes", "toolCatalogBytes", "deepReferences"],
+      "properties": {
+        "tokens": { "type": "integer", "minimum": 0 },
+        "measurement": { "enum": ["provider_usage", "reproducible_estimate"] },
+        "skillBytes": { "type": "integer", "minimum": 0 },
+        "toolCatalogBytes": { "type": "integer", "minimum": 0 },
+        "deepReferences": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "trace": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sequence", "phase", "operation"],
+        "properties": {
+          "sequence": { "type": "integer", "minimum": 1 },
+          "phase": { "type": "string", "minLength": 1 },
+          "operation": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "outcomes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtimeFindingId", "runtimeReplayBeforeRepair", "runtimeRepairVerified", "assertionProposedBeforeApproval", "assertionAddedAfterApproval", "assertionFindingId", "assertionReplayBeforeRepair", "assertionRepairVerified", "indexedWitnessReplay", "finalCompileSuccess", "finalAssertionStatus", "proseChanged", "unsafeEditCount", "coverageLanguage", "mentionsNoUniversalGuarantee", "callsFromDiscoveryThroughRuntimeVerification"],
+      "properties": {
+        "runtimeFindingId": { "type": "string" },
+        "runtimeReplayBeforeRepair": { "type": "string" },
+        "runtimeRepairVerified": { "type": "boolean" },
+        "assertionProposedBeforeApproval": { "type": "boolean" },
+        "assertionAddedAfterApproval": { "type": "boolean" },
+        "assertionFindingId": { "type": "string" },
+        "assertionReplayBeforeRepair": { "type": "string" },
+        "assertionRepairVerified": { "type": "boolean" },
+        "indexedWitnessReplay": { "type": "boolean" },
+        "finalCompileSuccess": { "type": "boolean" },
+        "finalAssertionStatus": { "type": "string" },
+        "proseChanged": { "type": "boolean" },
+        "unsafeEditCount": { "type": "integer", "minimum": 0 },
+        "coverageLanguage": { "type": "string" },
+        "mentionsNoUniversalGuarantee": { "type": "boolean" },
+        "callsFromDiscoveryThroughRuntimeVerification": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["category", "criterion", "evidence"],
+        "properties": {
+          "category": { "enum": ["tool", "skill", "model", "environment"] },
+          "criterion": { "type": "string", "minLength": 1 },
+          "evidence": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transcript", "finalSource", "evaluator"],
+      "properties": {
+        "transcript": { "type": "string", "minLength": 1 },
+        "finalSource": { "type": "string", "minLength": 1 },
+        "evaluator": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -48,7 +48,39 @@ import {
   startCampaign,
 } from "./search-sessions";
 
-const server = new McpServer({ name: "inkcheck", version: VERSION });
+export const MCP_PROFILE = process.env.INKCHECK_MCP_PROFILE === "full" ? "full" : "compact";
+const COMPACT_TOOLS = new Set(["inkcheck_capabilities", "inspect_story", "compile_story", "start_search"]);
+const rawServer = new McpServer({ name: "inkcheck", version: VERSION });
+const server = new Proxy(rawServer, {
+  get(target, property, receiver) {
+    if (property === "registerTool") {
+      return (name: string, ...args: unknown[]) => {
+        if (MCP_PROFILE === "full" || COMPACT_TOOLS.has(name)) {
+          return (target.registerTool.bind(target) as (...values: unknown[]) => unknown)(name, ...args);
+        }
+        return undefined;
+      };
+    }
+    const value = Reflect.get(target, property, receiver);
+    return typeof value === "function" ? value.bind(target) : value;
+  },
+}) as McpServer;
+
+const WORKFLOW_OPERATIONS = {
+  inspect_search: { required: ["file", "sessionCapability"], optional: ["findingLimit", "findingCursor", "since"] },
+  continue_search: { required: ["file", "sessionCapability", "revision", "maxStates"], optional: ["findingLimit", "findingCursor", "since"] },
+  start_campaign: { required: ["file"], optional: ["mode", "resourcePreference", "valuePreference", "stopPolicy", "totalStates", "windowStates", "maxElapsedSeconds", "maxMemoryMb", "maxDiskMb", "deadlineAt", "longTailShare", "minLongTailProbes", "regressionReserveStates", "maxDepth", "seed", "storySeed", "maxFrontierStates", "maxFrontierMb", "findingLimit"] },
+  continue_campaign: { required: ["file", "sessionCapability", "revision"], optional: ["findingLimit", "findingCursor", "since"] },
+  get_finding: { required: ["file", "sessionCapability", "reportId", "findingId"], optional: [] },
+  open_report: { required: ["file", "sessionCapability", "reportId"], optional: [] },
+  replay_witness: { required: ["file", "sessionCapability", "revision", "findingId"], optional: [] },
+  pin_regression: { required: ["file", "sessionCapability", "revision", "findingId"], optional: [] },
+  check_regression: { required: ["file", "sessionCapability", "revision", "pinId"], optional: [] },
+  add_goal: { required: ["file", "sessionCapability", "revision", "goal", "maxStates"], optional: [] },
+  add_assertions: { required: ["file", "sessionCapability", "revision", "assertions", "maxStates"], optional: [] },
+  cancel_search: { required: ["file", "sessionCapability", "revision"], optional: ["discard"] },
+  playtest_story: { required: ["file", "choices"], optional: ["storySeed"] },
+} as const;
 
 function json(result: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
@@ -65,7 +97,18 @@ server.registerTool(
       "Return Inkcheck's versioned schemas, limits, search modes, and explicit supported/unsupported feature flags. Call this before relying on optional functionality.",
     inputSchema: {},
   },
-  async () => json(capabilities())
+  async () => json({
+    ...capabilities(),
+    mcp: {
+      profile: MCP_PROFILE,
+      compactBootstrapTools: [...COMPACT_TOOLS, "inkcheck_workflow"],
+      fullProfileEnvironment: { INKCHECK_MCP_PROFILE: "full" },
+      workflowOperations: WORKFLOW_OPERATIONS,
+      disclosure: MCP_PROFILE === "compact"
+        ? "Compact is the default agent profile. Use inkcheck_workflow after typed discovery/compile/start_search entry calls."
+        : "Full compatibility profile exposes every named tool plus inkcheck_workflow and costs more bootstrap context.",
+    },
+  })
 );
 
 server.registerTool(
@@ -622,6 +665,78 @@ server.registerTool(
   async (input) => {
     try {
       return json(await replaySessionWitness(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
+
+rawServer.registerTool(
+  "inkcheck_workflow",
+  {
+    description:
+      "Run one post-discovery Inkcheck operation through the compact agent surface. Call inkcheck_capabilities first for required/optional fields, then pass the exact operation and request object.",
+    inputSchema: {
+      operation: z.enum([
+        "inspect_search",
+        "continue_search",
+        "start_campaign",
+        "continue_campaign",
+        "get_finding",
+        "open_report",
+        "replay_witness",
+        "pin_regression",
+        "check_regression",
+        "add_goal",
+        "add_assertions",
+        "cancel_search",
+        "playtest_story",
+      ]),
+      request: z.record(z.string(), z.unknown()).describe("Operation input fields listed by inkcheck_capabilities.mcp.workflowOperations"),
+    },
+  },
+  async ({ operation, request }) => {
+    try {
+      const contract = WORKFLOW_OPERATIONS[operation];
+      const missing = contract.required.filter((field) => request[field] === undefined);
+      if (missing.length) return err(`${operation} requires: ${missing.join(", ")}`);
+      switch (operation) {
+        case "inspect_search":
+          return json(await inspectSearchSession(request as unknown as Parameters<typeof inspectSearchSession>[0]));
+        case "continue_search":
+          return json(await continueSearchSession(request as unknown as Parameters<typeof continueSearchSession>[0]));
+        case "start_campaign":
+          return json(await startCampaign(request as unknown as Parameters<typeof startCampaign>[0]));
+        case "continue_campaign":
+          return json(await continueCampaign(request as unknown as Parameters<typeof continueCampaign>[0]));
+        case "get_finding":
+          return json(await openSessionFinding(request as unknown as Parameters<typeof openSessionFinding>[0]));
+        case "open_report":
+          return json(await openSessionReport(request as unknown as Parameters<typeof openSessionReport>[0]));
+        case "replay_witness":
+          return json(await replaySessionWitness(request as unknown as Parameters<typeof replaySessionWitness>[0]));
+        case "pin_regression":
+          return json(await pinSessionRegression(request as unknown as Parameters<typeof pinSessionRegression>[0]));
+        case "check_regression":
+          return json(await checkSessionRegression(request as unknown as Parameters<typeof checkSessionRegression>[0]));
+        case "add_goal":
+          return json(await addSessionGoal(request as unknown as Parameters<typeof addSessionGoal>[0]));
+        case "add_assertions":
+          return json(await addCampaignAssertions(request as unknown as Parameters<typeof addCampaignAssertions>[0]));
+        case "cancel_search":
+          return json(await cancelSearchSession(request as unknown as Parameters<typeof cancelSearchSession>[0]));
+        case "playtest_story": {
+          const input = request as { file: string; choices: number[]; storySeed?: number };
+          const compiled = await compile(input.file);
+          if (!compiled.success || !compiled.storyJson) {
+            return err(
+              "Compilation failed — fix these before playtesting:\n" +
+              compiled.issues.map((issue) => issue.raw).join("\n")
+            );
+          }
+          return json(playtest(compiled.storyJson, input.choices, scanExternals(input.file), input.storySeed));
+        }
+      }
     } catch (error) {
       return err(error instanceof Error ? error.message : String(error));
     }

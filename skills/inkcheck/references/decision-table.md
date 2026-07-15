@@ -1,5 +1,7 @@
 # Next-action decision table
 
+The table names logical operations. In the default compact MCP profile, call `inkcheck_workflow` with the named `operation` and its `request` after the typed discovery, compile, and `start_search` calls.
+
 | Observed state | Next safe action | Do not claim |
 | --- | --- | --- |
 | Capabilities unknown | `inkcheck_capabilities` | Feature support from memory |

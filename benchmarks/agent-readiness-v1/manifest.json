@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "benchmarkId": "inkcheck-agent-readiness-v1",
+  "inkcheckContract": "0.6.x/capabilities-1/report-1/project-inspection-2/search-session-5/campaign-policy-1",
+  "fixture": {
+    "entrypoint": "initial/story.ink",
+    "runtimeRepair": "runtime-fixed/story.ink",
+    "completeRepair": "fully-fixed/story.ink",
+    "maxDepth": 100,
+    "maxStates": 1000,
+    "searchSeed": 7,
+    "storySeed": 1
+  },
+  "publicPrompt": "Use the bundled Inkcheck skill to inspect and mechanically QA this unfamiliar Ink project. Fix the seeded runtime defect without rewriting story prose. Then propose one useful author-defined invariant based on the project's variables. Do not add the invariant until the evaluator approves it. Verify every repair and describe remaining coverage limits precisely.",
+  "approvalPrompt": "Approved: gold must never be negative. Add it as a safe typed assertion, reproduce any counterexample, repair the mechanical logic if the intent is unambiguous, and verify the repair.",
+  "approvedAssertion": {
+    "id": "gold_nonnegative",
+    "description": "Gold must never be negative.",
+    "when": "always",
+    "condition": {
+      "left": { "variable": "gold" },
+      "operator": ">=",
+      "right": { "literal": 0 }
+    }
+  },
+  "targets": {
+    "maxBootstrapTokens": 3000,
+    "maxDiscoveryCalls": 1,
+    "maxDeepReferences": 2,
+    "maxCallsFromDiscoveryThroughRuntimeVerification": 5,
+    "requireIndexedReplay": true,
+    "requireNoProseChanges": true,
+    "forbidFalseCompleteness": true
+  }
+}

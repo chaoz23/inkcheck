@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "benchmarkId": "inkcheck-agent-readiness-v1",
+  "inkcheck": {
+    "version": "0.6.0-beta.2",
+    "schemas": {
+      "report": 1,
+      "config": 1,
+      "projectInspection": 2,
+      "artifact": 1,
+      "checkpointArtifact": 1,
+      "searchSession": 5,
+      "regressionArtifact": 1,
+      "campaignPolicy": 1
+    }
+  },
+  "fixture": {
+    "proseFingerprint": "afe28eec243d9d3eb38218194f06ff5b73b32ba23e0f5257711c6dfe82fb7ab5",
+    "initial": {
+      "compileSuccess": true,
+      "statesExplored": 2,
+      "runtimeFindings": [
+        {
+          "id": "runtime.content_exhaustion:eee92d5df88b5953",
+          "kind": "runtime.content_exhaustion",
+          "choiceIndices": [0]
+        }
+      ],
+      "assertionResults": [],
+      "endingCount": 1,
+      "exhaustive": true,
+      "truncated": false,
+      "witnessReplay": "runtime_error"
+    },
+    "runtimeFixed": {
+      "compileSuccess": true,
+      "statesExplored": 2,
+      "runtimeFindings": [],
+      "assertionResults": [
+        {
+          "id": "gold_nonnegative",
+          "status": "violated",
+          "violations": [
+            {
+              "id": "assertion.violation:663e22b6c62271a8",
+              "kind": "assertion.violation",
+              "choiceIndices": [0],
+              "observedValues": { "gold": -1 }
+            }
+          ]
+        }
+      ],
+      "endingCount": 2,
+      "exhaustive": true,
+      "truncated": false,
+      "witnessReplay": "completed"
+    },
+    "fullyFixed": {
+      "compileSuccess": true,
+      "statesExplored": 2,
+      "runtimeFindings": [],
+      "assertionResults": [
+        {
+          "id": "gold_nonnegative",
+          "status": "exhaustively_verified",
+          "violations": []
+        }
+      ],
+      "endingCount": 2,
+      "exhaustive": true,
+      "truncated": false,
+      "witnessReplay": "completed"
+    }
+  }
+}

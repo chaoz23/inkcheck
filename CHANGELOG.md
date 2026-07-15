@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add the versioned agent-readiness benchmark foundation: a deterministic unfamiliar-project runtime/assertion repair fixture, no-hidden-hints protocol, checked expected evidence, machine scorer, bootstrap/call/reference/safety/proof targets, and separate tool/skill/model/environment failure attribution. The default five-tool MCP profile and bundled skill measure 2,738 bootstrap tokens under the preregistered byte estimate, while `INKCHECK_MCP_PROFILE=full` preserves named-tool compatibility. Real results from two distinct agents remain a release gate rather than synthetic evidence.
 - Make MCP inspection, compilation, statistics, and one-shot exploration compact and privacy-minimal by default with explicit drill-down/full detail, source-bound inventory pages, and incremental session-event cursors. Raise the bounded campaign-window ceiling to 1,024 while retaining byte/resource guards.
 
 - Ship a versioned Inkcheck agent skill in the npm artifact. Its compact inspect-compile-search-replay-fix-verify loop uses progressive Ink and finding references, preserves author intent and bounded-evidence language, and includes ten golden QA exercises spanning compile errors, runtime exhaustion, assertions, state, turns, randomness, externals, unreachable content, and stale witness paths.

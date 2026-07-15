@@ -10,6 +10,7 @@
     "evaluate-shadow": "node dist/shadow-evaluation-cli.js",
     "evaluate-promotion": "node dist/promotion-benchmark-cli.js",
     "evaluate-campaign-children": "node dist/campaign-child-evaluation-cli.js",
+    "evaluate-agent-readiness": "node dist/agent-readiness-benchmark-cli.js",
     "web": "node dist/web.js",
     "usage-report": "node dist/usage-report.js"
   },
@@ -44,10 +45,12 @@
   "files": [
     "dist",
     "web",
+    "benchmarks/agent-readiness-v1",
     "skills/inkcheck",
     "docs/inkjam-qa-guide.md",
     "docs/hosted-checker.md",
     "docs/agent-discovery.md",
+    "docs/agent-readiness-benchmark.md",
     "docs/config-schema-v1.json",
     "docs/report-schema-v1.md",
     "docs/machine-output.md",
