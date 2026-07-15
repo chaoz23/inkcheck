@@ -60,6 +60,15 @@ const data = workerData as AdaptivePortfolioWorkerData;
 const control = new Int32Array(data.control);
 const port = data.port;
 const engines = new Map<number, ReturnType<typeof createPortfolioPassEngine>>();
+const STOP_REASON = 1;
+const HEAP_MIB = 2;
+const MIB = 1024 * 1024;
+
+function withinMemoryEnvelope(): boolean {
+  const heapUsed = process.memoryUsage().heapUsed;
+  Atomics.store(control, HEAP_MIB, Math.ceil(heapUsed / MIB));
+  return Atomics.load(control, STOP_REASON) === 0 && heapUsed < data.memoryCapBytes;
+}
 
 function signal(message: AdaptivePortfolioWorkerMessage): void {
   port.postMessage(message);
@@ -71,7 +80,7 @@ try {
   for (const assignment of data.assignments) {
     const options: ExploreOptions = {
       ...data.options,
-      memoryGuard: () => process.memoryUsage().heapUsed < data.memoryCapBytes,
+      memoryGuard: withinMemoryEnvelope,
       ...(data.deadlineMs === undefined ? {} : { timeGuard: () => Date.now() < data.deadlineMs! }),
       onProgress: (progress) => signal({ type: "progress", index: assignment.index, progress }),
     };
@@ -79,6 +88,7 @@ try {
       assignment.index,
       createPortfolioPassEngine(assignment.pass, data.storyJson, data.knots, data.externals, options)
     );
+    withinMemoryEnvelope();
   }
   signal({ type: "ready" });
 } catch (error) {

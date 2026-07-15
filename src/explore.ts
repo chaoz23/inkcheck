@@ -98,6 +98,16 @@ export interface PortfolioExecutionEvidence {
   requestedConcurrency: number;
   effectiveConcurrency: number;
   fallbackReason?: "single_core" | "memory_headroom" | "single_pass";
+  resources?: {
+    stateBudget: number;
+    heapEnvelopeBytes: number;
+    parentReserveBytes: number;
+    perWorkerHeapLimitBytes: number;
+    totalWorkerHeapLimitBytes: number;
+    peakTrackedHeapBytes: number;
+    aggregateMemoryStopped: boolean;
+    deadlineMs?: number;
+  };
   workers: ConcurrentWorkerEvidence[];
 }
 

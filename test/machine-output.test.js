@@ -65,6 +65,15 @@ function largeReport() {
         mode: "concurrent",
         requestedConcurrency: 4,
         effectiveConcurrency: 4,
+        resources: {
+          stateBudget: 1_000_000,
+          heapEnvelopeBytes: 1_073_741_824,
+          parentReserveBytes: 161_061_274,
+          perWorkerHeapLimitBytes: 228_170_137,
+          totalWorkerHeapLimitBytes: 912_680_550,
+          peakTrackedHeapBytes: 734_003_200,
+          aggregateMemoryStopped: false,
+        },
         workers: [
           { pass: "dfs:last", granted: 200_000, consumed: 200_000, status: "completed", error: "PRIVATE WORKER ERROR" },
           { pass: "random:7", granted: 200_000, consumed: 150_000, status: "time" },
@@ -100,6 +109,15 @@ test("default machine detail stays bounded and keeps response truncation separat
     mode: "concurrent",
     requestedConcurrency: 4,
     effectiveConcurrency: 4,
+    resources: {
+      stateBudget: 1_000_000,
+      heapEnvelopeBytes: 1_073_741_824,
+      parentReserveBytes: 161_061_274,
+      perWorkerHeapLimitBytes: 228_170_137,
+      totalWorkerHeapLimitBytes: 912_680_550,
+      peakTrackedHeapBytes: 734_003_200,
+      aggregateMemoryStopped: false,
+    },
     workers: [
       { pass: "dfs:last", granted: 200_000, consumed: 200_000, status: "completed" },
       { pass: "random:7", granted: 200_000, consumed: 150_000, status: "time" },

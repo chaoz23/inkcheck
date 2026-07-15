@@ -11,6 +11,7 @@ const { compile, scanKnots } = require("../dist/inklecate");
 const ROOT = path.join(__dirname, "fixtures", "search");
 const GRID = path.join(ROOT, "early-variable-grid.ink");
 const PLATEAU = path.join(ROOT, "deceptive-plateau.ink");
+const LOW_DEDUP = path.join(ROOT, "low-dedup-wide.ink");
 const CLI = path.join(__dirname, "..", "dist", "cli.js");
 const ONE_GIB = 1024 * 1024 * 1024;
 
@@ -53,6 +54,16 @@ test("concurrent portfolio grants and final evidence are deterministic across wo
   assert.strictEqual(two.execution.workers.reduce((total, worker) => total + worker.granted, 0), issued);
   assert.ok(issued <= 1_000);
   assert.ok(two.execution.workers.every((worker) => worker.consumed <= worker.granted));
+  assert.strictEqual(
+    two.execution.resources.parentReserveBytes + two.execution.resources.totalWorkerHeapLimitBytes,
+    two.execution.resources.heapEnvelopeBytes
+  );
+  assert.strictEqual(
+    two.execution.resources.totalWorkerHeapLimitBytes,
+    two.execution.resources.perWorkerHeapLimitBytes * two.execution.effectiveConcurrency
+  );
+  assert.ok(two.execution.resources.peakTrackedHeapBytes > 0);
+  assert.strictEqual(two.execution.resources.aggregateMemoryStopped, false);
   assert.ok(two.discoverySummary.discoveryEvents > 0);
 
   const sequential = explorePortfolio(compiled.storyJson, compiled.knots, [], options);
@@ -126,6 +137,24 @@ test("concurrent portfolio falls back before spawning when global memory cannot 
   assert.strictEqual(result.execution.mode, "sequential");
   assert.strictEqual(result.execution.effectiveConcurrency, 1);
   assert.strictEqual(result.execution.fallbackReason, "memory_headroom");
+});
+
+test("aggregate worker heap contention stops cooperatively with partial evidence", async () => {
+  const compiled = await story(LOW_DEDUP);
+  const result = explorePortfolioConcurrent(compiled.storyJson, compiled.knots, [], {
+    maxStates: 100_000,
+    concurrency: 2,
+    memoryCapBytes: ONE_GIB,
+    aggregateMemoryUsedForTest: () => ONE_GIB,
+  });
+  assert.strictEqual(result.execution.mode, "concurrent");
+  assert.strictEqual(result.execution.resources.aggregateMemoryStopped, true);
+  assert.strictEqual(result.execution.resources.peakTrackedHeapBytes, ONE_GIB);
+  assert.strictEqual(result.truncated, true);
+  assert.strictEqual(result.truncatedBy.memory, true);
+  assert.strictEqual(result.truncatedBy.maxStates, false);
+  assert.ok(result.execution.workers.every((worker) => worker.status === "memory"));
+  assert.ok(result.statesExplored < 100_000);
 });
 
 test("CLI exposes explicit experimental concurrency and records the effective contract", () => {
