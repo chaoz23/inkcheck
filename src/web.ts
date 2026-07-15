@@ -8,6 +8,7 @@ import * as path from "path";
 import { VERSION } from "./version";
 import { BrowserUsageEvent, FileUsageStore, UsageRecorder } from "./usage";
 import { buildHumanFindings, HumanFinding } from "./human-report";
+import { FileHostedJobStore, PersistedHostedJob } from "./hosted-job-store";
 import {
   HostedLimits,
   HostedSubmission,
@@ -33,6 +34,7 @@ export interface WebConfig extends HostedLimits {
   trustProxy: boolean;
   staticDir: string;
   usageFile?: string;
+  jobStoreDir?: string;
   jobTtlMs: number;
 }
 
@@ -179,6 +181,7 @@ export function webConfigFromEnv(): WebConfig {
     trustProxy: process.env.INKCHECK_WEB_TRUST_PROXY === "1",
     staticDir: process.env.INKCHECK_WEB_STATIC_DIR ?? path.join(__dirname, "..", "web"),
     usageFile: process.env.INKCHECK_WEB_USAGE_FILE || undefined,
+    jobStoreDir: process.env.INKCHECK_WEB_JOB_STORE_DIR || undefined,
     jobTtlMs: integerEnv("INKCHECK_WEB_JOB_TTL_MS", 900_000, 60_000, 3_600_000),
   };
 }
@@ -269,12 +272,20 @@ function hostedResultWindow(
   };
 }
 
-function cancelledResultWindow(submission: HostedSubmission, event: HostedProgressEvent): HostedResultWindow {
+function submissionSourceFingerprint(submission: HostedSubmission): string {
   const root = submission.files.find((file) => file.name === submission.root);
+  return createHash("sha256").update(root?.content ?? "").digest("hex");
+}
+
+function cancelledResultWindow(
+  sourceFingerprintValue: string,
+  stateCeiling: number,
+  event: HostedProgressEvent
+): HostedResultWindow {
   const sourceFingerprint = {
     algorithm: "sha256" as const,
     source: "entry-source" as const,
-    value: createHash("sha256").update(root?.content ?? "").digest("hex"),
+    value: sourceFingerprintValue,
   };
   const runtimeErrors = event.runtimeErrorsFound ?? 0;
   const assertionViolations = event.assertionViolations ?? 0;
@@ -286,7 +297,7 @@ function cancelledResultWindow(submission: HostedSubmission, event: HostedProgre
     sourceFingerprint,
     trigger: "cancelled",
     searchContinuing: false,
-    work: { statesExplored: event.statesExplored, stateCeiling: submission.maxStates, elapsedMs: event.elapsedMs },
+    work: { statesExplored: event.statesExplored, stateCeiling, elapsedMs: event.elapsedMs },
     yield: {
       meaningfulFindings: runtimeErrors + assertionViolations,
       compileErrors: 0,
@@ -531,7 +542,9 @@ interface HostedJob {
   events: HostedProgressEvent[];
   nextSequence: number;
   controller: AbortController;
-  submission: HostedSubmission;
+  stateBudget: number;
+  sourceFingerprint: string;
+  submission?: HostedSubmission;
   result?: HostedCheckResponse;
   error?: string;
   expiresAt?: number;
@@ -540,12 +553,42 @@ interface HostedJob {
 class HostedJobManager {
   private readonly jobs = new Map<string, HostedJob>();
   private active = 0;
+  private readonly store?: FileHostedJobStore;
 
   constructor(
     private readonly config: WebConfig,
     private readonly runner: SubmissionRunner,
     private readonly onComplete: (job: HostedJob) => void
-  ) {}
+  ) {
+    if (!config.jobStoreDir) return;
+    this.store = new FileHostedJobStore(config.jobStoreDir);
+    for (const record of this.store.load()) {
+      const job: HostedJob = {
+        id: record.id,
+        token: record.token,
+        createdAt: record.createdAt,
+        status: record.status,
+        events: record.events,
+        nextSequence: record.nextSequence,
+        controller: new AbortController(),
+        stateBudget: record.stateBudget,
+        sourceFingerprint: record.sourceFingerprint,
+        expiresAt: record.expiresAt,
+      };
+      this.jobs.set(job.id, job);
+      if (["queued", "running", "complete"].includes(job.status)) {
+        const completedBeforeRestart = job.status === "complete";
+        job.status = "failed";
+        job.error = completedBeforeRestart
+          ? "This check completed before the service restarted, but reports are never retained. Run the check again."
+          : "The hosted service restarted before this check completed. Run the check again.";
+        job.expiresAt = Date.now() + config.jobTtlMs;
+        this.emit(job, { type: "run_end", status: "failed" });
+      } else if (job.status === "failed") {
+        job.error = "This check did not complete. Run the check again.";
+      }
+    }
+  }
 
   create(submission: HostedSubmission): HostedJob {
     const job: HostedJob = {
@@ -556,6 +599,8 @@ class HostedJobManager {
       events: [],
       nextSequence: 0,
       controller: new AbortController(),
+      stateBudget: submission.maxStates,
+      sourceFingerprint: submissionSourceFingerprint(submission),
       submission,
     };
     this.jobs.set(job.id, job);
@@ -574,8 +619,9 @@ class HostedJobManager {
     if (job.status === "complete" || job.status === "cancelled" || job.status === "failed") return false;
     job.status = "cancelled";
     job.controller.abort();
-    this.emit(job, { type: "run_end", status: "cancelled" });
+    job.submission = undefined;
     job.expiresAt = Date.now() + this.config.jobTtlMs;
+    this.emit(job, { type: "run_end", status: "cancelled" });
     return true;
   }
 
@@ -589,7 +635,7 @@ class HostedJobManager {
         ...(latest ? { progress: latest } : {}),
         ...(job.result ? { result: job.result } : {}),
         ...(job.status === "cancelled" && latest
-          ? { resultWindow: cancelledResultWindow(job.submission, latest) }
+          ? { resultWindow: cancelledResultWindow(job.sourceFingerprint, job.stateBudget, latest) }
           : {}),
         ...(job.error ? { error: job.error } : {}),
       },
@@ -616,7 +662,7 @@ class HostedJobManager {
       ? "learning"
       : meaningfulYield > previousYield
         ? "active"
-        : statesSinceLastYield > Math.max(10_000, job.submission.maxStates * 0.1)
+        : statesSinceLastYield > Math.max(10_000, job.stateBudget * 0.1)
           ? "quiet"
           : "learning";
     const event: HostedProgressEvent = {
@@ -625,7 +671,7 @@ class HostedJobManager {
       sequence: ++job.nextSequence,
       elapsedMs: patch.elapsedMs ?? Date.now() - job.createdAt,
       statesExplored,
-      stateBudget: patch.stateBudget ?? previous?.stateBudget ?? job.submission.maxStates,
+      stateBudget: patch.stateBudget ?? previous?.stateBudget ?? job.stateBudget,
       budgetFraction: patch.budgetFraction ?? previous?.budgetFraction ?? 0,
       endingsFound: patch.endingsFound ?? previous?.endingsFound,
       runtimeErrorsFound: patch.runtimeErrorsFound ?? previous?.runtimeErrorsFound,
@@ -645,6 +691,7 @@ class HostedJobManager {
     } as HostedProgressEvent;
     job.events.push(event);
     if (job.events.length > 160) job.events.shift();
+    this.persist(job);
   }
 
   private async pump(): Promise<void> {
@@ -663,30 +710,62 @@ class HostedJobManager {
 
   private async run(job: HostedJob): Promise<void> {
     try {
-      const result = await this.runner(job.submission, this.config, {
+      const submission = job.submission;
+      if (!submission) throw new Error("Persisted jobs cannot restart source processing");
+      const result = await this.runner(submission, this.config, {
         signal: job.controller.signal,
         onProgress: (event) => this.emit(job, { ...event, status: "running" }),
       });
       if (job.status === "cancelled") return;
       job.result = result;
       job.status = "complete";
+      job.expiresAt = Date.now() + this.config.jobTtlMs;
       this.emit(job, { type: "run_end", status: "complete" });
       this.onComplete(job);
     } catch (error) {
       if (job.status !== "cancelled") {
         job.status = "failed";
         job.error = error instanceof Error ? error.message : "Unexpected service error";
+        job.expiresAt = Date.now() + this.config.jobTtlMs;
         this.emit(job, { type: "run_end", status: "failed" });
       }
     } finally {
-      job.expiresAt = Date.now() + this.config.jobTtlMs;
+      job.submission = undefined;
+      if (job.expiresAt === undefined) {
+        job.expiresAt = Date.now() + this.config.jobTtlMs;
+        this.persist(job);
+      }
     }
   }
 
   private cleanup(): void {
     const now = Date.now();
     for (const [id, job] of this.jobs) {
-      if (job.expiresAt && job.expiresAt <= now) this.jobs.delete(id);
+      if (job.expiresAt && job.expiresAt <= now) {
+        this.jobs.delete(id);
+        this.store?.remove(id);
+      }
+    }
+  }
+
+  private persist(job: HostedJob): void {
+    if (!this.store) return;
+    const record: PersistedHostedJob = {
+      schemaVersion: 1,
+      id: job.id,
+      token: job.token,
+      createdAt: job.createdAt,
+      status: job.status,
+      stateBudget: job.stateBudget,
+      sourceFingerprint: job.sourceFingerprint,
+      events: job.events,
+      nextSequence: job.nextSequence,
+      ...(job.expiresAt === undefined ? {} : { expiresAt: job.expiresAt }),
+    };
+    try {
+      this.store.save(record);
+    } catch {
+      console.warn(JSON.stringify({ event: "hosted_job_persist_failed", jobId: job.id }));
     }
   }
 }

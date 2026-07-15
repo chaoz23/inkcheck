@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Persist hosted async-job status and privacy-safe progress events in an optional private TTL-backed file store. Production Compose enables it in the existing volume; restarts preserve counters and return an honest retry state without retaining uploaded source, filenames, findings, or reports, and expired or malformed records are purged.
 - Stream privacy-safe live discovery events for CLI, human-terminal, and hosted progress consumers. Events expose only monotonic numeric deltas and cumulative counts for endings, runtime errors, visited knots, assertion failures, goals, stages, and visible outcomes; final reports remain authoritative for identities and story content.
 - Extend the promotion harness with matched sequential-versus-concurrent portfolio runs, an explicit 2-16 candidate worker ceiling, and result-window time-to-1/5/10 meaningful-evidence milestones. Runtime errors, assertion violations, authored knots, and visible endings earn timing credit; raw terminal multiplicity and worker heartbeats do not.
 - Enforce concurrent exploration's declared heap envelope across the parent and all worker isolates. Workers publish heap use through shared memory, the parent triggers one cooperative memory stop when aggregate use binds, partial evidence survives, and machine reports expose planned heap shares plus the observed aggregate high-water mark.
