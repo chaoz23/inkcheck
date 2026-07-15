@@ -93,7 +93,7 @@ function reportSummary(report) {
     return `${value.toLocaleString()} ${value === 1 ? singular : plural}`;
   };
   if (explore.truncated) {
-    return `Inkcheck ran and found ${countPhrase(explore.endingsFound.length, "ending")}, ${countPhrase(explore.runtimeErrors.length, "runtime error")}, and ${countPhrase(explore.unvisitedKnots.length, "unvisited knot")} in a ${countPhrase(report.stats?.words, "word")} story with ${countPhrase(report.stats?.choices, "choice")}. It may not have seen every reachable path.`;
+    return `Inkcheck ran and found ${countPhrase(explore.endingsFound.length, "ending")}, ${countPhrase(explore.runtimeErrors.length, "runtime error")}, and ${countPhrase(explore.unvisitedKnots.length, "unvisited knot")}.`;
   }
   const limitations = [
     explore.randomnessDetected && "randomness detected",
@@ -268,6 +268,7 @@ form.addEventListener("submit", async (event) => {
   try {
     const data = new FormData();
     addStoryParts(data);
+    data.append("runIntent", form.elements["run-intent"].value);
     data.append("authorized", String(authorized.checked));
     data.append("privacyAcknowledged", String(privacy.checked));
 
@@ -282,7 +283,11 @@ form.addEventListener("submit", async (event) => {
       throw error;
     }
     lastResponse = body;
-    summary.textContent = `${reportSummary(body.report)} · processed in ${body.meta.durationMs} ms · files deleted after the response.`;
+    const window = body.resultWindow;
+    const windowText = window
+      ? `${window.work.statesExplored.toLocaleString()} states of work · ${window.yield.meaningfulFindings.toLocaleString()} actionable finding${window.yield.meaningfulFindings === 1 ? "" : "s"} · ${window.uncertainty === "exhaustive" ? "exhaustive result" : "bounded partial result"}`
+      : reportSummary(body.report);
+    summary.textContent = `${windowText} · processed in ${body.meta.durationMs} ms · files deleted after the response.`;
     renderFindings(Array.isArray(body.humanFindings) ? body.humanFindings : fallbackHumanFindings(body.report));
     resultJson.textContent = JSON.stringify(body.report, null, 2);
     result.hidden = false;

@@ -70,12 +70,15 @@ import {
   openCheckpointArtifact,
   saveCheckpointArtifact,
 } from "./checkpoints";
+import { renderHumanResultWindow, runHumanCampaign } from "./human-campaign";
+import type { CampaignMode } from "./campaign-policy";
 
 function usage(message?: string): never {
   if (message) console.error(`inkcheck: ${message}\n`);
   console.error(`inkcheck — CI for ink stories
 
 Usage: inkcheck <story.ink> [options]
+       inkcheck campaign <story.ink> [campaign options]
        inkcheck capabilities [--json]
        inkcheck inspect <story.ink> [--json]
        inkcheck validate-config [inkcheck.yml] [--json]
@@ -115,6 +118,19 @@ Options:
   --save-report      Atomically save a versioned local report artifact
   --save-checkpoint  Save an exact base-shared frontier when work remains
   --progress=<mode>  Write progress to stderr: auto, human, ndjson, or off (default auto in a terminal)
+
+Campaign options:
+  --mode <intent>         quick, balanced (default), deep, overnight, campaign, or fixed
+  --deadline <ISO-time>   Return the latest partial result by this time
+  --stop <policy>         knee (default for quick/deep modes) or ceilings
+  --value <preference>    broad_qa (default), runtime_assertions, or outcomes
+  --resource <posture>    scarce, balanced, or abundant
+  --window-states <n>     Expert per-window state ceiling, up to 5000000
+  --max-states <n>        Expert aggregate state ceiling, up to 100000000
+  --max-time <s>          Expert aggregate elapsed-time ceiling, up to 604800
+  --max-memory <mb>       Expert heap ceiling
+  --max-disk <mb>         Expert report/checkpoint disk ceiling
+  --json                  Emit machine-readable result-window metadata
 `);
   process.exit(2);
 }
@@ -132,6 +148,103 @@ async function main() {
     const value = capabilities();
     console.log(args.includes("--json") ? JSON.stringify(value, null, 2) : renderCapabilitiesHuman(value));
     return;
+  }
+  if (args[0] === "campaign") {
+    let file: string | undefined;
+    let mode: CampaignMode = "balanced";
+    let resourcePreference: "scarce" | "balanced" | "abundant" | undefined;
+    let valuePreference: "broad_qa" | "runtime_assertions" | "outcomes" | undefined;
+    let stopPolicy: "ceilings" | "knee" | undefined;
+    let totalStates: number | undefined;
+    let windowStates: number | undefined;
+    let maxElapsedSeconds: number | undefined;
+    let maxMemoryMb: number | undefined;
+    let maxDiskMb: number | undefined;
+    let maxDepth: number | undefined;
+    let seed: number | undefined;
+    let storySeed: number | undefined;
+    let deadlineAt: string | undefined;
+    let json = false;
+    const integer = (flag: string, raw: string | undefined, maximum: number): number => {
+      const value = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
+      if (!Number.isSafeInteger(value) || value < 1 || value > maximum) usage(`campaign: ${flag} requires an integer from 1 to ${maximum}`);
+      return value;
+    };
+    for (let index = 1; index < args.length; index += 1) {
+      const arg = args[index];
+      if (arg === "--json") json = true;
+      else if (["--mode", "--resource", "--value", "--stop", "--deadline", "--max-states", "--window-states", "--max-time", "--max-memory", "--max-disk", "--max-depth", "--seed", "--story-seed"].includes(arg)) {
+        const value = args[++index];
+        if (!value || value.startsWith("--")) usage(`campaign: ${arg} requires a value`);
+        if (arg === "--mode") {
+          if (!["quick", "balanced", "deep", "overnight", "campaign", "fixed"].includes(value)) usage("campaign: --mode must be quick, balanced, deep, overnight, campaign, or fixed");
+          mode = value as CampaignMode;
+        } else if (arg === "--resource") {
+          if (!["scarce", "balanced", "abundant"].includes(value)) usage("campaign: --resource must be scarce, balanced, or abundant");
+          resourcePreference = value as typeof resourcePreference;
+        } else if (arg === "--value") {
+          if (!["broad_qa", "runtime_assertions", "outcomes"].includes(value)) usage("campaign: --value must be broad_qa, runtime_assertions, or outcomes");
+          valuePreference = value as typeof valuePreference;
+        } else if (arg === "--stop") {
+          if (!["ceilings", "knee"].includes(value)) usage("campaign: --stop must be knee or ceilings");
+          stopPolicy = value as typeof stopPolicy;
+        } else if (arg === "--deadline") {
+          if (!Number.isFinite(Date.parse(value))) usage("campaign: --deadline must be an ISO date-time");
+          deadlineAt = new Date(value).toISOString();
+        } else if (arg === "--max-states") totalStates = integer(arg, value, 100_000_000);
+        else if (arg === "--window-states") windowStates = integer(arg, value, 5_000_000);
+        else if (arg === "--max-time") maxElapsedSeconds = integer(arg, value, 604_800);
+        else if (arg === "--max-memory") maxMemoryMb = integer(arg, value, 1_000_000);
+        else if (arg === "--max-disk") maxDiskMb = integer(arg, value, 1_000_000);
+        else if (arg === "--max-depth") maxDepth = integer(arg, value, 1_000);
+        else if (arg === "--seed") seed = integer(arg, value, 4_294_967_295);
+        else storySeed = integer(arg, value, MAX_STORY_SEED);
+      } else if (arg.startsWith("--")) usage(`campaign: unknown option: ${arg}`);
+      else if (file) usage(`campaign: unexpected extra argument: ${arg}`);
+      else file = arg;
+    }
+    try {
+      file ??= findDefaultProjectConfig()?.entrypoint;
+    } catch (error) {
+      usage(error instanceof Error ? error.message : String(error));
+    }
+    if (!file) usage("campaign: missing story file (or inkcheck.yml entrypoint)");
+    if (mode === "fixed" && (totalStates === undefined || maxElapsedSeconds === undefined || maxDiskMb === undefined)) {
+      usage("campaign: fixed mode requires --max-states, --max-time, and --max-disk");
+    }
+    let cancelRequested = false;
+    const requestCancel = () => { cancelRequested = true; };
+    process.once("SIGINT", requestCancel);
+    process.once("SIGTERM", requestCancel);
+    try {
+      const result = await runHumanCampaign({
+        file,
+        mode,
+        resourcePreference,
+        valuePreference,
+        stopPolicy,
+        totalStates,
+        windowStates,
+        maxElapsedSeconds,
+        maxMemoryMb,
+        maxDiskMb,
+        maxDepth,
+        seed,
+        storySeed,
+        deadlineAt,
+        shouldCancel: () => cancelRequested,
+        ...(json ? {} : { onWindow: (window) => console.error(renderHumanResultWindow(window)) }),
+      });
+      if (json) console.log(JSON.stringify(result, null, 2));
+      else console.log(`Campaign ${result.status}: ${result.windows.length} immutable result window${result.windows.length === 1 ? "" : "s"}. Reports remain under .inkcheck/reports/.`);
+      if (result.final.session.findings.runtimeErrors > 0 || result.final.session.findings.assertionViolations > 0) process.exitCode = 1;
+      return;
+    } catch (error) {
+      usage(error instanceof Error ? error.message : String(error));
+    } finally {
+      process.off("SIGINT", requestCancel);
+      process.off("SIGTERM", requestCancel);
+    }
   }
   if (args[0] === "checkpoints") {
     const command = args[1];

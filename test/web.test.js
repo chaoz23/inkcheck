@@ -42,6 +42,7 @@ function multipartBody(body = validBody()) {
     data.append(`ink:${name}`, new Blob([content], { type: "text/plain" }), name);
   }
   data.append("root", body.root);
+  if (body.runIntent !== undefined) data.append("runIntent", body.runIntent);
   data.append("maxDepth", String(body.maxDepth));
   data.append("maxStates", String(body.maxStates));
   data.append("authorized", String(body.authorized));
@@ -54,6 +55,7 @@ test("hosted submission accepts an authorized include bundle", () => {
   assert.strictEqual(result.root, "main.ink");
   assert.strictEqual(result.files.length, 2);
   assert.strictEqual(result.maxStates, 500);
+  assert.strictEqual(result.runIntent, "balanced");
 });
 
 test("hosted submission uses service ceilings when browser limits are omitted", () => {
@@ -63,6 +65,24 @@ test("hosted submission uses service ceilings when browser limits are omitted", 
   );
   assert.strictEqual(maxDepth, LIMITS.maxDepth);
   assert.strictEqual(maxStates, LIMITS.maxStates);
+});
+
+test("hosted human intents choose bounded defaults while expert limits remain explicit", () => {
+  const quick = validateSubmission(
+    validBody({ runIntent: "quick", maxDepth: undefined, maxStates: undefined }),
+    { ...LIMITS, maxStates: 1_000_000 }
+  );
+  assert.strictEqual(quick.runIntent, "quick");
+  assert.strictEqual(quick.maxStates, 250_000);
+  const explicit = validateSubmission(validBody({ runIntent: "quick", maxStates: 400_000 }), {
+    ...LIMITS,
+    maxStates: 1_000_000,
+  });
+  assert.strictEqual(explicit.maxStates, 400_000);
+  assert.throws(
+    () => validateSubmission(validBody({ runIntent: "overnight" }), LIMITS),
+    /runIntent must be quick or balanced/
+  );
 });
 
 test("hosted submission rejects unsafe paths and missing includes", () => {
@@ -106,6 +126,7 @@ test("multipart upload preserves unchanged ink contents and relative paths", asy
   const parsed = await parseMultipartBody(contentType, encoded);
   assert.deepStrictEqual(parsed.files, expected.files);
   assert.strictEqual(parsed.root, expected.root);
+  assert.strictEqual(parsed.runIntent, undefined);
   assert.strictEqual(parsed.authorized, true);
   assert.strictEqual(parsed.privacyAcknowledged, true);
 });
@@ -128,6 +149,65 @@ test("browser access allows only exact configured origins", () => {
     ),
     (error) => error instanceof SubmissionError && error.status === 403
   );
+});
+
+test("hosted cancellation retains a source-bound final progress window", async (t) => {
+  const config = {
+    ...webConfigFromEnv(),
+    host: "127.0.0.1",
+    port: 0,
+    staticDir: path.join(__dirname, "..", "web"),
+    rateLimit: 100,
+  };
+  let release;
+  const server = createInkcheckWebServer({
+    config,
+    runner: async (submission, _config, options) => {
+      options?.onProgress?.({
+        schemaVersion: 1,
+        sequence: 1,
+        type: "progress",
+        phase: "explore",
+        elapsedMs: 50,
+        statesExplored: 123,
+        stateBudget: submission.maxStates,
+        budgetFraction: 123 / submission.maxStates,
+        endingsFound: 2,
+        runtimeErrorsFound: 1,
+        unvisitedKnots: 3,
+      });
+      await new Promise((resolve) => { release = resolve; options?.signal?.addEventListener("abort", resolve, { once: true }); });
+      throw new Error("cancelled");
+    },
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+  } catch (error) {
+    if (error?.code === "EPERM") { t.skip("the local execution sandbox forbids listening sockets"); return; }
+    throw error;
+  }
+  t.after(() => { release?.(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const accepted = await fetch(`${base}/api/check`, {
+    method: "POST",
+    headers: { "X-Inkcheck-Async": "1" },
+    body: multipartBody(),
+  });
+  const created = await accepted.json();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const cancelled = await fetch(`${base}${created.job.cancelUrl}`, { method: "POST" });
+  assert.strictEqual(cancelled.status, 202);
+  const snapshot = await cancelled.json();
+  assert.strictEqual(snapshot.job.status, "cancelled");
+  assert.strictEqual(snapshot.job.resultWindow.trigger, "cancelled");
+  assert.strictEqual(snapshot.job.resultWindow.work.statesExplored, 123);
+  assert.strictEqual(snapshot.job.resultWindow.searchContinuing, false);
+  assert.deepStrictEqual(snapshot.job.resultWindow.stableFindingIds, []);
+  assert.strictEqual(snapshot.job.resultWindow.omittedFindingCount, 4);
+  assert.match(snapshot.job.resultWindow.sourceFingerprint.value, /^[0-9a-f]{64}$/);
 });
 
 test("web API validates input and returns a no-retention report", async (t) => {

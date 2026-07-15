@@ -20,7 +20,7 @@ The report can contain authored choice text, final text, variable names, and val
 
 ## HTTP API
 
-`POST /api/check` accepts `multipart/form-data`, the same transport used by ordinary browser file uploads. The main file, optional unchanged `INCLUDE` files, and consent confirmations are separate form parts. Relative project paths travel as hidden part names when a folder is selected; the author does not create or edit that metadata. Browser users do not choose traversal limits; hosted mode uses the service ceilings by default.
+`POST /api/check` accepts `multipart/form-data`, the same transport used by ordinary browser file uploads. The main file, optional unchanged `INCLUDE` files, consent confirmations, and optional `runIntent` (`quick` or `balanced`) are separate form parts. Relative project paths travel as hidden part names when a folder is selected; the author does not create or edit that metadata. Quick defaults to 250,000 states and a 60-second graceful review window; Balanced defaults to the service's 1,000,000-state and 255-second graceful ceilings. Explicit bounded `maxStates` remains available to API clients.
 
 For a form hosted on another origin, set `INKCHECK_WEB_ALLOWED_ORIGINS` to an exact comma-separated allowlist such as `https://secondlandings.com`. The API answers browser preflight requests only for configured origins and never emits a wildcard. Command-line and same-origin requests without an `Origin` header continue to work.
 
@@ -30,7 +30,7 @@ The browser offers three source-native choices:
 2. paste the main file's contents directly; or
 3. for a project using `INCLUDE`, add the unchanged supporting files or select the existing project folder.
 
-When pilot protection is configured, the browser sends the code in `X-Inkcheck-Access-Code`. Successful responses contain `{ requestId, report, humanFindings, meta }`; compile and runtime findings are successful reports, not HTTP failures. `humanFindings` is a prioritized, severity-groupable list for browser display, with file/line locations where available, choice paths for runtime failures, and a next step for each finding. Validation, capacity, timeout, and internal failures use appropriate 4xx/5xx responses. If a story hits the hosted ceiling after the 10x increase, the API returns a friendly `issueUrl` pointing to GitHub issues and increments the hosted-limit-hit counter. `GET /healthz` returns only service health and version.
+When pilot protection is configured, the browser sends the code in `X-Inkcheck-Access-Code`. Successful responses contain `{ requestId, report, humanFindings, resultWindow, meta }`; compile and runtime findings are successful reports, not HTTP failures. `resultWindow` binds the result to a source fingerprint, stable finding IDs, work and yield counts, trigger, and bounded/exhaustive uncertainty. Async cancellation returns a final source-bound progress window with counts and an explicit omitted-finding count, but no report or invented finding identities. `humanFindings` is a prioritized, severity-groupable list for browser display, with file/line locations where available, choice paths for runtime failures, and a next step for each finding. Validation, capacity, timeout, and internal failures use appropriate 4xx/5xx responses. If a story hits the hosted ceiling after the 10x increase, the API returns a friendly `issueUrl` pointing to GitHub issues and increments the hosted-limit-hit counter. `GET /healthz` returns only service health and version.
 
 `POST /api/event` accepts only `page_view` and `support_click` JSON events from an allowed browser origin. It returns `204` and stores no event-level record. The server immediately folds each event into a UTC daily counter. Completed and rejected checks are counted inside the API, so the browser never reports those separately.
 
@@ -100,7 +100,7 @@ docker compose exec -T inkcheck node dist/usage-report.js --days 30
 | Files | 200 |
 | Individual file | 2.5 MiB |
 | Maximum choice depth | 100 (real stories rarely exceed a few dozen choices deep; a single deep-loop trail at the old 1,000 could burn the whole state budget. Raise per deployment for unusually deep stories.) |
-| Maximum states | 1,000,000 (default and cap; larger jobs up to 100M states belong on the local CLI) |
+| Maximum states | Quick: 250,000; Balanced: 1,000,000 (service cap; larger jobs up to 100M states belong on the local CLI) |
 | Check timeout | 300 seconds (the checker passes `--max-time` ~15% under this — at least 30 s of margin — so a slow run stops cleanly and returns a partial report; the hard kill is only a backstop for a wedged process) |
 | Concurrent checks | 1 |
 | Checks per client | 10 per hour |

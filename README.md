@@ -42,6 +42,8 @@ MCP agents can start a durable campaign with a high-level `quick`, `balanced`, `
 
 Every result window returns a stable policy ID, allocation reason, measured preferred yield, throughput/resource evidence, an uncertainty-labelled empirical range for another window, any binding constraint, and the report ID used to inspect full curves or findings. A knee requires three consecutive windows with no preferred yield and cannot consume protected probes. It remains a bounded observation over one shared trajectory, not a claim that the story is covered or that later discoveries do not exist. See the [campaign policy contract](docs/campaign-policy-contract.md) and [MCP result-window guide](docs/mcp-search-sessions.md).
 
+Humans can use the same durable policy without learning its controls: `inkcheck campaign story.ink` runs the balanced intent, while `--mode quick`, `deep`, or `overnight` chooses an outcome-and-time posture. It returns immutable source-bound result windows as work progresses, preserves the latest partial report on a deadline or cancellation between windows, and keeps technical state/time/memory/disk ceilings available as expert overrides. Result windows separate work spent, actionable yield, forecast uncertainty, and whether search can continue. A quiet discovery interval or observed knee is never described as complete coverage.
+
 ## Quick start
 
 With Node.js 18 or newer:
@@ -102,7 +104,7 @@ Long base-shared runs can also persist their exact live frontier locally. Start 
 
 ## Hosted checker
 
-The repository now includes a self-hosted web interface for writers who do not want to use a terminal. Hosted mode temporarily uploads authorized `.ink` source, creates a short-lived private job, streams real phase and work-budget progress, and deletes the temporary job directory after completion, cancellation, or failure. It does not make reports public or retain story text in application logs. Optional first-party usage metrics keep only daily aggregate counts and can produce unattended weekly reports without an analytics vendor.
+The repository now includes a self-hosted web interface for writers who do not want to use a terminal. Hosted mode temporarily uploads authorized `.ink` source, offers Quick (earlier 250K-state result) and Balanced (deeper 1M-state result) intents, creates a short-lived private job, streams real work, yield, and uncertainty signals, and deletes the temporary job directory after completion, cancellation, or failure. Completed hosted checks return a source-bound result-window identity and stable finding IDs. It does not make reports public or retain story text in application logs. Optional first-party usage metrics keep only daily aggregate counts and can produce unattended weekly reports without an analytics vendor.
 
 The local CLI remains the privacy-first option because no story upload occurs. See [Hosted checker deployment](docs/hosted-checker.md) for the threat model, Docker deployment, operating limits, and a current sub-$50/month budget.
 
