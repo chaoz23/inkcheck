@@ -300,7 +300,9 @@ async function writeCompressedArtifact(
     limiter,
     fs.createWriteStream(temporary, { flags: "wx", mode: 0o600 })
   );
-  const fd = fs.openSync(temporary, "r");
+  // Windows requires a writable handle for fsync even after the stream has
+  // closed; reopening r+ preserves the same durability step on every platform.
+  const fd = fs.openSync(temporary, "r+");
   try {
     fs.fsyncSync(fd);
   } finally {
