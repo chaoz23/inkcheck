@@ -909,7 +909,7 @@ async function main() {
   if (saveCheckpoint) {
     if (nextCheckpoint) {
       const projectRoot = artifactProjectRoot(file!, projectConfig?.path);
-      const reference = saveCheckpointArtifact(projectRoot, file!, nextCheckpoint);
+      const reference = await saveCheckpointArtifact(projectRoot, file!, nextCheckpoint);
       checkpointOutput = {
         saved: true,
         ...reference,

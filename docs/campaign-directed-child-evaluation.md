@@ -56,6 +56,18 @@ The authored-story comparison was unavailable as designed: both independent 5M b
 
 A 500K base completed the search window twice with identical broad evidence (29 knots and 1,174 terminal states), but its checkpoint exceeded the 512 MiB single-artifact limit. Both campaigns stopped at `disk_ceiling`, so their specialists remained blocked. This is evidence that nominal state budgets do not describe campaign feasibility without retained-frontier and checkpoint costs.
 
+### Compact-storage follow-up
+
+On 2026-07-15, the exact 500K Intercept base was rerun at depth 100, search seed 7, and story seed 1 after changing only durable checkpoint storage. The search again consumed 500,000 states, found 1,174 terminal states, and retained the same 29 visited knots. Its campaign remained active with `maxStates` as the binding limit instead of closing at `disk_ceiling`.
+
+| Storage | Durable bytes | Campaign/total time | Reopen validation | Result |
+| --- | ---: | ---: | ---: | --- |
+| Pretty nested JSON | >512 MiB | 148.9–156.4 s before rejection | unavailable | checkpoint rejected |
+| Streamed gzip, default compression | 34.0 MiB | 339.8 s including inspection | not isolated | checkpoint retained |
+| Streamed gzip, fast compression | 54.1 MiB | 293.3 s | 9.1 s | checkpoint retained |
+
+Both compressed runs produced stable checkpoint ID `checkpoint-b2e41a8eadaae28907c07835`. Fast compression deliberately spends 20.1 MiB more disk to reduce the observed result-window pause; it still leaves roughly 9.5 times headroom below the 512 MiB cap. Timings are single-machine observations with normal run-to-run variance, not a portable speed claim. This clears the preregistered Intercept storage gate, but #156 remains open for component-level durable-byte accounting, adversarial checkpoint shapes, and a second public story family.
+
 A final exploratory cell used a 100K durable seed base and retained the full 5M grant for each specialist:
 
 | Specialist | Base | Child consumed | Child time | Peak heap | Intent or critical result | Broad delta, not credited as specialist yield |
@@ -77,5 +89,5 @@ Both 100K bases produced the same checkpoint and report evidence. All child inva
 1. Additive assertion children demonstrated real product value on one authored story by surfacing a credible state-bookkeeping defect with an exact path. One simultaneous false hypothesis demonstrates why agent-authored rules require author review and must not be silently promoted to truth.
 2. The staged goal child did not establish advantage on this target. It consumed 1.87M states and eleven minutes before memory stopped it, with no intent credit. Goal quality, cumulative-stage semantics, and bounded expansion need stronger evaluation.
 3. Campaign child accounting and immutability held. Specialist economics did not: both high-budget children ran until memory, and neither had a marginal knee or probe-to-expansion policy.
-4. Shared checkpoint size is a first-order product constraint. A 500K Intercept window could not retain a checkpoint under the 512 MiB artifact cap, while a 100K window could. Compact durable replay is required before large campaigns can routinely seed specialists.
+4. Shared checkpoint size is a first-order product constraint. Streamed fast gzip reduced the measured 500K Intercept artifact from above 512 MiB to 54.1 MiB without changing its stable ID or evidence, clearing this campaign gate without raising the safety ceiling. Broader representation and resume-cost evidence is still required before large campaigns are routine.
 5. This mechanics study does not measure fresh-agent rule authoring, cross-story generalization, or a human's ability to validate a proposed rule. Those require separate preregistered studies.

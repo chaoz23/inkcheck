@@ -12,6 +12,7 @@ import {
   type FindingPage,
 } from "./artifacts";
 import {
+  CheckpointSizeLimitError,
   DEFAULT_MAX_CHECKPOINT_BYTES,
   loadCheckpointForResume,
   saveCheckpointArtifact,
@@ -838,39 +839,28 @@ async function runWindow(
   }
   const reportReference = saveReportArtifact(projectRoot, file, report);
   const reportBytes = fs.statSync(path.resolve(projectRoot, reportReference.path)).size;
-  let checkpointEstimate = 0;
-  let checkpointSerializationLimited = false;
-  if (checkpointCandidate) {
-    try {
-      checkpointEstimate = estimate({
-        artifactSchemaVersion: 1,
-        artifactType: "shared-search-checkpoint",
-        id: "checkpoint-000000000000000000000000",
-        createdAt: new Date().toISOString(),
-        inkcheckVersion: VERSION,
-        checkpointSchemaVersion: checkpointCandidate.schemaVersion,
-        source: { entrypoint: relative },
-        storySha256: checkpointCandidate.configuration.storySha256,
-        knotsSha256: checkpointCandidate.configuration.knotsSha256,
-        configuration: checkpointCandidate.configuration,
-        checkpoint: checkpointCandidate,
-      });
-    } catch (error) {
-      if (!(error instanceof RangeError) || !/Invalid string length/.test(error.message)) throw error;
-      checkpointSerializationLimited = true;
-    }
-  }
-  const diskLimited = Boolean(checkpointCandidate && (
-    checkpointSerializationLimited
-    || checkpointEstimate > DEFAULT_MAX_CHECKPOINT_BYTES
-    || (bindings.maxArtifactBytes !== undefined && reportBytes + checkpointEstimate > bindings.maxArtifactBytes)
-  ));
+  let diskLimited = false;
   if (bindings.commitMemoryBytes !== undefined && guards.peakMemoryBytes() > bindings.commitMemoryBytes) {
     memoryLimited = true;
   }
-  const persistedCheckpointReference = checkpointCandidate && !diskLimited && !memoryLimited
-    ? saveCheckpointArtifact(projectRoot, file, checkpointCandidate)
-    : undefined;
+  let persistedCheckpointReference;
+  if (checkpointCandidate && !memoryLimited) {
+    const availableBytes = bindings.maxArtifactBytes === undefined
+      ? DEFAULT_MAX_CHECKPOINT_BYTES
+      : Math.min(DEFAULT_MAX_CHECKPOINT_BYTES, bindings.maxArtifactBytes - reportBytes);
+    if (availableBytes < 1) {
+      diskLimited = true;
+    } else {
+      try {
+        persistedCheckpointReference = await saveCheckpointArtifact(projectRoot, file, checkpointCandidate, {
+          maxCheckpointBytes: availableBytes,
+        });
+      } catch (error) {
+        if (!(error instanceof CheckpointSizeLimitError)) throw error;
+        diskLimited = true;
+      }
+    }
+  }
   let checkpointReference = persistedCheckpointReference;
   const peakMemoryBytes = guards.peakMemoryBytes();
   if (bindings.commitMemoryBytes !== undefined && peakMemoryBytes > bindings.commitMemoryBytes) {

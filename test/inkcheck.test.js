@@ -1403,8 +1403,12 @@ test("checkpoint artifacts are private, source-bound, idempotent, and determinis
       preserveRandomState: false,
     }).checkpoint;
 
-    const first = saveCheckpointArtifact(tmp, story, makeCheckpoint(10));
-    const repeated = saveCheckpointArtifact(tmp, story, makeCheckpoint(10));
+    const first = await saveCheckpointArtifact(tmp, story, makeCheckpoint(10));
+    const repeated = await saveCheckpointArtifact(tmp, story, makeCheckpoint(10));
+    const expectedId = `checkpoint-${require("node:crypto").createHash("sha256")
+      .update("story.ink").update("\0").update(JSON.stringify(makeCheckpoint(10)))
+      .digest("hex").slice(0, 24)}`;
+    assert.strictEqual(first.id, expectedId, "streamed hashing preserves schema-v1 stable IDs");
     assert.strictEqual(repeated.id, first.id);
     assert.deepStrictEqual(repeated.pruned, []);
     const firstFile = path.join(tmp, ...first.path.split("/"));
@@ -1415,20 +1419,39 @@ test("checkpoint artifacts are private, source-bound, idempotent, and determinis
     const references = [first];
     for (const budget of [20, 30, 40]) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
-      references.push(saveCheckpointArtifact(tmp, story, makeCheckpoint(budget)));
+      references.push(await saveCheckpointArtifact(tmp, story, makeCheckpoint(budget)));
     }
     const retained = listCheckpointArtifacts(tmp);
     assert.strictEqual(retained.length, 3);
     assert.strictEqual(references[3].pruned.includes(first.id), true);
     assert.strictEqual(retained.some((item) => item.id === first.id), false);
     assert.strictEqual(retained.some((item) => item.id === references[3].id), true);
+    const newest = retained.find((item) => item.id === references[3].id);
+    assert.strictEqual(newest.storageEncoding, "gzip");
+    assert.match(newest.path, /\.json\.gz$/);
+    const { gunzipSync } = require("node:zlib");
+    const compressedFile = path.join(tmp, ...newest.path.split("/"));
+    const legacyFile = compressedFile.slice(0, -3);
+    const uncompressed = gunzipSync(fs.readFileSync(compressedFile));
+    assert.ok(fs.statSync(compressedFile).size < uncompressed.length);
+
+    // Existing schema-v1 JSON artifacts remain readable after storage compression ships.
+    fs.writeFileSync(legacyFile, uncompressed, { mode: 0o600 });
+    fs.rmSync(compressedFile);
+    const legacy = await openCheckpointArtifact(tmp, references[3].id);
+    assert.strictEqual(legacy.artifact.storageEncoding, "json");
+    assert.match(legacy.artifact.path, /\.json$/);
+    assert.strictEqual((await loadCheckpointForResume(tmp, references[3].id)).checkpoint.state.totalGranted, 40);
+    const legacyRepeated = await saveCheckpointArtifact(tmp, story, makeCheckpoint(40));
+    assert.strictEqual(legacyRepeated.path, references[3].path.replace(/\.gz$/, ""));
+    assert.strictEqual(fs.existsSync(`${legacyFile}.gz`), false, "legacy reuse does not create a duplicate encoding");
 
     const beforeQuotaFailure = fs.readdirSync(path.join(tmp, ".inkcheck", "checkpoints"));
-    assert.throws(
+    await assert.rejects(
       () => saveCheckpointArtifact(tmp, story, makeCheckpoint(50), { maxCheckpointBytes: 1 }),
       /single-checkpoint limit/
     );
-    assert.throws(
+    await assert.rejects(
       () => saveCheckpointArtifact(tmp, story, makeCheckpoint(50), {
         maxCheckpointBytes: Number.MAX_SAFE_INTEGER,
         maxProjectBytes: 1,
@@ -1459,22 +1482,23 @@ test("checkpoint artifacts fail closed on tampering and incompatible envelopes",
       preserveTurnState: false,
       preserveRandomState: false,
     }).checkpoint;
-    const reference = saveCheckpointArtifact(tmp, story, checkpoint);
+    const reference = await saveCheckpointArtifact(tmp, story, checkpoint);
     const artifactFile = path.join(tmp, ...reference.path.split("/"));
-    const original = fs.readFileSync(artifactFile, "utf8");
+    const { gunzipSync, gzipSync } = require("node:zlib");
+    const original = gunzipSync(fs.readFileSync(artifactFile)).toString("utf8");
 
     const tampered = JSON.parse(original);
     tampered.checkpoint.state.totalGranted++;
-    fs.writeFileSync(artifactFile, JSON.stringify(tampered));
+    fs.writeFileSync(artifactFile, gzipSync(JSON.stringify(tampered)));
     assert.throws(() => listCheckpointArtifacts(tmp), /content does not match its stable ID/);
 
     const incompatible = JSON.parse(original);
     incompatible.artifactSchemaVersion = 999;
-    fs.writeFileSync(artifactFile, JSON.stringify(incompatible));
+    fs.writeFileSync(artifactFile, gzipSync(JSON.stringify(incompatible)));
     await assert.rejects(() => openCheckpointArtifact(tmp, reference.id), /compatible Inkcheck version or migrate/);
 
-    fs.writeFileSync(artifactFile, "{not-json");
-    await assert.rejects(() => openCheckpointArtifact(tmp, reference.id), /corrupt JSON/);
+    fs.writeFileSync(artifactFile, "not-gzip");
+    await assert.rejects(() => openCheckpointArtifact(tmp, reference.id), /corrupt gzip/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
