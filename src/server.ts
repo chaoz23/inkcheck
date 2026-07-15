@@ -26,6 +26,8 @@ import {
   MAX_MCP_SESSION_TOTAL_STATES,
   MAX_MCP_SESSION_WINDOW_STATES,
   pinSessionRegression,
+  openSessionFinding,
+  openSessionReport,
   replaySessionWitness,
   startSearchSession,
   startCampaign,
@@ -305,15 +307,19 @@ server.registerTool(
   "start_campaign",
   {
     description:
-      "Start one durable source-bound campaign and execute its first exact shared-search result window. Campaign policy enforces aggregate limits and protected reserves; dynamic knee stopping remains inactive.",
+      "Start one durable source-bound campaign and execute its first exact shared-search result window. A named mode supplies bounded defaults; optional expert overrides are persisted and every decision includes an uncertainty-labelled explanation.",
     inputSchema: {
       file: z.string().describe("Path to the root .ink file"),
-      intent: z.enum(["scarce", "balanced", "abundant"]).describe("Resource posture controlling conservative window and reserve defaults"),
-      totalStates: z.number().int().min(10).max(MAX_MCP_SESSION_TOTAL_STATES).describe("Aggregate campaign state ceiling"),
+      mode: z.enum(["quick", "balanced", "deep", "overnight", "campaign", "fixed"]).optional().describe("High-level latency/resource posture; defaults to balanced. Fixed requires explicit ceilings and windowStates"),
+      resourcePreference: z.enum(["scarce", "balanced", "abundant"]).optional().describe("Optional resource posture override"),
+      valuePreference: z.enum(["broad_qa", "runtime_assertions", "outcomes"]).optional().describe("Evidence class used to interpret marginal yield and knee candidates; runtime_assertions currently observes runtime errors because exact resumable campaigns exclude configured assertions"),
+      stopPolicy: z.enum(["ceilings", "knee"]).optional().describe("Stop only at hard ceilings, or after three dry preferred-yield windows and protected long-tail obligations"),
+      intent: z.enum(["scarce", "balanced", "abundant"]).optional().describe("Deprecated fixed-mode resource posture retained for compatibility"),
+      totalStates: z.number().int().min(10).max(MAX_MCP_SESSION_TOTAL_STATES).optional().describe("Optional aggregate campaign state ceiling override"),
       windowStates: z.number().int().min(1).max(MAX_MCP_SESSION_WINDOW_STATES).optional().describe("Optional explicit per-window grant"),
-      maxElapsedSeconds: z.number().int().min(1).max(604800).describe("Aggregate elapsed-time ceiling, up to seven days"),
+      maxElapsedSeconds: z.number().int().min(1).max(604800).optional().describe("Optional aggregate elapsed-time ceiling override, up to seven days"),
       maxMemoryMb: z.number().int().min(1).max(1000000).optional().describe("Campaign heap ceiling; defaults to Inkcheck's safe V8 watermark"),
-      maxDiskMb: z.number().int().min(1).max(1000000).describe("Aggregate ceiling for campaign-referenced report and checkpoint artifacts"),
+      maxDiskMb: z.number().int().min(1).max(1000000).optional().describe("Optional aggregate ceiling for campaign-referenced report and checkpoint artifacts"),
       deadlineAt: z.string().datetime().optional().describe("Optional absolute ISO-8601 deadline"),
       longTailShare: z.number().min(0).max(0.9).optional().describe("Protected state share for later-peak probes"),
       minLongTailProbes: z.number().int().min(0).max(1000000).optional(),
@@ -339,7 +345,7 @@ server.registerTool(
   "continue_campaign",
   {
     description:
-      "Execute the next policy-allocated exact campaign window from its durable checkpoint. Returns measured spend/yield and the latest immutable report window; stale revisions and changed source fail closed.",
+      "Execute the next policy-allocated exact campaign window. Returns compact allocation evidence, preferred-yield forecast, uncertainty, binding constraint, and report IDs for drill-down; stale revisions and changed source fail closed.",
     inputSchema: {
       file: z.string().describe("The same root .ink file used to start the campaign"),
       sessionCapability: z.string().describe("Opaque bearer capability returned by start_campaign"),
@@ -404,6 +410,47 @@ server.registerTool(
   async (input) => {
     try {
       return json(await inspectSearchSession(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
+
+server.registerTool(
+  "open_report",
+  {
+    description:
+      "Open one full source-bound report owned by this session or campaign. Use a report ID from campaign.decision or session provenance only when compact inspection is insufficient; report content may include authored text and witnesses.",
+    inputSchema: {
+      file: z.string().describe("The same root .ink file used to start the session"),
+      sessionCapability: z.string().describe("Opaque bearer capability returned by start_search or start_campaign"),
+      reportId: z.string().regex(/^report-[0-9a-f]{24}$/).describe("Session-owned immutable report ID"),
+    },
+  },
+  async (input) => {
+    try {
+      return json(await openSessionReport(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
+
+server.registerTool(
+  "get_finding",
+  {
+    description:
+      "Fetch one full finding by stable ID from a session-owned immutable report. This content-revealing drill-down avoids loading the full report when one finding is sufficient.",
+    inputSchema: {
+      file: z.string().describe("The same root .ink file used to start the session"),
+      sessionCapability: z.string().describe("Opaque bearer capability returned by start_search or start_campaign"),
+      reportId: z.string().regex(/^report-[0-9a-f]{24}$/).describe("Session-owned immutable report ID"),
+      findingId: z.string().min(1).max(256).describe("Stable ID returned by savedFindings"),
+    },
+  },
+  async (input) => {
+    try {
+      return json(await openSessionFinding(input));
     } catch (error) {
       return err(error instanceof Error ? error.message : String(error));
     }

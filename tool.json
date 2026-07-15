@@ -181,11 +181,19 @@
       },
       {
         "name": "start_campaign",
-        "description": "Start a durable aggregate policy and execute its first exact shared-search result window."
+        "description": "Start a named or fixed durable campaign policy and execute its first exact shared-search result window with bounded overrides."
       },
       {
         "name": "continue_campaign",
-        "description": "Execute the next policy-allocated exact window with measured marginal yield, spend, and report/checkpoint provenance."
+        "description": "Execute the next policy-allocated exact window with preferred-yield forecast, uncertainty, allocation reason, constraints, and report provenance."
+      },
+      {
+        "name": "open_report",
+        "description": "Open one full source-bound report owned by a bearer-capability session when compact evidence is insufficient."
+      },
+      {
+        "name": "get_finding",
+        "description": "Fetch one full stable finding from a session-owned report without loading the whole report."
       },
       {
         "name": "start_search",
@@ -221,5 +229,5 @@
       }
     ]
   },
-  "agentLoop": "inspect/compile → start_campaign, start_search, or explore_story → inspect evidence → continue the exact bounded window path → optionally add_goal with explicit additional budget → replay_witness → pin_regression for a confirmed runtime failure → edit → check_regression → begin a fresh broader search after the fix. Campaigns remain one shared trajectory in this version; add_goal starts from the story root and never replaces exact base-search work. Never infer that a truncated, randomized, externally driven, knee-stopped, or campaign-bounded story was completely verified."
+  "agentLoop": "inspect/compile → start_campaign with mode=balanced unless latency/resources require another named posture → inspect campaign.decision and saved findings → continue the exact bounded window path → use the latest report ID for full curves or one finding → optionally add_goal with explicit additional budget → replay_witness → pin_regression for a confirmed runtime failure → edit → check_regression → begin a fresh broader search after the fix. Campaigns remain one shared trajectory in this version; add_goal starts from the story root and never replaces exact base-search work. Never infer that a truncated, randomized, externally driven, knee-stopped, or campaign-bounded story was completely verified."
 }

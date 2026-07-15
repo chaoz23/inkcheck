@@ -14,6 +14,8 @@ const {
   continueSearchSession,
   continueCampaign,
   inspectSearchSession,
+  openSessionFinding,
+  openSessionReport,
   pinSessionRegression,
   replaySessionWitness,
   startSearchSession,
@@ -126,6 +128,76 @@ test("campaign result-window continuation equals one uninterrupted shared run", 
   } finally {
     fs.rmSync(split.root, { recursive: true, force: true });
     fs.rmSync(full.root, { recursive: true, force: true });
+  }
+});
+
+test("named campaign controls return compact attributable decision evidence", async () => {
+  const { root, file } = project();
+  try {
+    const started = await startCampaign({
+      file,
+      mode: "balanced",
+      totalStates: 1_000,
+      windowStates: 73,
+      maxElapsedSeconds: 60,
+      maxDiskMb: 100,
+      valuePreference: "outcomes",
+      stopPolicy: "ceilings",
+      longTailShare: 0,
+      minLongTailProbes: 0,
+      regressionReserveStates: 0,
+    });
+    const decision = started.campaign.decision;
+    assert.strictEqual(decision.mode, "balanced");
+    assert.strictEqual(decision.resourcePreference, "balanced");
+    assert.strictEqual(decision.valuePreference, "outcomes");
+    assert.strictEqual(decision.stopPolicy, "ceilings");
+    assert.match(decision.policyId, /^policy-[0-9a-f]{24}$/);
+    assert.strictEqual(decision.forecast.basis, "completed_campaign_windows");
+    assert.strictEqual(decision.forecast.uncertainty, "high");
+    assert.strictEqual(decision.drilldown.reportId, started.session.latestReportId);
+    assert.deepStrictEqual(decision.overrides, [
+      "longTailShare", "maxDiskMb", "maxElapsedSeconds", "minLongTailProbes",
+      "regressionReserveStates", "stopPolicy", "totalStates", "valuePreference", "windowStates",
+    ]);
+    const opened = await openSessionReport({
+      file,
+      sessionCapability: started.sessionCapability,
+      reportId: decision.drilldown.reportId,
+    });
+    assert.strictEqual(opened.artifact.id, started.session.latestReportId);
+    const finding = started.savedFindings.findings[0];
+    assert.ok(finding);
+    const expanded = await openSessionFinding({
+      file,
+      sessionCapability: started.sessionCapability,
+      reportId: decision.drilldown.reportId,
+      findingId: finding.id,
+    });
+    assert.strictEqual(expanded.summary.id, finding.id);
+    await assert.rejects(
+      () => openSessionReport({
+        file,
+        sessionCapability: started.sessionCapability,
+        reportId: "report-000000000000000000000000",
+      }),
+      /not owned by this search session/
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("campaign controls reject goal valuation before exact directed children exist", async () => {
+  const { root, file } = project();
+  try {
+    await assert.rejects(
+      () => startCampaign({ file, mode: "quick", valuePreference: "approved_goals" }),
+      /not available for exact resumable campaigns/
+    );
+    assert.strictEqual(fs.existsSync(path.join(root, ".inkcheck", "sessions")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

@@ -68,6 +68,9 @@ export interface InkcheckCapabilities {
     maxRegressionPinsPerProject: number;
   };
   searchModes: string[];
+  campaignModes: string[];
+  campaignValuePreferences: string[];
+  campaignStopPolicies: string[];
   resumableSearchSurfaces: string[];
   features: {
     projectInspection: boolean;
@@ -84,6 +87,7 @@ export interface InkcheckCapabilities {
     sessionRegressionPins: boolean;
     sessionGoalProbes: boolean;
     campaignResultWindows: boolean;
+    campaignPolicyControls: boolean;
   };
 }
 
@@ -127,6 +131,9 @@ export function capabilities(): InkcheckCapabilities {
       maxRegressionPinsPerProject: MAX_REGRESSION_PINS_PER_PROJECT,
     },
     searchModes: ["portfolio", "shared", "shared-variable"],
+    campaignModes: ["quick", "balanced", "deep", "overnight", "campaign", "fixed"],
+    campaignValuePreferences: ["broad_qa", "runtime_assertions", "outcomes"],
+    campaignStopPolicies: ["ceilings", "knee"],
     resumableSearchSurfaces: ["cli", "mcp"],
     features: {
       projectInspection: true,
@@ -143,6 +150,7 @@ export function capabilities(): InkcheckCapabilities {
       sessionRegressionPins: true,
       sessionGoalProbes: true,
       campaignResultWindows: true,
+      campaignPolicyControls: true,
     },
   };
 }

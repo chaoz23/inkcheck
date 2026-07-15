@@ -40,7 +40,8 @@ function complete(ledger, allocation, offsetMs = 1_000) {
 test("campaign policy validates reserves and exposes honest bounded semantics", () => {
   const value = policy("balanced");
   assert.strictEqual(value.schemaVersion, 1);
-  assert.strictEqual(value.policyVersion, 1);
+  assert.strictEqual(value.policyVersion, 2);
+  assert.strictEqual(value.control.mode, "fixed");
   assert.match(value.disclosure, /never proof of coverage/);
   assert.throws(() => policy("balanced", { longTailShare: 0.9, regressionReserveStates: 1_000 }), /leave states/);
   assert.throws(() => policy("scarce", { maxConcurrency: 0 }), /at least 1/);
