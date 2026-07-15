@@ -6,6 +6,7 @@ import {
   artifactProjectRoot,
   listReportFindings,
   openReportArtifact,
+  openReportFinding,
   replayReportFinding,
   saveReportArtifact,
   type FindingPage,
@@ -42,7 +43,17 @@ import {
   planCampaignRun,
   type CampaignIntent,
   type CampaignLedger,
+  type CampaignMode,
+  type CampaignStopPolicy,
+  type CampaignValuePreference,
 } from "./campaign-policy";
+import {
+  campaignPolicyInput,
+  campaignRecommendation,
+  explainCampaignDecision,
+  resolveCampaignControl,
+  type CampaignDecisionExplanation,
+} from "./campaign-controls";
 import {
   checkRegressionPin,
   createRegressionPin,
@@ -167,6 +178,7 @@ export interface SearchSessionResponse {
     unusedStates: number;
     windows: number;
     disclosure: string;
+    decision: CampaignDecisionExplanation;
     latestWindow?: {
       purpose: CampaignLedger["allocations"][number]["purpose"];
       reportId: string;
@@ -212,11 +224,15 @@ export interface StartSearchInput extends SearchBindings, FindingOptions {
 
 export interface StartCampaignInput extends SearchBindings, FindingOptions {
   file: string;
-  intent: CampaignIntent;
-  totalStates: number;
+  mode?: CampaignMode;
+  intent?: CampaignIntent;
+  resourcePreference?: CampaignIntent;
+  valuePreference?: CampaignValuePreference;
+  stopPolicy?: CampaignStopPolicy;
+  totalStates?: number;
   windowStates?: number;
-  maxElapsedSeconds: number;
-  maxDiskMb: number;
+  maxElapsedSeconds?: number;
+  maxDiskMb?: number;
   deadlineAt?: string;
   longTailShare?: number;
   minLongTailProbes?: number;
@@ -232,6 +248,16 @@ export interface ContinueCampaignInput extends FindingOptions {
 export interface InspectSearchInput extends FindingOptions {
   file: string;
   sessionCapability: string;
+}
+
+export interface OpenSessionReportInput {
+  file: string;
+  sessionCapability: string;
+  reportId: string;
+}
+
+export interface OpenSessionFindingInput extends OpenSessionReportInput {
+  findingId: string;
 }
 
 export interface ContinueSearchInput extends FindingOptions {
@@ -434,6 +460,8 @@ function parseRecord(raw: string, expectedHash?: string): SearchSessionRecord {
       && validDetails;
   };
   const campaign = record.campaign as SearchSessionRecord["campaign"] | undefined;
+  const persistedLedgerVersion = Number((campaign?.ledger as unknown as { policyVersion?: unknown } | undefined)?.policyVersion);
+  const persistedPolicyVersion = Number((campaign?.ledger?.policy as unknown as { policyVersion?: unknown } | undefined)?.policyVersion);
   const validCampaign = campaign === undefined || (sourceSchema === SEARCH_SESSION_SCHEMA_VERSION
     && campaign && typeof campaign === "object"
     && Object.keys(campaign).sort().join(",") === "digest,ledger"
@@ -441,7 +469,16 @@ function parseRecord(raw: string, expectedHash?: string): SearchSessionRecord {
     && campaign.ledger && typeof campaign.ledger === "object"
     && campaignLedgerDigest(campaign.ledger) === campaign.digest
     && campaign.ledger.schemaVersion === 1
-    && campaign.ledger.policyVersion === 1
+    && [1, 2].includes(persistedLedgerVersion)
+    && persistedPolicyVersion === persistedLedgerVersion
+    && (persistedLedgerVersion === 1 || (campaign.ledger.policy
+      && persistedPolicyVersion === 2
+      && campaign.ledger.policy.control
+      && ["quick", "balanced", "deep", "overnight", "campaign", "fixed"].includes(campaign.ledger.policy.control.mode)
+      && ["scarce", "balanced", "abundant"].includes(campaign.ledger.policy.control.resourcePreference)
+      && ["broad_qa", "runtime_assertions", "outcomes", "approved_goals"].includes(campaign.ledger.policy.control.valuePreference)
+      && ["ceilings", "knee"].includes(campaign.ledger.policy.control.stopPolicy)
+      && Array.isArray(campaign.ledger.policy.control.overrideKeys)))
     && /^campaign-[0-9a-f]{24}$/.test(campaign.ledger.campaignId)
     && campaign.ledger.bindingFingerprint.length >= 8
     && campaign.ledger.bindingFingerprint.length <= 256
@@ -654,6 +691,7 @@ function campaignSummary(record: SearchSessionRecord): SearchSessionResponse["ca
     unusedStates: Math.max(0, ledger.policy.ceilings.totalStates - ledger.spend.states),
     windows: ledger.allocations.filter((allocation) => allocation.status === "completed").length,
     disclosure: ledger.policy.disclosure,
+    decision: explainCampaignDecision(ledger),
     ...(latest?.provenance ? {
       latestWindow: {
         purpose: latest.purpose,
@@ -939,20 +977,39 @@ function terminalCampaignMessage(result: ExploreResult, diskLimited = false): st
 }
 
 export async function startCampaign(input: StartCampaignInput): Promise<SearchSessionResponse> {
-  if (!Number.isSafeInteger(input.totalStates) || input.totalStates < 10 || input.totalStates > MAX_MCP_SESSION_TOTAL_STATES) {
+  const defaultMemoryMb = Math.max(1, Math.floor(createResourceGuards().memoryCapBytes / (1024 * 1024)));
+  const control = resolveCampaignControl({
+    mode: input.mode,
+    resourcePreference: input.resourcePreference,
+    legacyIntent: input.intent,
+    valuePreference: input.valuePreference,
+    stopPolicy: input.stopPolicy,
+    totalStates: input.totalStates,
+    windowStates: input.windowStates,
+    maxElapsedSeconds: input.maxElapsedSeconds,
+    maxMemoryMb: input.maxMemoryMb,
+    maxDiskMb: input.maxDiskMb,
+    deadlineAt: input.deadlineAt,
+    longTailShare: input.longTailShare,
+    minLongTailProbes: input.minLongTailProbes,
+    regressionReserveStates: input.regressionReserveStates,
+  }, defaultMemoryMb);
+  if (control.valuePreference === "approved_goals") {
+    throw new RangeError("approved_goals is not available for exact resumable campaigns; use add_goal on an ordinary session until directed campaign children are supported");
+  }
+  if (!Number.isSafeInteger(control.totalStates) || control.totalStates < 10 || control.totalStates > MAX_MCP_SESSION_TOTAL_STATES) {
     throw new RangeError(`totalStates must be an integer from 10 to ${MAX_MCP_SESSION_TOTAL_STATES}`);
   }
-  if (!Number.isSafeInteger(input.maxElapsedSeconds) || input.maxElapsedSeconds < 1 || input.maxElapsedSeconds > 604_800) {
+  if (!Number.isSafeInteger(control.maxElapsedSeconds) || control.maxElapsedSeconds < 1 || control.maxElapsedSeconds > 604_800) {
     throw new RangeError("maxElapsedSeconds must be an integer from 1 to 604800");
   }
-  if (!Number.isSafeInteger(input.maxDiskMb) || input.maxDiskMb < 1 || input.maxDiskMb > 1_000_000) {
+  if (!Number.isSafeInteger(control.maxDiskMb) || control.maxDiskMb < 1 || control.maxDiskMb > 1_000_000) {
     throw new RangeError("maxDiskMb must be an integer from 1 to 1000000");
   }
-  if (input.windowStates !== undefined
-    && (!Number.isSafeInteger(input.windowStates) || input.windowStates < 1 || input.windowStates > MAX_MCP_SESSION_WINDOW_STATES)) {
+  if (!Number.isSafeInteger(control.windowStates) || control.windowStates < 1 || control.windowStates > MAX_MCP_SESSION_WINDOW_STATES) {
     throw new RangeError(`windowStates must be an integer from 1 to ${MAX_MCP_SESSION_WINDOW_STATES}`);
   }
-  const memoryMb = input.maxMemoryMb ?? Math.max(1, Math.floor(createResourceGuards().memoryCapBytes / (1024 * 1024)));
+  const memoryMb = control.maxMemoryMb;
   if (!Number.isSafeInteger(memoryMb) || memoryMb < 1 || memoryMb > 1_000_000) {
     throw new RangeError("maxMemoryMb must be an integer from 1 to 1000000");
   }
@@ -960,19 +1017,7 @@ export async function startCampaign(input: StartCampaignInput): Promise<SearchSe
     throw new Error("campaign memory ceiling is already below current heap use; raise it before starting work");
   }
   const createdAt = new Date().toISOString();
-  const policy = createCampaignPolicy({
-    intent: input.intent,
-    totalStates: input.totalStates,
-    maxElapsedMs: input.maxElapsedSeconds * 1_000,
-    maxMemoryBytes: memoryMb * 1024 * 1024,
-    maxDiskBytes: input.maxDiskMb * 1024 * 1024,
-    maxConcurrency: 1,
-    deadlineAt: input.deadlineAt,
-    typicalWindowStates: input.windowStates,
-    longTailShare: input.longTailShare,
-    minLongTailProbes: input.minLongTailProbes,
-    regressionReserveStates: input.regressionReserveStates,
-  });
+  const policy = createCampaignPolicy(campaignPolicyInput(control));
   if (policy.typicalWindowStates > MAX_MCP_SESSION_WINDOW_STATES) {
     throw new RangeError(`campaign window must not exceed ${MAX_MCP_SESSION_WINDOW_STATES} states`);
   }
@@ -1064,6 +1109,28 @@ export async function startCampaign(input: StartCampaignInput): Promise<SearchSe
 export async function inspectSearchSession(input: InspectSearchInput): Promise<SearchSessionResponse> {
   const { projectRoot, record } = loadSession(input.file, input.sessionCapability);
   return sessionResponse(projectRoot, record, input);
+}
+
+function sessionReportIds(record: SearchSessionRecord): Set<string> {
+  return new Set([
+    record.latestReportId,
+    ...record.goalProbes.map((probe) => probe.reportId),
+    ...(record.campaign?.ledger.allocations.flatMap((allocation) => allocation.provenance?.reportId
+      ? [allocation.provenance.reportId]
+      : []) ?? []),
+  ]);
+}
+
+export async function openSessionReport(input: OpenSessionReportInput): Promise<Awaited<ReturnType<typeof openReportArtifact>>> {
+  const { projectRoot, record } = loadSession(input.file, input.sessionCapability);
+  if (!sessionReportIds(record).has(input.reportId)) throw new Error("report ID is not owned by this search session");
+  return openReportArtifact(projectRoot, input.reportId);
+}
+
+export async function openSessionFinding(input: OpenSessionFindingInput): Promise<Awaited<ReturnType<typeof openReportFinding>>> {
+  const { projectRoot, record } = loadSession(input.file, input.sessionCapability);
+  if (!sessionReportIds(record).has(input.reportId)) throw new Error("report ID is not owned by this search session");
+  return openReportFinding(projectRoot, input.reportId, input.findingId);
 }
 
 export async function continueSearchSession(input: ContinueSearchInput): Promise<SearchSessionResponse> {
@@ -1160,7 +1227,7 @@ export async function continueCampaign(input: ContinueCampaignInput): Promise<Se
   const plan = planCampaignRun(ledger, {
     now: new Date().toISOString(),
     bindingFingerprint: ledger.bindingFingerprint,
-    recommendation: "continue",
+    recommendation: campaignRecommendation(ledger),
     partition: { strategy: "shared" },
   });
   if (plan.action === "stop") {

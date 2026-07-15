@@ -1,9 +1,12 @@
 import { createHash } from "crypto";
 
 export const CAMPAIGN_POLICY_SCHEMA_VERSION = 1;
-export const CAMPAIGN_POLICY_VERSION = 1;
+export const CAMPAIGN_POLICY_VERSION = 2;
 
 export type CampaignIntent = "scarce" | "balanced" | "abundant";
+export type CampaignMode = "quick" | "balanced" | "deep" | "overnight" | "campaign" | "fixed";
+export type CampaignValuePreference = "broad_qa" | "runtime_assertions" | "outcomes" | "approved_goals";
+export type CampaignStopPolicy = "ceilings" | "knee";
 export type CampaignPurpose = "typical" | "long_tail" | "regression";
 export type CampaignRecommendation = "continue" | "stop_at_knee";
 export type CampaignStopReason =
@@ -22,6 +25,10 @@ export type CampaignStopReason =
 
 export interface CampaignPolicyInput {
   intent: CampaignIntent;
+  mode?: CampaignMode;
+  valuePreference?: CampaignValuePreference;
+  stopPolicy?: CampaignStopPolicy;
+  overrideKeys?: string[];
   totalStates: number;
   maxElapsedMs: number;
   maxMemoryBytes: number;
@@ -37,8 +44,15 @@ export interface CampaignPolicyInput {
 
 export interface CampaignPolicy {
   schemaVersion: 1;
-  policyVersion: 1;
+  policyVersion: 2;
   intent: CampaignIntent;
+  control: {
+    mode: CampaignMode;
+    resourcePreference: CampaignIntent;
+    valuePreference: CampaignValuePreference;
+    stopPolicy: CampaignStopPolicy;
+    overrideKeys: string[];
+  };
   ceilings: {
     totalStates: number;
     maxElapsedMs: number;
@@ -97,7 +111,7 @@ export interface CampaignAllocation {
 
 export interface CampaignLedger {
   schemaVersion: 1;
-  policyVersion: 1;
+  policyVersion: 1 | 2;
   campaignId: string;
   bindingFingerprint: string;
   createdAt: string;
@@ -230,6 +244,20 @@ export function createCampaignPolicy(input: CampaignPolicyInput): CampaignPolicy
   if (input.maxConcurrency > 1_000) throw new Error("maxConcurrency must not exceed 1000");
   if (input.maxCostMicrounits !== undefined) integer(input.maxCostMicrounits, "maxCostMicrounits", 0);
   if (input.deadlineAt !== undefined) isoTime(input.deadlineAt, "deadlineAt");
+  const mode = input.mode ?? "fixed";
+  if (!["quick", "balanced", "deep", "overnight", "campaign", "fixed"].includes(mode)) {
+    throw new Error("campaign mode must be quick, balanced, deep, overnight, campaign, or fixed");
+  }
+  const valuePreference = input.valuePreference ?? "broad_qa";
+  if (!["broad_qa", "runtime_assertions", "outcomes", "approved_goals"].includes(valuePreference)) {
+    throw new Error("valuePreference must be broad_qa, runtime_assertions, outcomes, or approved_goals");
+  }
+  const stopPolicy = input.stopPolicy ?? "ceilings";
+  if (!["ceilings", "knee"].includes(stopPolicy)) throw new Error("stopPolicy must be ceilings or knee");
+  const overrideKeys = [...new Set(input.overrideKeys ?? [])].sort();
+  if (overrideKeys.length > 32 || overrideKeys.some((key) => !/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(key))) {
+    throw new Error("overrideKeys must contain at most 32 compact field names");
+  }
 
   const typicalWindowStates = input.typicalWindowStates
     ?? Math.max(1, Math.min(profile.typicalWindowCap, Math.floor(input.totalStates * profile.typicalWindowShare)));
@@ -257,6 +285,13 @@ export function createCampaignPolicy(input: CampaignPolicyInput): CampaignPolicy
     schemaVersion: CAMPAIGN_POLICY_SCHEMA_VERSION,
     policyVersion: CAMPAIGN_POLICY_VERSION,
     intent: input.intent,
+    control: {
+      mode,
+      resourcePreference: input.intent,
+      valuePreference,
+      stopPolicy,
+      overrideKeys,
+    },
     ceilings: {
       totalStates: input.totalStates,
       maxElapsedMs: input.maxElapsedMs,
@@ -269,7 +304,7 @@ export function createCampaignPolicy(input: CampaignPolicyInput): CampaignPolicy
     typicalWindowStates,
     longTail: { share: longTailShare, reservedStates: longTailReservedStates, minProbes: minLongTailProbes },
     regressionReserveStates,
-    disclosure: "Knee and plateau signals are bounded observations, never proof of coverage or unreachability.",
+    disclosure: "Forecasts and knee signals describe bounded observed windows and are never proof of coverage, unreachability, or the absence of later discoveries.",
   };
 }
 
@@ -283,6 +318,10 @@ export function createCampaignLedger(policy: CampaignPolicy, bindingFingerprint:
     maxMemoryBytes: policy.ceilings.maxMemoryBytes,
     maxDiskBytes: policy.ceilings.maxDiskBytes,
     maxConcurrency: policy.ceilings.maxConcurrency,
+    mode: policy.control.mode,
+    valuePreference: policy.control.valuePreference,
+    stopPolicy: policy.control.stopPolicy,
+    overrideKeys: policy.control.overrideKeys,
     deadlineAt: policy.ceilings.deadlineAt,
     maxCostMicrounits: policy.ceilings.maxCostMicrounits,
     typicalWindowStates: policy.typicalWindowStates,

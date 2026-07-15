@@ -36,6 +36,12 @@ Inkcheck's future value is planned to come from a reproducible hybrid: broad see
 
 These are separate scores, not an average. A high trust score cannot offset a lost runtime error. The detailed [product and engineering truths scorecard](docs/product-engineering-scorecard.md) defines every 10/10 target, current evidence, engineering constraints, and the reassessment protocol used at each epic or release. The first complete [policy v2 promotion evaluation](docs/promotion-policy-v2-evaluation.md) keeps dynamic allocation experimental rather than turning mixed evidence into a launch claim.
 
+### Agent campaign policies
+
+MCP agents can start a durable campaign with a high-level `quick`, `balanced`, `deep`, `overnight`, or `campaign` mode instead of inventing explorer weights. `balanced` is the fresh-agent default; `fixed` preserves explicit legacy controls. Bounded overrides can change state/window/time/memory/disk/deadline posture, scarce/balanced/abundant resources, preferred value (`broad_qa`, `runtime_assertions`, or `outcomes`), protected long-tail work, and `ceilings` versus `knee` stopping. Exact resumable campaigns currently exclude configured assertions and goals, so `runtime_assertions` observes runtime-error yield and approved-goal campaign steering remains future multi-child work.
+
+Every result window returns a stable policy ID, allocation reason, measured preferred yield, throughput/resource evidence, an uncertainty-labelled empirical range for another window, any binding constraint, and the report ID used to inspect full curves or findings. A knee requires three consecutive windows with no preferred yield and cannot consume protected probes. It remains a bounded observation over one shared trajectory, not a claim that the story is covered or that later discoveries do not exist. See the [campaign policy contract](docs/campaign-policy-contract.md) and [MCP result-window guide](docs/mcp-search-sessions.md).
+
 ## Quick start
 
 With Node.js 18 or newer:
