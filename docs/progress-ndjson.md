@@ -16,7 +16,7 @@ Common fields:
 | --- | --- | --- |
 | `schemaVersion` | number | Progress schema version. Currently `1`. |
 | `sequence` | number | Monotonic event number starting at `1` for each CLI process. |
-| `type` | string | Event kind: `run_start`, `phase_start`, `progress`, `phase_end`, or `run_end`. |
+| `type` | string | Event kind: `run_start`, `phase_start`, `progress`, `discovery`, `phase_end`, or `run_end`. |
 | `elapsedMs` | number | Milliseconds since the CLI run started. |
 | `statesExplored` | number | Total story states explored so far in this CLI process. |
 | `stateBudget` | number | Total configured work budget: baseline plus additional goal states. |
@@ -39,6 +39,8 @@ Optional fields:
 | `endingsFound` | number | Distinct endings found so far across the whole run (all passes deduplicated). Non-decreasing within a run. |
 | `runtimeErrorsFound` | number | Distinct runtime errors found so far across the whole run. Non-decreasing within a run. |
 | `unvisitedKnots` | number | Knots not yet reached by any pass in this run. Non-increasing within a run. |
+| `knotsVisited` | number | Cumulative authored knots reached. Present on `discovery` events. |
+| `discoveries` | object | Numeric deltas first observed at this event: `endings`, `runtimeErrors`, `knotsVisited`, `visibleOutcomes`, `assertionViolations`, `goalsReached`, and `stagesReached`. Present only on `discovery` events. |
 
 Progress counts are cumulative over the run, not per-pass, so a consumer can render them as a live running total: endings and errors only rise, unvisited knots only fall. (`--next` starts a fresh exploration per escalation, so the counts rebuild at each escalation boundary; see Lifecycle.)
 
@@ -52,7 +54,7 @@ A normal complete run looks like this:
 2. `phase_start` for `compile`
 3. `phase_end` for `compile`
 4. `phase_start` / `phase_end` for source scanning and exploration phases as applicable
-5. zero or more `progress` events during exploration
+5. zero or more `progress` activity events and `discovery` evidence events during exploration
 6. `phase_start` for `report`
 7. `phase_end` for `report`
 8. `run_end`
@@ -69,6 +71,12 @@ Progress event:
 
 ```json
 {"schemaVersion":1,"sequence":4,"type":"progress","elapsedMs":532,"statesExplored":5000,"stateBudget":100000,"budgetFraction":0.05,"phase":"explore","pass":"random:seed=1","endingsFound":3,"runtimeErrorsFound":0,"unvisitedKnots":8}
+```
+
+Privacy-safe discovery event:
+
+```json
+{"schemaVersion":1,"sequence":5,"type":"discovery","elapsedMs":611,"statesExplored":5200,"stateBudget":100000,"budgetFraction":0.052,"pass":"beam:w=64","endingsFound":4,"runtimeErrorsFound":1,"unvisitedKnots":7,"knotsVisited":12,"discoveries":{"endings":1,"runtimeErrors":1,"knotsVisited":2,"visibleOutcomes":1,"assertionViolations":0,"goalsReached":0,"stagesReached":0}}
 ```
 
 Terminal event:
@@ -92,8 +100,13 @@ for await (const line of stderrLines) {
       budget: event.stateBudget,
     });
   }
+  if (event.type === "discovery") {
+    recordNumericDiscovery(event.discoveries);
+  }
 }
 ```
+
+`discovery` means that a cumulative run counter increased. It is useful for a concise terminal update, hosted status, or agent scheduling, but it is not a finding record and does not replace the final report. Counts stay privacy-safe by omitting identities, story labels, source locations, messages, paths, and variable data. A later bounded run can still find more.
 
 ## Privacy
 

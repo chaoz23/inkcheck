@@ -658,8 +658,27 @@ async function main() {
   const humanProgress = selectedProgressMode === "auto" || selectedProgressMode === "human"
     ? new HumanProgressRenderer(process.stderr, selectedProgressMode)
     : undefined;
+  type DiscoveryChanges = {
+    endings: number;
+    runtimeErrors: number;
+    knotsVisited: number;
+    visibleOutcomes: number;
+    assertionViolations: number;
+    goalsReached: number;
+    stagesReached: number;
+  };
+  const discoveryTotals: DiscoveryChanges = {
+    endings: 0,
+    runtimeErrors: 0,
+    knotsVisited: 0,
+    visibleOutcomes: 0,
+    assertionViolations: 0,
+    goalsReached: 0,
+    stagesReached: 0,
+  };
+  const discoveryKeys = Object.keys(discoveryTotals) as (keyof DiscoveryChanges)[];
   const emitProgress = (
-    type: "run_start" | "phase_start" | "progress" | "phase_end" | "run_end",
+    type: "run_start" | "phase_start" | "progress" | "discovery" | "phase_end" | "run_end",
     details: {
       phase?: "compile" | "source_scan" | "explore" | "min_repro" | "report";
       pass?: string;
@@ -672,6 +691,8 @@ async function main() {
       stagesReached?: number;
       discoveryEvents?: number;
       statesSinceLastDiscovery?: number | null;
+      knotsVisited?: number;
+      discoveries?: DiscoveryChanges;
     } = {}
   ) => {
     const event = {
@@ -793,7 +814,7 @@ async function main() {
       randomnessDetected: semantics.usesRandomness,
       onProgress: (progress: ExploreProgress) => {
         statesExplored = saveCheckpoint ? progress.statesExplored : statesBase + progress.statesExplored;
-        emitProgress("progress", {
+        const progressDetails = {
           pass: progress.pass,
           endingsFound: progress.endingsFound,
           runtimeErrorsFound: progress.runtimeErrorsFound,
@@ -804,7 +825,38 @@ async function main() {
           stagesReached: progress.stagesReached,
           discoveryEvents: progress.discoveryEvents,
           statesSinceLastDiscovery: progress.statesSinceLastDiscovery,
-        });
+        };
+        emitProgress("progress", progressDetails);
+        const currentDiscoveries: DiscoveryChanges = {
+          endings: progress.endingsFound,
+          runtimeErrors: progress.runtimeErrorsFound,
+          knotsVisited: Math.max(0, knots.length - progress.unvisitedKnots),
+          visibleOutcomes: progress.visibleOutcomes,
+          assertionViolations: progress.assertionViolations,
+          goalsReached: progress.goalsReached,
+          stagesReached: progress.stagesReached,
+        };
+        const nextTotals = { ...discoveryTotals };
+        const discoveries = { ...discoveryTotals };
+        for (const key of discoveryKeys) {
+          nextTotals[key] = Math.max(currentDiscoveries[key], discoveryTotals[key]);
+          discoveries[key] = nextTotals[key] - discoveryTotals[key];
+        }
+        if (Object.values(discoveries).some((value) => value > 0)) {
+          Object.assign(discoveryTotals, nextTotals);
+          emitProgress("discovery", {
+            ...progressDetails,
+            endingsFound: nextTotals.endings,
+            runtimeErrorsFound: nextTotals.runtimeErrors,
+            unvisitedKnots: Math.max(0, knots.length - nextTotals.knotsVisited),
+            visibleOutcomes: nextTotals.visibleOutcomes,
+            assertionViolations: nextTotals.assertionViolations,
+            goalsReached: nextTotals.goalsReached,
+            stagesReached: nextTotals.stagesReached,
+            knotsVisited: nextTotals.knotsVisited,
+            discoveries,
+          });
+        }
       },
     };
     let checked: ExploreResult;

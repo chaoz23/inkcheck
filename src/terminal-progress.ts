@@ -1,7 +1,7 @@
 export type HumanProgressPhase = "compile" | "source_scan" | "explore" | "min_repro" | "report";
 
 export interface HumanProgressEvent {
-  type: "run_start" | "phase_start" | "progress" | "phase_end" | "run_end";
+  type: "run_start" | "phase_start" | "progress" | "discovery" | "phase_end" | "run_end";
   phase?: HumanProgressPhase;
   pass?: string;
   elapsedMs: number;
@@ -10,6 +10,17 @@ export interface HumanProgressEvent {
   endingsFound?: number;
   runtimeErrorsFound?: number;
   unvisitedKnots?: number;
+  knotsVisited?: number;
+  assertionViolations?: number;
+  discoveries?: {
+    endings: number;
+    runtimeErrors: number;
+    knotsVisited: number;
+    visibleOutcomes: number;
+    assertionViolations: number;
+    goalsReached: number;
+    stagesReached: number;
+  };
   exhaustive?: boolean;
 }
 
@@ -53,14 +64,14 @@ export class HumanProgressRenderer {
       return;
     }
     const now = Date.now();
-    if (event.type === "progress") {
+    if (event.type === "progress" || event.type === "discovery") {
       if (this.lastStateAt && now > this.lastStateAt && event.statesExplored > this.lastStates) {
         const instant = (event.statesExplored - this.lastStates) / ((now - this.lastStateAt) / 1000);
         this.rate = this.rate ? this.rate * 0.7 + instant * 0.3 : instant;
       }
       this.lastStates = event.statesExplored;
       this.lastStateAt = now;
-      if (now - this.lastRenderedAt < 700) return;
+      if (event.type === "progress" && now - this.lastRenderedAt < 700) return;
     }
     this.lastRenderedAt = now;
     this.render(event);
@@ -76,7 +87,15 @@ export class HumanProgressRenderer {
     const width = Math.max(44, this.writer.columns ?? 100);
     const label = event.phase ? PHASE_LABEL[event.phase] : "Working";
     let line: string;
-    if (event.phase === "explore" || event.phase === "min_repro" || event.type === "progress") {
+    if (event.type === "discovery" && event.discoveries) {
+      const found = [
+        event.discoveries.runtimeErrors ? `+${event.discoveries.runtimeErrors} error${event.discoveries.runtimeErrors === 1 ? "" : "s"}` : "",
+        event.discoveries.assertionViolations ? `+${event.discoveries.assertionViolations} rule failure${event.discoveries.assertionViolations === 1 ? "" : "s"}` : "",
+        event.discoveries.endings ? `+${event.discoveries.endings} ending${event.discoveries.endings === 1 ? "" : "s"}` : "",
+        event.discoveries.knotsVisited ? `+${event.discoveries.knotsVisited} knot${event.discoveries.knotsVisited === 1 ? "" : "s"}` : "",
+      ].filter(Boolean).join(", ");
+      line = `Found ${found || "new story evidence"} at ${event.statesExplored.toLocaleString()} work states  |  ${duration(event.elapsedMs)} elapsed`;
+    } else if (event.phase === "explore" || event.phase === "min_repro" || event.type === "progress") {
       const percent = event.stateBudget ? Math.floor((event.statesExplored / event.stateBudget) * 100) : 0;
       const throughput = this.rate >= 1 ? `  ${Math.round(this.rate).toLocaleString()} states/s` : "";
       const remaining = this.rate >= 10 && event.statesExplored < event.stateBudget

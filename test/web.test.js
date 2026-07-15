@@ -240,6 +240,28 @@ test("web API validates input and returns a no-retention report", async (t) => {
         runtimeErrorsFound: 0,
         unvisitedKnots: 1,
       });
+      options?.onProgress?.({
+        schemaVersion: 1,
+        sequence: 2,
+        type: "discovery",
+        elapsedMs: 4,
+        statesExplored: 123,
+        stateBudget: submission.maxStates,
+        budgetFraction: 123 / submission.maxStates,
+        endingsFound: 2,
+        runtimeErrorsFound: 0,
+        unvisitedKnots: 1,
+        knotsVisited: 4,
+        discoveries: {
+          endings: 2,
+          runtimeErrors: 0,
+          knotsVisited: 4,
+          visibleOutcomes: 2,
+          assertionViolations: 0,
+          goalsReached: 0,
+          stagesReached: 0,
+        },
+      });
       return {
         report: { compile: { success: true }, root: submission.root },
         meta: {
@@ -383,6 +405,9 @@ test("web API validates input and returns a no-retention report", async (t) => {
   const streamText = await stream.text();
   assert.match(streamText, /event: progress/);
   assert.match(streamText, /"statesExplored":123/);
+  assert.match(streamText, /"type":"discovery"/);
+  assert.match(streamText, /"knotsVisited":4/);
+  assert.doesNotMatch(streamText, /main\.ink|chapters\/one\.ink|Hello/);
   assert.strictEqual(calls, 1);
   assert.deepStrictEqual(usageEvents, [
     { event: "page_view", details: undefined },

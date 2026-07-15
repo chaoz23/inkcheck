@@ -66,7 +66,7 @@ export interface HostedResultWindow {
 export interface HostedProgressEvent {
   schemaVersion: 1;
   sequence: number;
-  type: "queued" | "run_start" | "phase_start" | "progress" | "phase_end" | "run_end";
+  type: "queued" | "run_start" | "phase_start" | "progress" | "discovery" | "phase_end" | "run_end";
   phase?: "compile" | "source_scan" | "explore" | "min_repro" | "report";
   pass?: string;
   elapsedMs: number;
@@ -77,6 +77,19 @@ export interface HostedProgressEvent {
   runtimeErrorsFound?: number;
   assertionViolations?: number;
   unvisitedKnots?: number;
+  knotsVisited?: number;
+  visibleOutcomes?: number;
+  goalsReached?: number;
+  stagesReached?: number;
+  discoveries?: {
+    endings: number;
+    runtimeErrors: number;
+    knotsVisited: number;
+    visibleOutcomes: number;
+    assertionViolations: number;
+    goalsReached: number;
+    stagesReached: number;
+  };
   meaningfulYield?: number;
   statesSinceLastYield?: number | null;
   forecast?: {
@@ -618,6 +631,10 @@ class HostedJobManager {
       runtimeErrorsFound: patch.runtimeErrorsFound ?? previous?.runtimeErrorsFound,
       assertionViolations: patch.assertionViolations ?? previous?.assertionViolations,
       unvisitedKnots: patch.unvisitedKnots ?? previous?.unvisitedKnots,
+      knotsVisited: patch.knotsVisited ?? previous?.knotsVisited,
+      visibleOutcomes: patch.visibleOutcomes ?? previous?.visibleOutcomes,
+      goalsReached: patch.goalsReached ?? previous?.goalsReached,
+      stagesReached: patch.stagesReached ?? previous?.stagesReached,
       meaningfulYield,
       statesSinceLastYield,
       forecast: {
