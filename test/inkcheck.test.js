@@ -3291,8 +3291,10 @@ test("CLI defaults the state budget to 10,000,000", () => {
 test("hosted checker defaults and caps the state budget at 1,000,000", () => {
   const config = webConfigFromEnv();
   assert.strictEqual(config.maxStates, 1_000_000);
+  assert.strictEqual(config.portfolioConcurrency, 1);
   const compose = fs.readFileSync(path.join(ROOT, "compose.yaml"), "utf8");
   assert.match(compose, /INKCHECK_WEB_MAX_STATES:\s*"1000000"/);
+  assert.match(compose, /INKCHECK_WEB_PORTFOLIO_CONCURRENCY:\s*"1"/);
   const submission = validateSubmission(
     {
       root: "story.ink",
@@ -3379,7 +3381,7 @@ test("human output groups actionable findings by severity", () => {
 
 test("hosted runner checks an uploaded story and deletes its job", async () => {
   const source = require("node:fs").readFileSync(CLEAN_BRANCH, "utf8");
-  const config = webConfigFromEnv();
+  const config = { ...webConfigFromEnv(), portfolioConcurrency: 2 };
   const submission = validateSubmission(
     {
       root: "story.ink",
@@ -3393,6 +3395,7 @@ test("hosted runner checks an uploaded story and deletes its job", async () => {
   );
   const result = await runSubmission(submission, config);
   assert.strictEqual(result.report.compile.success, true);
+  assert.strictEqual(result.report.effectiveConfiguration.concurrency, 2);
   assert.strictEqual(result.report.explore.endingsFound.length, 2);
   assert.deepStrictEqual(result.humanFindings, []);
   assert.strictEqual(result.resultWindow.searchContinuing, false);
@@ -3403,6 +3406,55 @@ test("hosted runner checks an uploaded story and deletes its job", async () => {
   assert.strictEqual(result.meta.retained, false);
   assert.strictEqual(result.meta.runIntent, "balanced");
   assert.doesNotMatch(JSON.stringify(result.report), /inkcheck-web-/);
+});
+
+test("hosted cancellation stops a concurrent run and deletes its job", async () => {
+  const source = fs.readFileSync(EARLY_CHOICE_GRID, "utf8");
+  const config = {
+    ...webConfigFromEnv(),
+    portfolioConcurrency: 2,
+    timeoutMs: 30_000,
+  };
+  const submission = validateSubmission(
+    {
+      root: "story.ink",
+      files: { "story.ink": source },
+      authorized: true,
+      privacyAcknowledged: true,
+      maxDepth: 100,
+      maxStates: 1_000_000,
+    },
+    config
+  );
+  const controller = new AbortController();
+  const before = new Set(
+    fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("inkcheck-web-"))
+  );
+  let cancelledAfterStart = false;
+  const fallback = setTimeout(() => controller.abort(), 10_000);
+
+  try {
+    await assert.rejects(
+      runSubmission(submission, config, {
+        signal: controller.signal,
+        onProgress(event) {
+          if (event.type === "run_start") {
+            cancelledAfterStart = true;
+            controller.abort();
+          }
+        },
+      }),
+      (error) => error instanceof SubmissionError && error.status === 499
+    );
+  } finally {
+    clearTimeout(fallback);
+  }
+
+  assert.strictEqual(cancelledAfterStart, true, "the real concurrent child reported its start");
+  const after = fs
+    .readdirSync(os.tmpdir())
+    .filter((name) => name.startsWith("inkcheck-web-") && !before.has(name));
+  assert.deepStrictEqual(after, [], "cancelled uploads must be deleted");
 });
 
 test("hosted runner returns truncated exploration as a useful partial report", async () => {

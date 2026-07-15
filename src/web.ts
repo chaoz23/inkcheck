@@ -21,6 +21,8 @@ export interface WebConfig extends HostedLimits {
   host: string;
   port: number;
   concurrency: number;
+  /** Per-job portfolio worker ceiling, independent of hosted job concurrency. */
+  portfolioConcurrency: number;
   timeoutMs: number;
   maxReportBytes: number;
   rateLimit: number;
@@ -148,6 +150,7 @@ export function webConfigFromEnv(): WebConfig {
     host: process.env.HOST ?? "127.0.0.1",
     port: integerEnv("PORT", 8080, 1, 65535),
     concurrency: integerEnv("INKCHECK_WEB_CONCURRENCY", 1, 1, 4),
+    portfolioConcurrency: integerEnv("INKCHECK_WEB_PORTFOLIO_CONCURRENCY", 1, 1, 4),
     timeoutMs: integerEnv("INKCHECK_WEB_TIMEOUT_MS", 300_000, 1_000, 900_000),
     maxBodyBytes: integerEnv("INKCHECK_WEB_MAX_BODY_BYTES", 5_242_880, 1_024, 20_971_520),
     maxFiles: integerEnv("INKCHECK_WEB_MAX_FILES", 200, 1, 500),
@@ -356,6 +359,8 @@ export async function runSubmission(
       String(submission.maxDepth),
       "--max-states",
       String(submission.maxStates),
+      "--concurrency",
+      String(config.portfolioConcurrency),
       "--max-time",
       String(gracefulSeconds),
     ];
