@@ -132,6 +132,26 @@ function assertionViolationKey(ruleId: string, observedValues: Record<string, un
   return `${ruleId}|${stableObject(observedValues)}|${JSON.stringify(choiceIndices)}`;
 }
 
+/** Product-facing evidence count used only for wall-clock discovery milestones. */
+export function meaningfulEvidenceCount(report: ExploreResult): number {
+  const assertions = new Set((report.assertionResults ?? []).flatMap((result) =>
+    result.violations.map((violation) =>
+      assertionViolationKey(violation.ruleId, violation.observedValues, violation.choiceIndices)
+    )
+  ));
+  return new Set(report.runtimeErrors.map(runtimeErrorKey)).size
+    + assertions.size
+    + new Set(report.visitedKnots).size
+    + new Set(report.endingsFound.map(visibleEndingKey)).size;
+}
+
+export function meaningfulEvidenceCountFromSummary(summary: SearchBenchmarkSummary): number {
+  return summary.findings.runtimeErrors.length
+    + summary.findings.assertionViolations.length
+    + summary.findings.visitedKnots.length
+    + summary.findings.visibleEndings.length;
+}
+
 function terminalStateId(ending: EndingReport): string {
   return `sha256:${createHash("sha256").update(terminalStateKey(ending)).digest("hex")}`;
 }

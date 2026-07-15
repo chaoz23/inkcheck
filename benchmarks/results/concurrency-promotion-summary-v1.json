@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "candidate": "concurrent-portfolio",
+  "candidateConcurrency": 4,
+  "machine": "Apple Silicon development machine",
+  "decision": "retain_opt_in",
+  "meaningfulEvidence": "deduplicated runtime errors, assertion violations, authored knots visited, and visible ending outcomes",
+  "runs": [
+    {
+      "name": "representative-small-budget",
+      "pairs": 20,
+      "budgets": "CI-selected minimum (50 or 100 states)",
+      "evidenceRegressions": 0,
+      "medianElapsedMs": { "baseline": 138, "candidate": 172 },
+      "medianPeakRssMiB": { "baseline": 61.2, "candidate": 119.2 },
+      "milestones": {
+        "1": { "comparable": 20, "baselineMedianMs": 13.5, "candidateMedianMs": 43.9, "candidateFaster": 0 },
+        "5": { "comparable": 10, "baselineMedianMs": 21.4, "candidateMedianMs": 50.5, "candidateFaster": 0 },
+        "10": { "comparable": 2, "baselineMedianMs": 28.0, "candidateMedianMs": 56.9, "candidateFaster": 0 }
+      }
+    },
+    {
+      "name": "all-families-100k",
+      "pairs": 80,
+      "budgets": "100000 states",
+      "evidenceRegressions": 0,
+      "medianElapsedMs": { "baseline": 120.5, "candidate": 239.5 },
+      "candidateTotalTimeWins": 3,
+      "medianPeakRssMiB": { "baseline": 56.7, "candidate": 135.4 },
+      "milestones": {
+        "1": { "comparable": 80, "baselineMedianMs": 12.6, "candidateMedianMs": 119.0, "candidateFaster": 5 },
+        "5": { "comparable": 34, "baselineMedianMs": 19.4, "candidateMedianMs": 140.4, "candidateFaster": 4 },
+        "10": { "comparable": 16, "baselineMedianMs": 24.3, "candidateMedianMs": 150.5, "candidateFaster": 2 }
+      },
+      "sustainedWorkloadWin": {
+        "case": "early-choice-grid",
+        "depth": 100,
+        "seeds": [1, 7],
+        "baselineElapsedMs": [6799, 6789],
+        "candidateElapsedMs": [3039, 3053],
+        "baselineT1T5T10Ms": [809, 809, 809],
+        "candidateT1T5T10Ms": [416, 416, 416]
+      }
+    }
+  ]
+}

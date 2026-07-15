@@ -55,6 +55,11 @@ export interface PromotionManifest {
 export interface PromotionObservation {
   elapsedMs: number;
   peakRssBytes: number;
+  discoveryTiming?: {
+    definition: "runtime_assertion_knot_visible_ending";
+    finalMeaningfulEvidence: number;
+    milestones: Array<{ count: number; elapsedMs: number | null }>;
+  };
   resourceLimits: {
     memoryCapBytes: number;
     timeLimitMs: number | null;
@@ -116,6 +121,7 @@ export interface PromotionBenchmarkReport {
   schemaVersion: 1;
   generatedAt: string;
   candidate: string;
+  candidateConfiguration?: { concurrency: number };
   baseline: string;
   caveat: string;
   pairs: PromotionPair[];
@@ -317,6 +323,11 @@ function resourceLimits(observation: PromotionObservation): string {
   return `${memory}/${time}/${observation.workerExit}`;
 }
 
+function discoveryMilestone(observation: PromotionObservation, count: number): string {
+  const elapsed = observation.discoveryTiming?.milestones.find((entry) => entry.count === count)?.elapsedMs;
+  return elapsed === null || elapsed === undefined ? "n/a" : `${elapsed.toFixed(0)}ms`;
+}
+
 export function renderPromotionMarkdown(report: PromotionBenchmarkReport): string {
   const lines = [
     "# Search promotion benchmark",
@@ -325,6 +336,7 @@ export function renderPromotionMarkdown(report: PromotionBenchmarkReport): strin
     "",
     `Baseline: \`${report.baseline}\`  `,
     `Candidate: \`${report.candidate}\``,
+    ...(report.candidateConfiguration ? [`Candidate concurrency: \`${report.candidateConfiguration.concurrency}\``] : []),
     "",
   ];
   if (report.unavailable?.length) {
@@ -348,6 +360,20 @@ export function renderPromotionMarkdown(report: PromotionBenchmarkReport): strin
     );
     for (const project of report.projects) {
       lines.push(`| ${project.family} | ${project.pairs} | ${project.criticalRegressions} | ${project.authoredCoverageRegressions} | ${project.proofRegressions} | ${project.terminalOnlyRegressions} | ${project.baselineNondeterministic} | ${project.candidateNondeterministic} | ${project.pairsWithGains} |`);
+    }
+    lines.push("");
+  }
+  if (report.pairs.some((pair) => pair.baseline.discoveryTiming || pair.candidate.discoveryTiming)) {
+    lines.push(
+      "## Meaningful discovery timing",
+      "",
+      "Meaningful evidence is the deduplicated union of runtime errors, assertion violations, authored knots visited, and visible ending outcomes. Timing starts after compilation and records when complete result-window snapshots first reach 1, 5, and 10 signals.",
+      "",
+      "| Case | Budget | Depth | Seed | Final evidence B/C | T1 B/C | T5 B/C | T10 B/C |",
+      "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+    );
+    for (const pair of report.pairs) {
+      lines.push(`| ${pair.caseId} | ${pair.budget.toLocaleString("en-US")} | ${pair.depth} | ${pair.seed} | ${pair.baseline.discoveryTiming?.finalMeaningfulEvidence ?? "n/a"}/${pair.candidate.discoveryTiming?.finalMeaningfulEvidence ?? "n/a"} | ${discoveryMilestone(pair.baseline, 1)}/${discoveryMilestone(pair.candidate, 1)} | ${discoveryMilestone(pair.baseline, 5)}/${discoveryMilestone(pair.candidate, 5)} | ${discoveryMilestone(pair.baseline, 10)}/${discoveryMilestone(pair.candidate, 10)} |`);
     }
     lines.push("");
   }
@@ -378,6 +404,7 @@ export function deterministicPromotionView(report: PromotionBenchmarkReport): un
   return {
     schemaVersion: report.schemaVersion,
     candidate: report.candidate,
+    ...(report.candidateConfiguration ? { candidateConfiguration: report.candidateConfiguration } : {}),
     baseline: report.baseline,
     pairs: report.pairs.map((pair) => ({
       caseId: pair.caseId,

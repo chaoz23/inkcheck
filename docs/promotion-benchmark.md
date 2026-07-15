@@ -23,7 +23,16 @@ npm run --silent evaluate-promotion -- benchmarks/authored-promotion-manifest.js
   --worker-timeout-ms 900000 --worker-max-memory-mb 8192 --markdown
 ```
 
-This matched lane records shared retained-memory accounting alongside wall time and peak process RSS. Its baseline remains `fixed-portfolio`, and its candidate label is explicit in JSON and Markdown so checkpoint evidence cannot be confused with the policy-v2 promotion matrix.
+Concurrency research uses the same matched corpus and isolated workers:
+
+```sh
+npm run --silent evaluate-promotion -- benchmarks/promotion-manifest.json \
+  --candidate-strategy concurrent-portfolio --candidate-concurrency 4 --markdown
+```
+
+This lane records when complete result-window snapshots first reach 1, 5, and 10 meaningful signals. Meaningful evidence is the deduplicated union of runtime errors, assertion violations, authored knots visited, and visible ending outcomes; raw terminal multiplicity and worker heartbeats do not earn timing credit. Timing begins after compilation. Total elapsed time and peak RSS remain separate observations.
+
+The `shared-checkpoint` lane records retained-memory accounting alongside wall time and peak process RSS. Every lane keeps `fixed-portfolio` as its baseline and names its candidate explicitly in JSON and Markdown.
 
 The runner writes cell start/finish progress to stderr while preserving machine-readable stdout. `--worker-timeout-ms` gives a manual evaluation an explicit per-process envelope. The worker installs an internal time guard with serialization headroom and atomically persists one evidence snapshot per deterministic scheduler window, so an ordinary deadline returns a partial comparison with `truncatedBy.time` instead of losing the run. Only a worker killed before any usable snapshot remains `unavailable`; that cell is never interpreted as a search result, determinism failure, or evidence match. `--worker-max-memory-mb` optionally sets an explicit evaluation heap watermark; otherwise the worker uses the same 85%-of-V8-heap guard as the CLI and MCP server. The authored manifest predeclares 1M and 5M rungs; a genuinely unavailable cell must be reported as unavailable, not omitted or inferred from a smaller run.
 
@@ -33,7 +42,7 @@ The first authored 5M-ceiling guard probes and the scheduler overshoot defect th
 
 The checked-in manifest declares 20 structurally named synthetic cases with source, license, consent, budgets, depths, search seeds, and an optional initial Ink runtime `storySeed` (default 1). Every matched baseline/candidate pair receives the same two seeds. Cases may also declare the same typed, non-executable assertion rules accepted by an Inkcheck project. It covers early choices, deep suffixes, finite locks and loops, storylets, gated endings, assertions, sparse runtime failures, random/turn state, and unavailable host externals. Depth matrices include an intentionally binding setting. The full command runs every declared point. `--ci` selects the cases marked `ci` and their smallest budget/search seed at the first and last declared depth.
 
-Each baseline and candidate runs in an isolated child process. `--candidate-strategy` accepts `policy-v2-replay` or `shared-checkpoint`; omitted means `policy-v2-replay`. Reports keep these evidence classes separate:
+Each baseline and candidate runs in an isolated child process. `--candidate-strategy` accepts `policy-v2-replay`, `shared-checkpoint`, or `concurrent-portfolio`; omitted means `policy-v2-replay`. Concurrent evaluation defaults to four workers and accepts an explicit 2-16 worker ceiling through `--candidate-concurrency`. Reports keep these evidence classes separate:
 
 - Stable runtime-error and assertion-violation identities
 - Authored knots and visible ending outcomes

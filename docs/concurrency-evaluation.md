@@ -34,6 +34,31 @@ The adaptive candidate keeps each pass alive across the same deterministic round
 
 The machine-readable observations are checked in at `benchmarks/results/concurrency-intercept-5m-v1.json`.
 
+## Broad promotion timing
+
+The promotion harness now compares `fixed-portfolio` with `concurrent-portfolio` in isolated workers and records complete result-window time-to-1/5/10 meaningful signals. Meaningful evidence is the deduplicated union of runtime errors, assertion violations, authored knots visited, and visible ending outcomes. Raw terminal multiplicity and worker heartbeats do not earn timing credit.
+
+Two preregistered synthetic-corpus rungs were run with concurrency 4 and a 1 GiB worker heap envelope on the same Apple Silicon development machine:
+
+| Rung | Pairs | Evidence/proof regressions | Median elapsed B/C | Median RSS B/C | T1 median B/C | T5 median B/C | T10 median B/C |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| representative minimum budget (50/100 states) | 20 | 0 | 138/172 ms | 61/119 MiB | 13.5/43.9 ms | 21.4/50.5 ms | 28.0/56.9 ms |
+| all 20 families at 100K, both depths and seeds | 80 | 0 | 121/240 ms | 57/135 MiB | 12.6/119.0 ms | 19.4/140.4 ms | 24.3/150.5 ms |
+
+The broad median is a clear promotion failure: most synthetic stories exhaust before worker startup can amortize. Concurrency won total time in only 3/80 100K cells. Those wins identify the useful workload boundary rather than noise: both depth-100 `early-choice-grid` seeds fell from about 6.8s to 3.0s, while T1/T5/T10 moved from about 809ms to 416ms with exact evidence parity. Together with the 5M *The Intercept* result, this shows real left shift on sustained combinatorial work and real regressions on small/exhaustible work.
+
+The decision remains **opt-in, default 1**. A future automatic default needs workload-aware activation that avoids paying worker startup for quickly exhaustible stories; budget alone is not a sufficient signal. The compact checked result is `benchmarks/results/concurrency-promotion-summary-v1.json`, and the full rows can be reproduced with:
+
+```sh
+npm run build
+npm run --silent evaluate-promotion -- benchmarks/promotion-manifest.json --ci \
+  --candidate-strategy concurrent-portfolio --candidate-concurrency 4 \
+  --worker-timeout-ms 30000 --worker-max-memory-mb 1024
+npm run --silent evaluate-promotion -- benchmarks/promotion-manifest.json --budget 100000 \
+  --candidate-strategy concurrent-portfolio --candidate-concurrency 4 \
+  --worker-timeout-ms 120000 --worker-max-memory-mb 1024
+```
+
 ## Engineering decision
 
 The useful foundation remains opt-in:

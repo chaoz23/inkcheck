@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Extend the promotion harness with matched sequential-versus-concurrent portfolio runs, an explicit 2-16 candidate worker ceiling, and result-window time-to-1/5/10 meaningful-evidence milestones. Runtime errors, assertion violations, authored knots, and visible endings earn timing credit; raw terminal multiplicity and worker heartbeats do not.
 - Enforce concurrent exploration's declared heap envelope across the parent and all worker isolates. Workers publish heap use through shared memory, the parent triggers one cooperative memory stop when aggregate use binds, partial evidence survives, and machine reports expose planned heap shares plus the observed aggregate high-water mark.
 - Give hosted deployments an independent `INKCHECK_WEB_PORTFOLIO_CONCURRENCY` ceiling (default 1, maximum 4), separate from simultaneous-job concurrency and the local CLI ceiling.
 - Replace #94's failed fixed concurrent allocator with persistent worker-owned pass engines across the production adaptive rounds. A matched 5M *The Intercept* verification preserves identical terminal, runtime, knot, and complete-schedule SHA-256 digests while reducing wall clock from 601.1s to 369.5s (38.5%) at 801 MiB versus 546 MiB peak RSS (46.8% higher). The fixed executor is removed; concurrency remains opt-in at one by default pending the broad #56, cancellation, hosted-cap, and aggregate-resource gates.
