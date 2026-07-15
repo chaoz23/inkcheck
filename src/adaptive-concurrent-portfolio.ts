@@ -25,12 +25,18 @@ import type {
 } from "./adaptive-portfolio-worker";
 
 const MAX_WORKER_WAIT_MS = 7 * 24 * 60 * 60 * 1_000;
+const CONTROL_WORDS = 3;
+const STOP_REASON = 1;
+const HEAP_MIB = 2;
+const STOP_MEMORY = 1;
+const MIB = 1024 * 1024;
 
 export interface AdaptiveConcurrentOptions extends ExploreOptions {
   concurrency: number;
   memoryCapBytes: number;
   deadlineMs?: number;
   failPassForTest?: PortfolioPassKind;
+  aggregateMemoryUsedForTest?: () => number;
 }
 
 interface PassSpec {
@@ -50,6 +56,11 @@ interface WorkerSlot {
   timedOut?: boolean;
   round?: { number: number; results: AdaptiveRoundPassResult[] };
   final?: AdaptiveFinalPassResult[];
+}
+
+interface AggregateResourceTracker {
+  peakTrackedHeapBytes: number;
+  aggregateMemoryStopped: boolean;
 }
 
 function splitBudget(total: number, weights: number[]): number[] {
@@ -85,6 +96,7 @@ function sanitizedOptions(options: AdaptiveConcurrentOptions): ExploreOptions {
     memoryCapBytes: _memoryCapBytes,
     deadlineMs: _deadlineMs,
     failPassForTest: _failPassForTest,
+    aggregateMemoryUsedForTest: _aggregateMemoryUsedForTest,
     onProgress: _onProgress,
     onSnapshot: _onSnapshot,
     memoryGuard: _memoryGuard,
@@ -103,7 +115,7 @@ function startSlot(
   options: AdaptiveConcurrentOptions,
   perWorkerMemory: number
 ): WorkerSlot {
-  const controlBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+  const controlBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * CONTROL_WORDS);
   const channel = new MessageChannel();
   const data: AdaptivePortfolioWorkerData = {
     assignments,
@@ -156,11 +168,27 @@ function waitFor(
   slots: WorkerSlot[],
   done: (slot: WorkerSlot) => boolean,
   options: AdaptiveConcurrentOptions,
-  emitProgress: () => void
+  emitProgress: () => void,
+  resources: AggregateResourceTracker,
+  enforceAggregateMemory = true
 ): void {
   const startedAt = Date.now();
   while (slots.some((slot) => !done(slot) && !slot.failed && !slot.timedOut)) {
     for (const slot of slots) drain(slot);
+    // Worker-thread heap fields are isolate-local; each slot publishes its
+    // heap MiB while the parent contributes its own isolate's heap here.
+    const trackedHeapBytes = options.aggregateMemoryUsedForTest?.() ?? (
+      process.memoryUsage().heapUsed +
+      slots.reduce((total, slot) => total + Atomics.load(slot.control, HEAP_MIB) * MIB, 0)
+    );
+    resources.peakTrackedHeapBytes = Math.max(resources.peakTrackedHeapBytes, trackedHeapBytes);
+    if (enforceAggregateMemory && trackedHeapBytes >= options.memoryCapBytes && !resources.aggregateMemoryStopped) {
+      resources.aggregateMemoryStopped = true;
+      for (const slot of slots) {
+        Atomics.store(slot.control, STOP_REASON, STOP_MEMORY);
+        Atomics.notify(slot.control, 0);
+      }
+    }
     emitProgress();
     if (options.deadlineMs !== undefined && Date.now() >= options.deadlineMs) {
       for (const slot of slots) {
@@ -181,6 +209,11 @@ function waitFor(
     }
   }
   for (const slot of slots) drain(slot);
+  const trackedHeapBytes = options.aggregateMemoryUsedForTest?.() ?? (
+    process.memoryUsage().heapUsed +
+    slots.reduce((total, slot) => total + Atomics.load(slot.control, HEAP_MIB) * MIB, 0)
+  );
+  resources.peakTrackedHeapBytes = Math.max(resources.peakTrackedHeapBytes, trackedHeapBytes);
   emitProgress();
 }
 
@@ -206,7 +239,8 @@ export function explorePortfolioAdaptiveConcurrent(
   externals: string[],
   options: AdaptiveConcurrentOptions,
   effectiveConcurrency: number,
-  perWorkerMemory: number
+  perWorkerMemory: number,
+  parentReserveBytes: number
 ): ExploreResult {
   const maxStates = options.maxStates ?? 100_000;
   const specs = passSpecs(maxStates, options.weights ?? DEFAULT_PORTFOLIO_WEIGHTS);
@@ -215,6 +249,10 @@ export function explorePortfolioAdaptiveConcurrent(
   const slots = assignments
     .filter((items) => items.length > 0)
     .map((items) => startSlot(items, storyJson, knots, externals, options, perWorkerMemory));
+  const resources: AggregateResourceTracker = {
+    peakTrackedHeapBytes: process.memoryUsage().heapUsed,
+    aggregateMemoryStopped: false,
+  };
   const latestSnapshots = new Map<number, ExploreResult>();
   const finalResults = new Map<number, AdaptiveFinalPassResult>();
   let lastProgressStates = -1;
@@ -240,7 +278,7 @@ export function explorePortfolioAdaptiveConcurrent(
     });
   };
 
-  waitFor(slots, (slot) => slot.ready, options, emitProgress);
+  waitFor(slots, (slot) => slot.ready, options, emitProgress, resources);
   if (slots.every((slot) => slot.failed || slot.timedOut)) {
     for (const slot of slots) stopSlot(slot);
     throw new Error(`all concurrent portfolio workers failed to initialize: ${slots.map((slot) => slot.failed ?? "deadline elapsed").join("; ")}`);
@@ -286,7 +324,7 @@ export function explorePortfolioAdaptiveConcurrent(
       };
       slot.worker.postMessage(command);
     }
-    waitFor(commanded, (slot) => slot.round?.number === roundNumber, options, emitProgress);
+    waitFor(commanded, (slot) => slot.round?.number === roundNumber, options, emitProgress, resources);
     workerStopped = commanded.some((slot) => Boolean(slot.failed));
     timeStopped = commanded.some((slot) => slot.timedOut);
     const roundResults = commanded.flatMap((slot) => slot.round?.number === roundNumber ? slot.round.results : []);
@@ -417,7 +455,9 @@ export function explorePortfolioAdaptiveConcurrent(
     slot.final = undefined;
     slot.worker.postMessage({ type: "finalize" } satisfies AdaptivePortfolioWorkerCommand);
   }
-  waitFor(surviving, (slot) => slot.final !== undefined, options, emitProgress);
+  // Final serialization cannot start more exploration work. Keep measuring
+  // its high-water mark without retroactively calling a completed run stopped.
+  waitFor(surviving, (slot) => slot.final !== undefined, options, emitProgress, resources, false);
   for (const slot of surviving) {
     for (const result of slot.final ?? []) finalResults.set(result.index, result);
   }
@@ -487,6 +527,16 @@ export function explorePortfolioAdaptiveConcurrent(
     mode: "concurrent",
     requestedConcurrency: options.concurrency,
     effectiveConcurrency,
+    resources: {
+      stateBudget: maxStates,
+      heapEnvelopeBytes: options.memoryCapBytes,
+      parentReserveBytes,
+      perWorkerHeapLimitBytes: perWorkerMemory,
+      totalWorkerHeapLimitBytes: perWorkerMemory * effectiveConcurrency,
+      peakTrackedHeapBytes: resources.peakTrackedHeapBytes,
+      aggregateMemoryStopped: resources.aggregateMemoryStopped,
+      ...(options.deadlineMs === undefined ? {} : { deadlineMs: options.deadlineMs }),
+    },
     workers: workerEvidence,
   };
   options.onProgress?.({

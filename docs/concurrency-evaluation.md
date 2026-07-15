@@ -40,11 +40,13 @@ The useful foundation remains opt-in:
 
 - worker grants and final merge order are deterministic;
 - state grants sum to the global ceiling;
-- worker heap limits derive from one declared memory envelope;
+- worker heap limits plus the parent reserve sum to one declared heap envelope;
+- workers publish current isolate heap use through shared memory, allowing the parent to trigger one cooperative aggregate memory stop while preserving partial snapshots;
+- reports expose the planned heap shares, aggregate tracked-heap high-water mark, and whether the parent bound the run (peak RSS remains a separate observation because runtime overhead is not heap);
 - one failed worker produces a trustworthy partial report with a distinct binding reason;
 - concurrent workers stream aggregate budget progress instead of leaving long runs silent; and
 - constrained machines fall back to sequential execution.
 
-The fixed allocator is not a viable production scheduler and has been removed. The adaptive worker design passes this authored gate and remains opt-in. Before default promotion, #94 still requires matched time-to-finding evidence across the broader #56 corpus, shared cancellation, a hosted concurrency cap, stronger aggregate parent/worker resource proof, and cancellation/contention tests. Small exhaustive stories may spend a few redundant in-flight states within the final round before a systematic worker's proof is merged; they still remain under the global grant and return the same proof/findings.
+The fixed allocator is not a viable production scheduler and has been removed. The adaptive worker design passes this authored gate and remains opt-in. Hosted concurrency is independently capped, real hosted child cancellation cleans temporary uploads, and deterministic contention tests force an aggregate memory stop without losing the partial report. Before default promotion, #94 still requires matched time-to-finding evidence across the broader #56 corpus. Small exhaustive stories may spend a few redundant in-flight states within the final round before a systematic worker's proof is merged; they still remain under the global grant and return the same proof/findings.
 
 These timings are observations from one machine, not portable performance promises. The bounded results do not prove complete story coverage.

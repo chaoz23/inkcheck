@@ -20,6 +20,8 @@ export interface ConcurrentPortfolioOptions extends ExploreOptions {
   deadlineMs?: number;
   /** Deterministic failure injection for worker-loss contract tests. */
   failPassForTest?: PortfolioPassKind;
+  /** Deterministic aggregate-memory injection for resource contract tests. */
+  aggregateMemoryUsedForTest?: () => number;
 }
 
 function availableCpus(): number {
@@ -94,6 +96,7 @@ export function explorePortfolioConcurrent(
     externals,
     { ...options, memoryCapBytes: globalMemoryCap },
     effectiveConcurrency,
-    perWorkerMemory
+    perWorkerMemory,
+    globalMemoryCap - perWorkerMemory * effectiveConcurrency
   );
 }

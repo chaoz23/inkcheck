@@ -118,11 +118,24 @@ function configurationSummary(configuration: Record<string, unknown> | undefined
 function executionSummary(value: unknown) {
   const execution = record(value);
   if (!execution) return undefined;
+  const resources = record(execution.resources);
   return {
     mode: execution.mode,
     requestedConcurrency: execution.requestedConcurrency,
     effectiveConcurrency: execution.effectiveConcurrency,
     ...(execution.fallbackReason === undefined ? {} : { fallbackReason: execution.fallbackReason }),
+    ...(resources ? {
+      resources: {
+        stateBudget: resources.stateBudget,
+        heapEnvelopeBytes: resources.heapEnvelopeBytes,
+        parentReserveBytes: resources.parentReserveBytes,
+        perWorkerHeapLimitBytes: resources.perWorkerHeapLimitBytes,
+        totalWorkerHeapLimitBytes: resources.totalWorkerHeapLimitBytes,
+        peakTrackedHeapBytes: resources.peakTrackedHeapBytes,
+        aggregateMemoryStopped: resources.aggregateMemoryStopped,
+        ...(resources.deadlineMs === undefined ? {} : { deadlineMs: resources.deadlineMs }),
+      },
+    } : {}),
     workers: array(execution.workers).map((value) => {
       const worker = record(value);
       return {
