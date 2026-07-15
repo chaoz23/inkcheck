@@ -77,7 +77,7 @@ The CLI uses a bounded, adaptive exploration portfolio rather than a single trav
 
 ## Intended agent loop
 
-edit .ink → compile_story → explore_story → fix what it reports → repeat. Treat inkcheck as a deterministic bounded mechanical check for a story graph you generated or edited.
+Use the bundled `skills/inkcheck/SKILL.md`. Start with `inkcheck_capabilities`, then call `inspect_story` once, `compile_story`, and `start_search`. Inspect bounded finding summaries, fetch and replay one stable finding, make only an unambiguous mechanical edit, then recompile and verify with the same source/config/seeds. Prefer result-window sessions over loading the full `explore_story` report. Treat inkcheck as deterministic bounded mechanical QA, not a completeness or author-intent oracle.
 
 For coverage escalation, every explore report includes `nextRun`: a deterministic verdict from the closed set stop / deepen / broaden / reseed / investigate, with ready-to-use `flags`, a `rationale` citing the report fields that drove it, and `stop: true` when rerunning has no evidence behind it. Loop on it (rerun with `nextRun.flags` until `stop`), or use CLI `--next` which does the loop itself (max 3 escalations, fixpoint-detected, per-run trail in JSON `runs`).
 

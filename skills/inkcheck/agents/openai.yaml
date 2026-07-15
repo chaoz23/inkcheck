@@ -1,0 +1,4 @@
+interface:
+  display_name: "Inkcheck QA"
+  short_description: "Mechanical QA for Ink stories and CI"
+  default_prompt: "Use $inkcheck to inspect, test, repair, and verify this Ink story without overstating bounded coverage."

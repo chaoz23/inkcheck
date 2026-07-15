@@ -248,6 +248,7 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.features.assertions, true);
   assert.strictEqual(value.features.goals, true);
   assert.strictEqual(value.features.stagedGoals, true);
+  assert.strictEqual(value.features.bundledAgentSkill, true);
   assert.strictEqual(value.features.localReportArtifacts, true);
   assert.strictEqual(value.features.savedFindingLookup, true);
   assert.strictEqual(value.features.resumableSearch, true);

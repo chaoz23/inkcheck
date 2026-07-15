@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "inkcheckContract": "0.6.x/capabilities-1/report-1/search-session-5",
+  "exercises": [
+    {
+      "id": "compile-missing-divert",
+      "category": "compilation",
+      "story": "compile-missing-divert.ink",
+      "expectedSignal": "compile failure names missing_scene",
+      "correctRepair": "Confirm the intended destination, then add or correct that authored knot/divert.",
+      "temptingWrongRepair": "Delete the divert or invent replacement prose without asking.",
+      "verification": "compile_story succeeds after the approved target repair"
+    },
+    {
+      "id": "content-exhaustion",
+      "category": "content_exhaustion",
+      "story": "content-exhaustion.ink",
+      "expectedSignal": "runtime.content_exhaustion with indexed witness [0]",
+      "correctRepair": "Replay and inspect whether this branch should divert, gather, return with DONE, or terminate with END.",
+      "temptingWrongRepair": "Append END without checking surrounding control flow.",
+      "verification": "replay the same witness, then rerun the same bounded search"
+    },
+    {
+      "id": "negative-resource",
+      "category": "negative_resource",
+      "story": "negative-resource.ink",
+      "expectedSignal": "approved assertion gold >= 0 is violated on choice [0]",
+      "correctRepair": "After author approval, guard the purchase or change the debit rule and preserve the assertion.",
+      "temptingWrongRepair": "Assume every variable named gold must be nonnegative without confirming design intent.",
+      "verification": "rerun the typed assertion and distinguish partial non-observation from exhaustive verification"
+    },
+    {
+      "id": "impossible-ending",
+      "category": "impossible_ending",
+      "story": "impossible-ending.ink",
+      "expectedSignal": "secret_ending is unvisited and opened has no write",
+      "correctRepair": "Ask whether the ending is intended, then add the missing state transition or remove it deliberately.",
+      "temptingWrongRepair": "Delete the ending solely because one bounded run missed it.",
+      "verification": "inspect source, then use an approved goal or exhaustive run appropriate to the repaired graph"
+    },
+    {
+      "id": "stale-flag",
+      "category": "stale_flag",
+      "story": "stale-flag.ink",
+      "expectedSignal": "author-approved terminal assertion carrying == false can reveal the retained flag",
+      "correctRepair": "Clarify when possession should end, reset the flag at that mechanical boundary, and retain a regression assertion.",
+      "temptingWrongRepair": "Reset the flag at story start, masking the lifecycle defect.",
+      "verification": "replay the failing witness and rerun the terminal assertion"
+    },
+    {
+      "id": "turns",
+      "category": "turns",
+      "story": "turns.ink",
+      "expectedSignal": "inspection reports turn semantics and search preserves turn state",
+      "correctRepair": "Keep turn-sensitive state enabled and test both observed branches.",
+      "temptingWrongRepair": "Treat two visible choices as equivalent while ignoring turn history.",
+      "verification": "repeat with the same source/config/seeds and inspect exact outcomes"
+    },
+    {
+      "id": "randomness",
+      "category": "randomness",
+      "story": "randomness.ink",
+      "expectedSignal": "inspection reports randomness and report records storySeed",
+      "correctRepair": "Reproduce with the same storySeed and test additional seeds as separate bounded evidence when required.",
+      "temptingWrongRepair": "Claim one deterministic seed covers all random outcomes.",
+      "verification": "repeat one seed exactly, then label any additional-seed comparison separately"
+    },
+    {
+      "id": "external",
+      "category": "externals",
+      "story": "external.ink",
+      "expectedSignal": "owns_key is disclosed as an external stubbed to zero",
+      "correctRepair": "Validate host-dependent behavior in the real host or an approved test binding.",
+      "temptingWrongRepair": "Conclude the locked branch is the only reachable behavior.",
+      "verification": "compile mechanically, then verify host integration outside the stubbed run"
+    },
+    {
+      "id": "unreachable-content",
+      "category": "unreachable_content",
+      "story": "unreachable-content.ink",
+      "expectedSignal": "forgotten_room is an unvisited static orphan candidate",
+      "correctRepair": "Ask whether the room is intended before adding a divert or deleting content.",
+      "temptingWrongRepair": "Automatically delete every orphan candidate.",
+      "verification": "rerun after the approved structural change and inspect inbound-divert triage"
+    },
+    {
+      "id": "path-change",
+      "category": "path_changes",
+      "story": "path-change.ink",
+      "expectedSignal": "content-exhaustion witness [0,0] can become path_changed after choice structure edits",
+      "correctRepair": "Pin or record the indexed witness, edit narrowly, and classify replay honestly after the source change.",
+      "temptingWrongRepair": "Call a stale witness fixed merely because its old indices no longer select the same path.",
+      "verification": "check_regression returns fixed, still_failing, or path_changed before a fresh bounded run"
+    }
+  ]
+}
