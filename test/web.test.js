@@ -329,8 +329,10 @@ test("hosted job store purges expired and malformed records", () => {
   };
   store.save(record);
   const file = path.join(directory, `${record.id}.json`);
-  assert.strictEqual(fs.statSync(directory).mode & 0o777, 0o700);
-  assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
+  if (process.platform !== "win32") {
+    assert.strictEqual(fs.statSync(directory).mode & 0o777, 0o700);
+    assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
+  }
   assert.doesNotMatch(fs.readFileSync(file, "utf8"), /must not survive|submission/);
   fs.writeFileSync(path.join(directory, "broken.json"), "not json", { mode: 0o600 });
   assert.deepStrictEqual(store.load(2_000), []);
