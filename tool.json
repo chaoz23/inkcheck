@@ -87,7 +87,7 @@
       },
       {
         "flag": "--concurrency <n>",
-        "description": "Experimental portfolio worker ceiling from 1 to 16 (default 1). Values above 1 use fixed weighted pass grants, deterministic merge/provenance, shared resource bounds, and safe sequential fallback; not yet the promoted balanced default."
+        "description": "Experimental portfolio worker ceiling from 1 to 16 (default 1). Values above 1 retain adaptive rounds across persistent worker slots with deterministic merge/provenance, bounded resources, and safe sequential fallback; not yet the promoted broad default."
       },
       {
         "flag": "--max-memory <mb>",

@@ -858,7 +858,7 @@ function recordEnding(
  * pass's traversal order. Budget-exhaustion truncation is decided only at
  * `finalize()` — pausing at a grant boundary is not truncation.
  */
-interface PassEngine {
+export interface PassEngine {
   readonly label: string;
   /** Systematic passes can prove exhaustive coverage; sampling passes cannot. */
   readonly systematic: boolean;
@@ -3352,6 +3352,25 @@ export function exploreBeam(
   }
   const engine = createBeamEngine(storyJson, knots, externals, opts);
   return runEngineToBudget(engine, maxStates, opts);
+}
+
+export type PortfolioPassKind = "dfs:last" | "dfs:first" | "dfs:inside-out" | "beam:diversity" | "random";
+
+/** Create one pausable production portfolio pass for a persistent executor. */
+export function createPortfolioPassEngine(
+  pass: PortfolioPassKind,
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {}
+): PassEngine {
+  if (pass === "beam:diversity") return createBeamEngine(storyJson, knots, externals, opts);
+  if (pass === "random") return createRandomEngine(storyJson, knots, externals, opts);
+  return createSearchEngine(storyJson, knots, externals, {
+    ...opts,
+    strategy: "dfs",
+    dfsChoicePriority: pass.slice("dfs:".length) as NonNullable<ExploreOptions["dfsChoicePriority"]>,
+  });
 }
 
 /** Deterministic largest-remainder split of `total` units by weight. */
