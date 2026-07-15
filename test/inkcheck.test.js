@@ -15,6 +15,7 @@ const {
   scanStorySemantics,
 } = require("../dist/inklecate");
 const { buildHumanFindings } = require("../dist/human-report");
+const { enrichRuntimeError } = require("../dist/report-contract");
 const {
   explore,
   explorePortfolio,
@@ -1017,6 +1018,65 @@ test("versioned JSON reports have stable identities and exact replay instruction
   const compileFailure = JSON.parse(broken.stdout);
   assert.strictEqual(compileFailure.schemaVersion, 1);
   assert.ok(compileFailure.compile.issues.every((issue) => issue.id && issue.kind));
+});
+
+test("approximate runtime locations do not change stable finding identity across search strategies", async () => {
+  const file = path.join(SEARCH_FIXTURES, "deceptive-plateau.ink");
+  const compiled = await compile(file);
+  const knots = scanKnots(file);
+  const options = { maxStates: 100, maxDepth: 100, seed: 7 };
+  const goals = [{
+    id: "has_key",
+    condition: { left: { variable: "key" }, operator: "==", right: { literal: true } },
+  }];
+  const reports = [
+    explorePortfolio(compiled.storyJson, knots, [], options),
+    exploreShared(compiled.storyJson, knots, [], options),
+    exploreSharedVariableAware(compiled.storyJson, knots, [], options),
+    exploreWithGoals(compiled.storyJson, knots, [], { ...options, goalMaxStates: 100, goals }),
+    explore(compiled.storyJson, knots, [], { ...options, strategy: "bfs" }),
+  ];
+  const errors = reports.map((report) => {
+    assert.strictEqual(report.runtimeErrors.length, 1);
+    return report.runtimeErrors[0];
+  });
+  assert.deepStrictEqual(new Set(errors.map((error) => error.sourceLocation.line)), new Set([21, 27]));
+  assert.strictEqual(new Set(errors.map((error) => enrichRuntimeError(error).id)).size, 1);
+
+  const mergedForward = mergeMinRepro(reports[0], reports[4]).runtimeErrors[0];
+  const mergedReverse = mergeMinRepro(reports[4], reports[0]).runtimeErrors[0];
+  assert.strictEqual(enrichRuntimeError(mergedForward).id, enrichRuntimeError(mergedReverse).id);
+});
+
+test("runtime identity separates exact generic failures but treats approximate locations as witness metadata", () => {
+  const common = {
+    message: "generic runtime failure",
+    path: ["Choice"],
+    choiceIndices: [0],
+    firstDiscoveredAtState: 1,
+  };
+  const approximateA = enrichRuntimeError({
+    ...common,
+    sourceLocation: { file: "story.ink", line: 10, approximate: true },
+  });
+  const approximateB = enrichRuntimeError({
+    ...common,
+    path: ["Longer", "Witness"],
+    choiceIndices: [1, 0],
+    sourceLocation: { file: "story.ink", line: 90, approximate: true },
+  });
+  const exactA = enrichRuntimeError({
+    ...common,
+    sourceLocation: { file: "story.ink", line: 10, approximate: false },
+  });
+  const exactB = enrichRuntimeError({
+    ...common,
+    sourceLocation: { file: "story.ink", line: 90, approximate: false },
+  });
+  assert.strictEqual(approximateA.id, approximateB.id);
+  assert.notStrictEqual(exactA.id, exactB.id);
+  assert.strictEqual(approximateA.sourceLocation.approximate, true);
+  assert.strictEqual(exactA.sourceLocation.approximate, false);
 });
 
 test("CLI saves, lists, and reopens source-bound report artifacts by stable ID", () => {

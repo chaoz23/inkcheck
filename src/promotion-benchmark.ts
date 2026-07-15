@@ -87,6 +87,11 @@ export interface PromotionPair {
   comparison: {
     baselineOnly: EvidenceDelta;
     candidateOnly: EvidenceDelta;
+    runtimeMetadataDrift: {
+      baselineOnly: string[];
+      candidateOnly: string[];
+      drift: boolean;
+    };
     proofLost: boolean;
     honestyMismatch: boolean;
     candidateDeterminismRegression: boolean;
@@ -160,6 +165,14 @@ export function comparePromotionPair(
 ): PromotionPair {
   const baselineOnly = evidenceDifference(input.baseline.summary, input.candidate.summary);
   const candidateOnly = evidenceDifference(input.candidate.summary, input.baseline.summary);
+  const metadataBaselineOnly = difference(
+    input.baseline.summary.findings.runtimeErrorMetadata,
+    input.candidate.summary.findings.runtimeErrorMetadata
+  );
+  const metadataCandidateOnly = difference(
+    input.candidate.summary.findings.runtimeErrorMetadata,
+    input.baseline.summary.findings.runtimeErrorMetadata
+  );
   const proofLost = input.baseline.summary.result.exhaustive && !input.candidate.summary.result.exhaustive;
   const honestyMismatch = input.baseline.summary.result.truncated !== input.candidate.summary.result.truncated
     || JSON.stringify(input.baseline.summary.result.truncatedBy) !== JSON.stringify(input.candidate.summary.result.truncatedBy);
@@ -170,6 +183,11 @@ export function comparePromotionPair(
     comparison: {
       baselineOnly,
       candidateOnly,
+      runtimeMetadataDrift: {
+        baselineOnly: metadataBaselineOnly,
+        candidateOnly: metadataCandidateOnly,
+        drift: metadataBaselineOnly.length > 0 || metadataCandidateOnly.length > 0,
+      },
       proofLost,
       honestyMismatch,
       candidateDeterminismRegression,
@@ -336,11 +354,11 @@ export function renderPromotionMarkdown(report: PromotionBenchmarkReport): strin
   lines.push(
     "## Matched runs",
     "",
-    "| Case | Family | Budget | Depth | Search seed | Story seed | States B/C | Evidence B/C | Proof and limits B/C | Regression | Gain | Baseline-only | Candidate-only | Repeat B/C | Time B/C | Peak RSS B/C | Worker limits B/C |",
-    "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | --- |"
+    "| Case | Family | Budget | Depth | Search seed | Story seed | States B/C | Evidence B/C | Proof and limits B/C | Regression | Gain | Baseline-only | Candidate-only | Runtime metadata drift B/C | Repeat B/C | Time B/C | Peak RSS B/C | Worker limits B/C |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | --- |"
   );
   for (const pair of report.pairs) {
-    lines.push(`| ${pair.caseId} | ${pair.family} | ${pair.budget.toLocaleString("en-US")} | ${pair.depth} | ${pair.seed} | ${pair.storySeed} | ${pair.baseline.summary.statesExplored.toLocaleString("en-US")}/${pair.candidate.summary.statesExplored.toLocaleString("en-US")} | ${countSummaryEvidence(pair.baseline.summary)}/${countSummaryEvidence(pair.candidate.summary)} | ${proofAndLimits(pair.baseline.summary)}/${proofAndLimits(pair.candidate.summary)} | ${pair.comparison.regressionRisk} | ${pair.comparison.gainClass} | ${countEvidence(pair.comparison.baselineOnly)} | ${countEvidence(pair.comparison.candidateOnly)} | ${pair.baseline.deterministicRepeatMatch ?? "n/a"}/${pair.candidate.deterministicRepeatMatch ?? "n/a"} | ${pair.baseline.elapsedMs.toFixed(0)}/${pair.candidate.elapsedMs.toFixed(0)} ms | ${(pair.baseline.peakRssBytes / 1_048_576).toFixed(1)}/${(pair.candidate.peakRssBytes / 1_048_576).toFixed(1)} MiB | ${resourceLimits(pair.baseline)}/${resourceLimits(pair.candidate)} |`);
+    lines.push(`| ${pair.caseId} | ${pair.family} | ${pair.budget.toLocaleString("en-US")} | ${pair.depth} | ${pair.seed} | ${pair.storySeed} | ${pair.baseline.summary.statesExplored.toLocaleString("en-US")}/${pair.candidate.summary.statesExplored.toLocaleString("en-US")} | ${countSummaryEvidence(pair.baseline.summary)}/${countSummaryEvidence(pair.candidate.summary)} | ${proofAndLimits(pair.baseline.summary)}/${proofAndLimits(pair.candidate.summary)} | ${pair.comparison.regressionRisk} | ${pair.comparison.gainClass} | ${countEvidence(pair.comparison.baselineOnly)} | ${countEvidence(pair.comparison.candidateOnly)} | ${pair.comparison.runtimeMetadataDrift.baselineOnly.length}/${pair.comparison.runtimeMetadataDrift.candidateOnly.length} | ${pair.baseline.deterministicRepeatMatch ?? "n/a"}/${pair.candidate.deterministicRepeatMatch ?? "n/a"} | ${pair.baseline.elapsedMs.toFixed(0)}/${pair.candidate.elapsedMs.toFixed(0)} ms | ${(pair.baseline.peakRssBytes / 1_048_576).toFixed(1)}/${(pair.candidate.peakRssBytes / 1_048_576).toFixed(1)} MiB | ${resourceLimits(pair.baseline)}/${resourceLimits(pair.candidate)} |`);
   }
   lines.push(
     "",
@@ -352,7 +370,7 @@ export function renderPromotionMarkdown(report: PromotionBenchmarkReport): strin
   for (const family of report.families) {
     lines.push(`| ${family.family} | ${family.pairs} | ${family.criticalRegressions} | ${family.authoredCoverageRegressions} | ${family.proofRegressions} | ${family.terminalOnlyRegressions} | ${family.baselineNondeterministic} | ${family.candidateNondeterministic} | ${family.pairsWithGains} |`);
   }
-  lines.push("", "Evidence key: E runtime errors, A assertion violations, K authored knots, O visible outcomes, T exact terminal states.");
+  lines.push("", "Evidence key: E semantic runtime errors, A assertion violations, K authored knots, O visible outcomes, T exact terminal states. Approximate runtime location drift is diagnostic metadata, not critical evidence loss.");
   return `${lines.join("\n")}\n`;
 }
 

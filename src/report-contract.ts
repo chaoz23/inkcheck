@@ -10,6 +10,7 @@ import type { AssertionDefinition } from "./assertions";
 import type { GoalDefinition } from "./goals";
 import type { GoalResult } from "./goals";
 import { recommendShadowDecision } from "./decision-policy";
+import { runtimeFindingIdentity } from "./runtime-identity";
 
 export type FindingKind =
   | "compile.missing_divert"
@@ -50,15 +51,9 @@ export function runtimeKind(error: RuntimeErrorReport): FindingKind {
 
 export function enrichRuntimeError(error: RuntimeErrorReport, storySeed?: number) {
   const kind = runtimeKind(error);
-  const identity = {
-    message: error.message,
-    location: error.sourceLocation
-      ? { file: error.sourceLocation.file, line: error.sourceLocation.line }
-      : null,
-  };
   return {
     ...error,
-    id: stableId(kind, identity),
+    id: stableId(kind, runtimeFindingIdentity(error)),
     kind,
     replay: { tool: "playtest_story" as const, choices: [...error.choiceIndices], storySeed },
     witness: {
