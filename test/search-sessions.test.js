@@ -8,6 +8,7 @@ const { createHash } = require("node:crypto");
 const { openReportArtifact, saveReportArtifact } = require("../dist/artifacts");
 const { compile } = require("../dist/inklecate");
 const {
+  addCampaignAssertions,
   addSessionGoal,
   cancelSearchSession,
   checkSessionRegression,
@@ -106,7 +107,7 @@ test("campaign result-window continuation equals one uninterrupted shared run", 
         maxStates: 10,
         goal: { id: "forbidden", condition: { left: { variable: "depth" }, operator: ">=", right: { literal: 1 } } },
       }),
-      /not available inside a campaign/
+      /requires valuePreference=approved_goals/
     );
     const resumed = await continueCampaign({
       file: split.file,
@@ -188,14 +189,153 @@ test("named campaign controls return compact attributable decision evidence", as
   }
 });
 
-test("campaign controls reject goal valuation before exact directed children exist", async () => {
+test("approved-goal campaigns accept additive children without changing the exact base frontier", async () => {
   const { root, file } = project();
   try {
-    await assert.rejects(
-      () => startCampaign({ file, mode: "quick", valuePreference: "approved_goals" }),
-      /not available for exact resumable campaigns/
-    );
-    assert.strictEqual(fs.existsSync(path.join(root, ".inkcheck", "sessions")), false);
+    const started = await startCampaign({
+      file,
+      mode: "fixed",
+      valuePreference: "approved_goals",
+      totalStates: 1_000,
+      windowStates: 73,
+      maxElapsedSeconds: 60,
+      maxDiskMb: 100,
+      longTailShare: 0,
+      minLongTailProbes: 0,
+      regressionReserveStates: 0,
+    });
+    const checkpointFile = path.join(root, ".inkcheck", "checkpoints", `${started.session.latestCheckpointId}.json`);
+    const checkpointHash = createHash("sha256").update(fs.readFileSync(checkpointFile)).digest("hex");
+    const added = await addSessionGoal({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: started.session.revision,
+      maxStates: 20,
+      goal: { id: "reach_depth", condition: { left: { variable: "depth" }, operator: ">=", right: { literal: 2 } } },
+    });
+    assert.strictEqual(added.result.status, "reached");
+    assert.strictEqual(added.session.latestReportId, started.session.latestReportId);
+    assert.strictEqual(added.session.latestCheckpointId, started.session.latestCheckpointId);
+    assert.strictEqual(createHash("sha256").update(fs.readFileSync(checkpointFile)).digest("hex"), checkpointHash);
+    assert.strictEqual(added.session.budget.base.granted, 73);
+    assert.strictEqual(added.session.budget.directed.granted, 20);
+    const goalAllocation = added.session.events.at(-1);
+    assert.strictEqual(goalAllocation.type, "goal_added");
+    const inspected = await inspectSearchSession({ file, sessionCapability: started.sessionCapability });
+    assert.strictEqual(inspected.campaign.spend.states, started.session.statesExplored);
+    assert.strictEqual(inspected.campaign.latestWindow.purpose, "approved_goal");
+    const repeated = await addSessionGoal({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: added.session.revision,
+      maxStates: 20,
+      goal: { id: "reach_depth", condition: { left: { variable: "depth" }, operator: ">=", right: { literal: 2 } } },
+    });
+    assert.strictEqual(repeated.goalHandle, added.goalHandle);
+    const sessionPath = path.join(root, ".inkcheck", "sessions", fs.readdirSync(path.join(root, ".inkcheck", "sessions"))[0]);
+    const ledger = JSON.parse(fs.readFileSync(sessionPath, "utf8")).campaign.ledger;
+    assert.strictEqual(ledger.allocations.at(-1).yield.intent, 0);
+    assert.strictEqual(ledger.spend.states, started.session.statesExplored);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runtime-assertion campaign children deduplicate yield and preserve broad QA", async () => {
+  const { root, file } = project();
+  try {
+    const started = await startCampaign({
+      file,
+      mode: "fixed",
+      valuePreference: "runtime_assertions",
+      totalStates: 1_000,
+      windowStates: 73,
+      maxElapsedSeconds: 60,
+      maxDiskMb: 100,
+      longTailShare: 0,
+      minLongTailProbes: 0,
+      regressionReserveStates: 0,
+    });
+    const checkpointFile = path.join(root, ".inkcheck", "checkpoints", `${started.session.latestCheckpointId}.json`);
+    const checkpointHash = createHash("sha256").update(fs.readFileSync(checkpointFile)).digest("hex");
+    const assertions = [{
+      id: "depth_stays_zero",
+      when: "always",
+      condition: { left: { variable: "depth" }, operator: "==", right: { literal: 0 } },
+    }];
+    const first = await addCampaignAssertions({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: started.session.revision,
+      assertions,
+      maxStates: 20,
+    });
+    assert.strictEqual(first.results[0].status, "violated");
+    assert.ok(first.results[0].violations.length > 0);
+    assert.strictEqual(first.session.latestCheckpointId, started.session.latestCheckpointId);
+    assert.strictEqual(createHash("sha256").update(fs.readFileSync(checkpointFile)).digest("hex"), checkpointHash);
+    assert.strictEqual(first.session.budget.directed.granted, 20);
+    const firstInspect = await inspectSearchSession({ file, sessionCapability: started.sessionCapability });
+    assert.strictEqual(firstInspect.campaign.latestWindow.purpose, "assertion");
+    const sessionPath = path.join(root, ".inkcheck", "sessions", fs.readdirSync(path.join(root, ".inkcheck", "sessions"))[0]);
+    const firstLedger = JSON.parse(fs.readFileSync(sessionPath, "utf8")).campaign.ledger;
+    assert.ok(firstLedger.allocations.at(-1).yield.critical > 0);
+
+    const second = await addCampaignAssertions({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: first.session.revision,
+      assertions,
+      maxStates: 20,
+    });
+    const secondInspect = await inspectSearchSession({ file, sessionCapability: started.sessionCapability });
+    const secondLedger = JSON.parse(fs.readFileSync(sessionPath, "utf8")).campaign.ledger;
+    assert.strictEqual(secondLedger.allocations.at(-1).yield.critical, 0);
+    assert.strictEqual(second.session.budget.directed.granted, 40);
+    assert.strictEqual(secondInspect.campaign.spend.states, started.session.statesExplored);
+    assert.strictEqual(secondInspect.campaign.unusedStates, 1_000 - started.session.statesExplored);
+    const report = await openReportArtifact(root, second.assertionReportId);
+    assert.strictEqual(report.report.effectiveConfiguration.executionScope, "assertion-probe");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an exhaustive small base campaign still accepts an additive assertion child", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-mcp-exhaustive-child-"));
+  const file = path.join(root, "story.ink");
+  fs.writeFileSync(file, "VAR gold = 0\n~ gold = -1\nDone.\n-> END\n");
+  try {
+    const started = await startCampaign({
+      file,
+      mode: "fixed",
+      valuePreference: "runtime_assertions",
+      totalStates: 10,
+      windowStates: 10,
+      maxElapsedSeconds: 60,
+      maxDiskMb: 100,
+      longTailShare: 0,
+      minLongTailProbes: 0,
+      regressionReserveStates: 0,
+    });
+    assert.strictEqual(started.session.status, "complete");
+    assert.strictEqual(started.campaign.stopReason, "exhaustive");
+    const added = await addCampaignAssertions({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: started.session.revision,
+      maxStates: 10,
+      assertions: [{
+        id: "gold_nonnegative",
+        when: "always",
+        condition: { left: { variable: "gold" }, operator: ">=", right: { literal: 0 } },
+      }],
+    });
+    assert.strictEqual(added.results[0].status, "violated");
+    const inspected = await inspectSearchSession({ file, sessionCapability: started.sessionCapability });
+    assert.strictEqual(inspected.session.status, "complete");
+    assert.strictEqual(inspected.campaign.stopReason, "exhaustive");
+    assert.strictEqual(inspected.campaign.latestWindow.purpose, "assertion");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -141,8 +141,8 @@ export function bindingLimit(explore: ExploreResult): string | null {
 
 export interface EffectiveReportConfiguration {
   search: "portfolio" | "shared" | "shared-variable";
-  /** Present only for a root-started additive goal report, never a base run. */
-  executionScope?: "goal-probe";
+  /** Present only for a root-started additive specialist report, never a base run. */
+  executionScope?: "goal-probe" | "assertion-probe";
   minRepro: boolean;
   strict: boolean;
   maxMemoryMb: number | null;

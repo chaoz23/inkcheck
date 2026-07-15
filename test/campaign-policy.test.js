@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const {
+  allocateDirectedCampaignRun,
   createCampaignLedger,
   createCampaignPolicy,
   planCampaignRun,
@@ -77,6 +78,56 @@ test("ordinary windows cannot consume regression or long-tail reserves", () => {
   assert.strictEqual(planned.action, "allocate");
   assert.strictEqual(planned.allocation.purpose, "typical");
   assert.strictEqual(planned.allocation.grantedStates, 500);
+});
+
+test("directed child allocations are deterministic and do not consume protected base states", () => {
+  const ledger = createCampaignLedger(policy("balanced"), fingerprint, start);
+  const input = {
+    now: start,
+    bindingFingerprint: fingerprint,
+    purpose: "approved_goal",
+    grantedStates: 500,
+    partition: { strategy: "shared", goalId: "goal-0123456789abcdef" },
+  };
+  const left = allocateDirectedCampaignRun(ledger, input);
+  const right = allocateDirectedCampaignRun(ledger, input);
+  assert.deepStrictEqual(left, right);
+  const completed = commitCampaignRun(left.ledger, {
+    now: "2026-07-14T12:00:01.000Z",
+    bindingFingerprint: fingerprint,
+    allocationId: left.allocation.id,
+    consumedStates: 500,
+    peakMemoryBytes: 100,
+    currentDiskBytes: 100,
+    stopReason: "window_complete",
+    yield: { critical: 0, intent: 1, authoredCoverage: 0, terminalVariants: 0 },
+  });
+  assert.strictEqual(completed.spend.states, 0);
+  const base = planCampaignRun(completed, { now: "2026-07-14T12:00:02.000Z", bindingFingerprint: fingerprint, recommendation: "continue" });
+  assert.strictEqual(base.action, "allocate");
+  assert.strictEqual(base.allocation.purpose, "typical");
+  assert.strictEqual(base.allocation.grantedStates, policy("balanced").typicalWindowStates);
+
+  const exhausted = planCampaignRun(ledger, {
+    now: start,
+    bindingFingerprint: fingerprint,
+    recommendation: "continue",
+    exhaustive: true,
+  });
+  assert.strictEqual(exhausted.action, "stop");
+  const afterProof = allocateDirectedCampaignRun(exhausted.ledger, input);
+  const committedAfterProof = commitCampaignRun(afterProof.ledger, {
+    now: "2026-07-14T12:00:01.000Z",
+    bindingFingerprint: fingerprint,
+    allocationId: afterProof.allocation.id,
+    consumedStates: 1,
+    peakMemoryBytes: 100,
+    currentDiskBytes: 100,
+    stopReason: "exhaustive",
+  });
+  assert.strictEqual(committedAfterProof.status, "complete");
+  assert.strictEqual(committedAfterProof.stopReason, "exhaustive");
+  assert.strictEqual(committedAfterProof.spend.states, 0);
 });
 
 test("protected long-tail work continues past a knee, then stops with unused budget", () => {

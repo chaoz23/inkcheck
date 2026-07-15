@@ -29,7 +29,7 @@ Inkcheck's future value is planned to come from a reproducible hybrid: broad see
 | Actionable, repeatable QA | **8/10** | Stable findings and exact replay across edit/CI/agent campaigns |
 | Honest bounded evidence | **8/10** | Facts, estimates, limits, uncertainty, and proof always separated |
 | Robust unknown-shape exploration | **6/10** | Broad cross-family value without traversal or fixture overfitting |
-| Structured specialist advantage | **2/10** | Gates, loops, boundaries, and hubs tested by bounded expert probes |
+| Structured specialist advantage | **3/10** | Gates, loops, boundaries, and hubs tested by bounded expert probes |
 | Anytime value per wall clock | **6/10** | Early result windows, dynamic allocation, deadlines, and long-tail work |
 | Author and agent intent | **7/10** | Safe invariants, goals, resource posture, and compact explanations |
 | Demonstrated generalization | **4/10** | Predeclared multi-project corpus, including genuinely medium/large work |
@@ -38,7 +38,7 @@ These are separate scores, not an average. A high trust score cannot offset a lo
 
 ### Agent campaign policies
 
-MCP agents can start a durable campaign with a high-level `quick`, `balanced`, `deep`, `overnight`, or `campaign` mode instead of inventing explorer weights. `balanced` is the fresh-agent default; `fixed` preserves explicit legacy controls. Bounded overrides can change state/window/time/memory/disk/deadline posture, scarce/balanced/abundant resources, preferred value (`broad_qa`, `runtime_assertions`, or `outcomes`), protected long-tail work, and `ceilings` versus `knee` stopping. Exact resumable campaigns currently exclude configured assertions and goals, so `runtime_assertions` observes runtime-error yield and approved-goal campaign steering remains future multi-child work.
+MCP agents can start a durable campaign with a high-level `quick`, `balanced`, `deep`, `overnight`, or `campaign` mode instead of inventing explorer weights. `balanced` is the fresh-agent default; `fixed` preserves explicit legacy controls. Bounded overrides can change state/window/time/memory/disk/deadline posture, scarce/balanced/abundant resources, preferred value (`broad_qa`, `runtime_assertions`, `outcomes`, or `approved_goals`), protected long-tail work, and `ceilings` versus `knee` stopping. Exact base windows remain assertion/goal-free and resumable. A `runtime_assertions` campaign can add validated assertion windows with `add_assertions`; an `approved_goals` campaign can add a validated goal with `add_goal`. These specialists start at the story root, use explicit additional grants, preserve the base checkpoint and base ceiling, deduplicate campaign yield credit, and save separate evidence reports.
 
 Every result window returns a stable policy ID, allocation reason, measured preferred yield, throughput/resource evidence, an uncertainty-labelled empirical range for another window, any binding constraint, and the report ID used to inspect full curves or findings. A knee requires three consecutive windows with no preferred yield and cannot consume protected probes. It remains a bounded observation over one shared trajectory, not a claim that the story is covered or that later discoveries do not exist. See the [campaign policy contract](docs/campaign-policy-contract.md) and [MCP result-window guide](docs/mcp-search-sessions.md).
 
