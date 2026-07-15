@@ -2,9 +2,15 @@
 
 ## Unreleased
 
+## 0.6.0-beta.2 — 2026-07-14
+
+This prerelease adds policy-bound campaigns for agents and humans without changing the fixed portfolio default. Campaign forecasts and knee observations remain bounded planning evidence, never coverage claims. It is published under npm's `next` tag; stable `latest` remains 0.5.1.
+
 - Add the deterministic v0.6 campaign-policy and aggregate-ledger foundation: scarce/balanced/abundant postures, protected regression and long-tail reserves, source/config binding, hard resource ceilings, partition descriptors, and explicit bounded-evidence semantics. This does not activate dynamic production allocation or add a campaign execution surface yet.
 - Add durable MCP campaign result windows with `start_campaign` and `continue_campaign`. Campaigns reuse the exact shared frontier, survive fresh processes, enforce aggregate state/time/deadline/memory/disk limits between windows, retain immutable report/checkpoint provenance, invalidate safely on source edits, and preserve the latest partial report on cancellation or a hard boundary. Independent child strategies, concurrency, and cross-run finding merge remain unavailable.
 - Add versioned MCP campaign controls and compact decision explanations. Agents can choose `quick`, `balanced`, `deep`, `overnight`, `campaign`, or backward-compatible `fixed` modes; override bounded resource, value, stop, and ceiling fields; and inspect stable policy IDs, allocation reasons, preferred-yield rates, throughput/resources, uncertainty-labelled next-window ranges, knee evidence, binding constraints, and report IDs for drill-down. `knee` stopping requires three dry preferred-yield windows and still honors protected long-tail work. Forecasts remain empirical observations over one exact shared trajectory, never coverage or asymptote claims.
+- Add `inkcheck campaign` for Quick, Balanced, Deep, Overnight, Campaign, and Fixed human intents. It emits immutable source-bound result windows with stable finding IDs, work/yield/forecast evidence, trigger reasons, and continuation state, and preserves the latest partial report when a deadline or between-window cancellation stops the campaign.
+- Add hosted Quick and Balanced intents, uncertainty-labelled progress, completed result-window metadata, and source-bound cancellation windows. Hosted cancellation retains final progress counts and explicit omitted-finding counts without retaining the story report or inventing finding identities.
 
 ## 0.6.0-beta.1 — 2026-07-14
 

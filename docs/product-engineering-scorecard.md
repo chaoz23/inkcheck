@@ -1,6 +1,6 @@
 # Product and engineering truths
 
-Updated 2026-07-14 for the Inkcheck 0.6.0-beta.1 prerelease candidate, the complete synthetic policy-v2 matrix, the first authored-project promotion tier, and the durable MCP result-window/search-fix-replay foundation. The fixed portfolio remains the default and policy v2 remains shadow-only.
+Updated 2026-07-14 for Inkcheck 0.6.0-beta.2, including durable MCP/CLI campaign result windows and hosted Quick/Balanced intents. The fixed portfolio remains the default and policy v2 remains shadow-only.
 
 This scorecard states where Inkcheck's intended value should come from, what engineering properties must remain true while building it, and how far the project believes it has progressed. It is deliberately candid. A score may go down when a stronger evaluation reveals a weakness.
 
