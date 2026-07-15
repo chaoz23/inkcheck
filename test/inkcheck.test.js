@@ -3166,12 +3166,38 @@ test("CLI streams versioned progress to stderr without changing the final JSON r
   assert.ok(Number.isInteger(discoveryProgress.stagesReached));
   assert.ok(Number.isInteger(discoveryProgress.discoveryEvents));
   assert.ok(discoveryProgress.statesSinceLastDiscovery === null || Number.isInteger(discoveryProgress.statesSinceLastDiscovery));
+  const discoveries = events.filter((event) => event.type === "discovery");
+  assert.ok(discoveries.length > 0);
+  assert.ok(discoveries.every((event) => event.pass && Number.isInteger(event.knotsVisited)));
+  assert.ok(discoveries.every((event) => Object.values(event.discoveries).some((value) => value > 0)));
+  assert.ok(discoveries.every((event) => Object.values(event.discoveries).every((value) => Number.isInteger(value) && value >= 0)));
+  assert.doesNotMatch(JSON.stringify(discoveries), /choice|path|message|variable|finalText|source/i);
   const final = events.at(-1);
   assert.strictEqual(final.type, "run_end");
   assert.strictEqual(final.statesExplored, report.explore.statesExplored);
   assert.strictEqual(final.endingsFound, report.explore.endingsFound.length);
   assert.strictEqual(final.runtimeErrorsFound, report.explore.runtimeErrors.length);
   assert.strictEqual(final.unvisitedKnots, report.explore.unvisitedKnots.length);
+});
+
+test("live discovery events report useful counters without story content", () => {
+  const story = path.join(__dirname, "..", "examples", "manor.ink");
+  const proc = spawnSync(
+    process.execPath,
+    [CLI, story, "--max-states", "100", "--no-min-repro", "--json", "--progress=ndjson"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(proc.status, 1, proc.stderr);
+  const discoveries = proc.stderr
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line))
+    .filter((event) => event.type === "discovery");
+  assert.ok(discoveries.some((event) => event.discoveries.endings > 0));
+  assert.ok(discoveries.some((event) => event.discoveries.runtimeErrors > 0));
+  assert.ok(discoveries.some((event) => event.discoveries.knotsVisited > 0));
+  const stream = JSON.stringify(discoveries);
+  assert.doesNotMatch(stream, /Take the torch|Descend to the cellar|coins_per_torch|ending_rich|division by zero/i);
 });
 
 test("NDJSON progress contract docs stay linked and privacy-focused", () => {
@@ -3183,6 +3209,7 @@ test("NDJSON progress contract docs stay linked and privacy-focused", () => {
   assert.match(docs, /stdout report as authoritative/);
   assert.match(docs, /work-budget progress, not story coverage/);
   assert.match(docs, /"type":"progress"/);
+  assert.match(docs, /"type":"discovery"/);
   assert.match(docs, /"type":"run_end"/);
   assert.match(docs, /must not contain:[\s\S]*story source text[\s\S]*choice prose[\s\S]*variable names or values/);
 });
@@ -3215,10 +3242,29 @@ test("human progress uses work-budget language and stays readable without termin
     runtimeErrorsFound: 1,
     unvisitedKnots: 42,
   });
+  renderer.handle({
+    type: "discovery",
+    elapsedMs: 12_100,
+    statesExplored: 37_250,
+    stateBudget: 100_000,
+    endingsFound: 7,
+    runtimeErrorsFound: 1,
+    knotsVisited: 8,
+    discoveries: {
+      endings: 1,
+      runtimeErrors: 1,
+      knotsVisited: 2,
+      visibleOutcomes: 1,
+      assertionViolations: 0,
+      goalsReached: 0,
+      stagesReached: 0,
+    },
+  });
   renderer.finish();
   assert.match(output, /work states/);
   assert.doesNotMatch(output, /coverage/);
   assert.doesNotMatch(output, /\x1b\[/);
+  assert.match(output, /Found \+1 error, \+1 ending, \+2 knots/);
 });
 
 test("CLI rejects invalid numeric and unknown options as usage errors", () => {
