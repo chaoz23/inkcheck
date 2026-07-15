@@ -287,6 +287,34 @@ test("promotion harness can measure shared-checkpoint resource evidence", () => 
   }
 });
 
+test("promotion harness measures concurrent time-to-meaningful result windows", () => {
+  const proc = spawnSync(process.execPath, [
+    PROMOTION_CLI,
+    path.join(__dirname, "..", "benchmarks", "promotion-manifest.json"),
+    "--ci",
+    "--case", "combination-lock",
+    "--budget", "100",
+    "--candidate-strategy", "concurrent-portfolio",
+    "--candidate-concurrency", "2",
+    "--worker-max-memory-mb", "512",
+    "--worker-timeout-ms", "30000",
+  ], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  assert.strictEqual(proc.status, 0, proc.stderr);
+  const report = JSON.parse(proc.stdout);
+  assert.strictEqual(report.candidate, "concurrent-portfolio");
+  assert.deepStrictEqual(report.candidateConfiguration, { concurrency: 2 });
+  assert.ok(report.pairs.length > 0);
+  for (const pair of report.pairs) {
+    assert.strictEqual(pair.candidate.summary.strategy, "concurrent-portfolio");
+    for (const side of ["baseline", "candidate"]) {
+      assert.strictEqual(pair[side].discoveryTiming.definition, "runtime_assertion_knot_visible_ending");
+      assert.deepStrictEqual(pair[side].discoveryTiming.milestones.map((entry) => entry.count), [1, 5, 10]);
+      assert.ok(pair[side].discoveryTiming.finalMeaningfulEvidence >= 1);
+      assert.ok(Number.isFinite(pair[side].discoveryTiming.milestones[0].elapsedMs));
+    }
+  }
+});
+
 test("promotion workers return guarded partial comparisons instead of crashing", () => {
   const proc = spawnSync(process.execPath, [
     PROMOTION_CLI,

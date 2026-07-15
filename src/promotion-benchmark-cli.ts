@@ -5,6 +5,7 @@ import * as os from "os";
 import { spawnSync } from "child_process";
 import { compile, scanExternals, scanKnots } from "./inklecate";
 import { explorePortfolio, explorePortfolioShadowReplay, exploreShared } from "./explore";
+import { explorePortfolioConcurrent } from "./concurrent-portfolio";
 import {
   comparePromotionPair,
   deterministicPromotionView,
@@ -17,11 +18,16 @@ import {
   type PromotionObservation,
   type PromotionUnavailableCell,
 } from "./promotion-benchmark";
-import { runSearchBenchmark, summarizeSearchResult } from "./search-benchmark";
+import {
+  meaningfulEvidenceCount,
+  meaningfulEvidenceCountFromSummary,
+  runSearchBenchmark,
+  summarizeSearchResult,
+} from "./search-benchmark";
 import type { AssertionDefinition } from "./assertions";
 import { createResourceGuards } from "./resource-guards";
 
-type WorkerStrategy = "fixed-portfolio" | "policy-v2-replay" | "shared-checkpoint";
+type WorkerStrategy = "fixed-portfolio" | "policy-v2-replay" | "shared-checkpoint" | "concurrent-portfolio";
 type CandidateStrategy = Exclude<WorkerStrategy, "fixed-portfolio">;
 
 interface WorkerRequest {
@@ -36,6 +42,7 @@ interface WorkerRequest {
   assertions?: AssertionDefinition[];
   maxMemoryMb?: number;
   maxTimeMs?: number;
+  concurrency?: number;
   /** Optional for compatibility with already-running pre-snapshot workers. */
   snapshotFile?: string;
 }
@@ -76,9 +83,24 @@ async function worker(requestFile: string): Promise<void> {
   };
   const strategy: WorkerStrategy = request.strategy
     ?? (request.candidate ? "policy-v2-replay" : "fixed-portfolio");
+  const discoveryStartedAt = process.hrtime.bigint();
+  const discoveryMilestones = [1, 5, 10].map((count) => ({ count, elapsedMs: null as number | null }));
+  let finalMeaningfulEvidence = 0;
+  const observeMeaningfulEvidence = (count: number) => {
+    finalMeaningfulEvidence = Math.max(finalMeaningfulEvidence, count);
+    const elapsedMs = Number(process.hrtime.bigint() - discoveryStartedAt) / 1_000_000;
+    for (const milestone of discoveryMilestones) {
+      if (milestone.elapsedMs === null && count >= milestone.count) milestone.elapsedMs = elapsedMs;
+    }
+  };
   const observation = (summary: PromotionObservation["summary"]): PromotionObservation => ({
     elapsedMs: Date.now() - startedAtMs,
     peakRssBytes: process.resourceUsage().maxRSS * 1024,
+    discoveryTiming: {
+      definition: "runtime_assertion_knot_visible_ending",
+      finalMeaningfulEvidence,
+      milestones: discoveryMilestones,
+    },
     resourceLimits: {
       memoryCapBytes: guards.memoryCapBytes,
       timeLimitMs: request.maxTimeMs ?? null,
@@ -87,6 +109,7 @@ async function worker(requestFile: string): Promise<void> {
     summary,
   });
   const persistSnapshot = (report: Parameters<typeof summarizeSearchResult>[1]) => {
+    observeMeaningfulEvidence(meaningfulEvidenceCount(report));
     if (!request.snapshotFile) return;
     const destination = request.snapshotFile;
     const temporary = `${destination}.tmp`;
@@ -101,9 +124,18 @@ async function worker(requestFile: string): Promise<void> {
     if (strategy === "policy-v2-replay") {
       return explorePortfolioShadowReplay(compiled.storyJson!, knots, externals, snapshotOptions);
     }
+    if (strategy === "concurrent-portfolio") {
+      return explorePortfolioConcurrent(compiled.storyJson!, knots, externals, {
+        ...snapshotOptions,
+        concurrency: request.concurrency ?? 4,
+        memoryCapBytes: guards.memoryCapBytes,
+        deadlineMs: guards.deadlineMs,
+      });
+    }
     return explorePortfolio(compiled.storyJson!, knots, externals, snapshotOptions);
   };
   const measured = runSearchBenchmark(strategy, run);
+  observeMeaningfulEvidence(meaningfulEvidenceCountFromSummary(measured.summary));
   process.stdout.write(JSON.stringify(observation(measured.summary)));
 }
 
@@ -178,9 +210,11 @@ async function main(): Promise<void> {
   const workerMemoryText = optionValue("--worker-max-memory-mb");
   const workerMaxMemoryMb = workerMemoryText === undefined ? undefined : Number(workerMemoryText);
   const candidateStrategyText = optionValue("--candidate-strategy");
+  const candidateConcurrencyText = optionValue("--candidate-concurrency");
   const candidateStrategy: CandidateStrategy = candidateStrategyText === undefined
     ? "policy-v2-replay"
     : candidateStrategyText as CandidateStrategy;
+  const candidateConcurrency = candidateConcurrencyText === undefined ? 4 : Number(candidateConcurrencyText);
   if (selectedBudget !== undefined && (!Number.isSafeInteger(selectedBudget) || selectedBudget < 1)) {
     throw new Error("--budget requires a positive integer");
   }
@@ -190,13 +224,19 @@ async function main(): Promise<void> {
   if (workerMaxMemoryMb !== undefined && (!Number.isSafeInteger(workerMaxMemoryMb) || workerMaxMemoryMb < 1 || workerMaxMemoryMb > 1_000_000)) {
     throw new Error("--worker-max-memory-mb requires an integer from 1 to 1000000");
   }
-  if (!["policy-v2-replay", "shared-checkpoint"].includes(candidateStrategy)) {
-    throw new Error("--candidate-strategy requires policy-v2-replay or shared-checkpoint");
+  if (!["policy-v2-replay", "shared-checkpoint", "concurrent-portfolio"].includes(candidateStrategy)) {
+    throw new Error("--candidate-strategy requires policy-v2-replay, shared-checkpoint, or concurrent-portfolio");
+  }
+  if (!Number.isSafeInteger(candidateConcurrency) || candidateConcurrency < 2 || candidateConcurrency > 16) {
+    throw new Error("--candidate-concurrency requires an integer from 2 to 16");
+  }
+  if (candidateConcurrencyText !== undefined && candidateStrategy !== "concurrent-portfolio") {
+    throw new Error("--candidate-concurrency requires --candidate-strategy concurrent-portfolio");
   }
   if (markdown && deterministic) throw new Error("--markdown and --deterministic are mutually exclusive");
-  const optionValues = new Set([selectedCase, selectedBudgetText, workerTimeoutText, workerMemoryText, candidateStrategyText].filter((value): value is string => value !== undefined));
-  const positional = args.filter((arg) => !["--markdown", "--ci", "--deterministic", "--case", "--budget", "--worker-timeout-ms", "--worker-max-memory-mb", "--candidate-strategy"].includes(arg) && !optionValues.has(arg));
-  if (positional.length !== 1) throw new Error("usage: inkcheck-promotion manifest.json [--ci] [--case ID] [--budget STATES] [--candidate-strategy policy-v2-replay|shared-checkpoint] [--worker-timeout-ms MS] [--worker-max-memory-mb MB] [--markdown|--deterministic]");
+  const optionValues = new Set([selectedCase, selectedBudgetText, workerTimeoutText, workerMemoryText, candidateStrategyText, candidateConcurrencyText].filter((value): value is string => value !== undefined));
+  const positional = args.filter((arg) => !["--markdown", "--ci", "--deterministic", "--case", "--budget", "--worker-timeout-ms", "--worker-max-memory-mb", "--candidate-strategy", "--candidate-concurrency"].includes(arg) && !optionValues.has(arg));
+  if (positional.length !== 1) throw new Error("usage: inkcheck-promotion manifest.json [--ci] [--case ID] [--budget STATES] [--candidate-strategy policy-v2-replay|shared-checkpoint|concurrent-portfolio] [--candidate-concurrency N] [--worker-timeout-ms MS] [--worker-max-memory-mb MB] [--markdown|--deterministic]");
   const manifestFile = path.resolve(positional[0]);
   const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8")) as PromotionManifest;
   validatePromotionManifest(manifest);
@@ -233,7 +273,11 @@ async function main(): Promise<void> {
           continue;
         }
         try {
-          candidate = runWorker({ ...request, strategy: candidateStrategy }, scratch, sequence++, workerLimits);
+          candidate = runWorker({
+            ...request,
+            strategy: candidateStrategy,
+            ...(candidateStrategy === "concurrent-portfolio" ? { concurrency: candidateConcurrency } : {}),
+          }, scratch, sequence++, workerLimits);
         } catch (error) {
           if (!(error instanceof WorkerTimeoutError) || !workerTimeoutMs) throw error;
           unavailable.push({ caseId: entry.id, family: entry.family, budget, depth, seed, storySeed, stage: "candidate", reason: "worker-timeout", timeoutMs: workerTimeoutMs });
@@ -251,7 +295,11 @@ async function main(): Promise<void> {
             console.error(`unavailable ${entry.id} budget=${budget} stage=baseline-repeat timeout=${workerTimeoutMs}`);
           }
           try {
-            candidateRepeat = runWorker({ ...request, strategy: candidateStrategy }, scratch, sequence++, workerLimits);
+            candidateRepeat = runWorker({
+              ...request,
+              strategy: candidateStrategy,
+              ...(candidateStrategy === "concurrent-portfolio" ? { concurrency: candidateConcurrency } : {}),
+            }, scratch, sequence++, workerLimits);
           } catch (error) {
             if (!(error instanceof WorkerTimeoutError) || !workerTimeoutMs) throw error;
             unavailable.push({ caseId: entry.id, family: entry.family, budget, depth, seed, storySeed, stage: "candidate-repeat", reason: "worker-timeout", timeoutMs: workerTimeoutMs });
@@ -287,6 +335,7 @@ async function main(): Promise<void> {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     candidate: candidateStrategy,
+    ...(candidateStrategy === "concurrent-portfolio" ? { candidateConfiguration: { concurrency: candidateConcurrency } } : {}),
     baseline: "fixed-portfolio",
     caveat: "This report presents unavailable cells, separate evidence, and worst-project/family regressions; it does not declare a winner. Bounded runs are not coverage proof.",
     pairs,
