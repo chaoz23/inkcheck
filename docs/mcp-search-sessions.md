@@ -2,6 +2,8 @@
 
 Inkcheck's MCP server can continue one exact base-shared search across calls and fresh MCP processes:
 
+The operation names below describe the workflow contract. The default compact MCP profile exposes `start_search` directly and routes the other operations through `inkcheck_workflow { operation, request }`; `inkcheck_capabilities.mcp.workflowOperations` is the authoritative compact request map. Set `INKCHECK_MCP_PROFILE=full` only when a client needs every operation registered as a separate named tool.
+
 1. `start_campaign` creates a durable aggregate policy and executes its first exact synchronous window.
 2. `continue_campaign` asks that policy to allocate and execute the next exact window.
 3. `start_search` runs an explicitly granted synchronous window and returns a bearer `sessionCapability`.

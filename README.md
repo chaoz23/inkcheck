@@ -206,24 +206,13 @@ The measured [resource-safe deep-run evaluation](docs/resource-guard-evaluation.
 
 Tools for AI agents working on ink stories:
 
-| Tool | What it does |
+| Tool or logical operation | What it does |
 | --- | --- |
 | `inkcheck_capabilities` | Versioned schemas, limits, search modes, and explicit feature availability |
 | `inspect_story` | Source-only project map: includes, shape, semantics, externals, knots, and variables |
 | `compile_story` | Structured compile issues (severity, file, line) |
-| `story_stats` | Word/knot/choice counts + full knot list with locations |
-| `playtest_story` | Play one scripted choice path headlessly; returns transcript, tags, variables, errors |
-| `explore_story` | Bounded systematic walk with compact `standard` output by default; request `summary` or explicit prose-revealing `full` detail |
-| `start_campaign` | Start a durable policy-bound campaign and execute its first exact result window |
-| `continue_campaign` | Execute the next campaign-allocated exact window under aggregate limits |
 | `start_search` | Start one durable exact shared-search result window and receive a bearer capability |
-| `inspect_search` | Reopen bounded session status and privacy-minimal saved findings |
-| `continue_search` | Raise the cumulative grant by up to 5M and continue the exact frontier |
-| `add_goal` | Run one safe typed goal with an explicit additive budget from the story root |
-| `cancel_search` | Cancel between windows, retaining recoverability unless explicitly discarded |
-| `replay_witness` | Explicitly replay one stable session finding against current source |
-| `pin_regression` | Preserve one confirmed runtime failure as a private post-edit check |
-| `check_regression` | Recheck a pin as fixed, still failing, or path changed without new search work |
+| `inkcheck_workflow` | Route post-discovery search, campaign, finding, replay, regression, assertion, goal, cancellation, and playtest operations through one bounded schema |
 
 Add to Claude Code:
 
@@ -241,7 +230,9 @@ or to any MCP client config:
 }
 ```
 
-The compact agent loop is `inkcheck_capabilities` -> `inspect_story` -> `compile_story` -> `start_search` -> fetch/replay one confirmed finding -> fix -> compile and verify. Result-window sessions are the default agent path because they are durable, bounded, paginated, and source-bound. `start_campaign` / `continue_campaign` add an aggregate policy and measured spend/provenance around the same exact shared frontier; ordinary `start_search` / `continue_search` retain explicit cumulative-grant control. Calls are synchronous, so cancellation is trustworthy at returned durable boundaries, not mid-window preemption. `inspect_search` stays privacy-minimal; `add_goal` can spend a separately reported directed budget without weakening the exact base search, and `replay_witness` is the explicit boundary that returns one current transcript, choice trail, and variable state. For runtime failures, `pin_regression` before editing and `check_regression` afterward provide a deterministic fixed/still-failing/path-changed verdict without another search run. See [the bundled skill](skills/inkcheck/SKILL.md) and [MCP result-window sessions](docs/mcp-search-sessions.md).
+The default MCP profile exposes five tools: `inkcheck_capabilities`, `inspect_story`, `compile_story`, `start_search`, and `inkcheck_workflow`. This keeps fresh-agent bootstrap context small; capabilities lists the router's logical operations and request fields. Set `INKCHECK_MCP_PROFILE=full` only for clients that require every operation as a separate named tool.
+
+The compact agent loop is `inkcheck_capabilities` -> `inspect_story` -> `compile_story` -> `start_search` -> route finding/replay/regression operations through `inkcheck_workflow` -> fix -> compile and verify. Result-window sessions are the default agent path because they are durable, bounded, paginated, and source-bound. Logical `start_campaign` / `continue_campaign` operations add an aggregate policy and measured spend/provenance around the same exact shared frontier; ordinary `start_search` / `continue_search` retain explicit cumulative-grant control. Calls are synchronous, so cancellation is trustworthy at returned durable boundaries, not mid-window preemption. `inspect_search` stays privacy-minimal; `add_goal` can spend a separately reported directed budget without weakening the exact base search, and `replay_witness` is the explicit boundary that returns one current transcript, choice trail, and variable state. For runtime failures, `pin_regression` before editing and `check_regression` afterward provide a deterministic fixed/still-failing/path-changed verdict without another search run. See [the bundled skill](skills/inkcheck/SKILL.md) and [MCP result-window sessions](docs/mcp-search-sessions.md).
 
 ## CLI
 
@@ -328,8 +319,8 @@ inkcheck can be driven by a human at a terminal, a CI job, or an optional AI cod
 - **`--human`** emits a prioritized fix list grouped by errors, warnings, and notes, with file/line locations where available, choice paths for runtime failures, and a next step for each finding.
 - **`--markdown`** emits a GitHub Step Summary-friendly report for humans reviewing CI.
 - **Deterministic exit codes:** `0` clean · `1` compile/runtime errors (or, under `--strict`, warnings, unvisited knots, truncation, or external stubs) · `2` usage error. Branch on the exit code; don't grep the text.
-- **MCP:** `claude mcp add inkcheck -- npx -y inkcheck mcp` exposes `compile_story`, `story_stats`, `playtest_story`, and `explore_story` as tools.
-- **The loop:** edit `.ink` → `compile_story` → `explore_story` → fix what it reports → repeat. inkcheck is a repeatable mechanical check for a story graph you generated or edited — use it to verify your own work before returning it.
+- **MCP:** `claude mcp add inkcheck -- npx -y inkcheck mcp` exposes the compact five-tool agent profile. Use `INKCHECK_MCP_PROFILE=full` for the compatibility catalog.
+- **The loop:** edit `.ink` -> `compile_story` -> `start_search` -> route the next evidence action through `inkcheck_workflow` -> fix -> compile and verify. inkcheck is a repeatable mechanical check for a story graph you generated or edited; use it to verify your own work before returning it.
 - **The coverage loop:** `explore_story` (and CLI `--json`) returns `nextRun` — switch on its `recommendation` (`stop` / `deepen` / `broaden` / `reseed` / `investigate`) and rerun with `nextRun.flags` until `stop: true`. Or let the CLI drive it: `inkcheck story.ink --next`.
 
 `llms.txt` at the repo root is a compact, model-friendly summary of all of the above.
@@ -368,7 +359,7 @@ The roadmap is governed by the [product and engineering truths scorecard](docs/p
 - Repro persistence: remember known failing paths and make sure future runs keep checking them even as traversal strategies improve.
 - Compact campaign checkpoints: retain and resume useful large-story frontiers without checkpoint artifacts dominating memory or disk, and degrade to an immutable partial report before serialization limits.
 - Public compatibility fixtures: consent-safe examples and synthetic edge cases for regression testing, performance comparisons, and trust-building.
-- Agent-readiness benchmark: measure fresh-agent bootstrap tokens, tool calls, reference loads, safe repairs, indexed replay, and bounded-coverage language against the bundled skill before declaring the agent kit complete (#67).
+- Agent readiness: the executable [agent-readiness benchmark](docs/agent-readiness-benchmark.md) pins a no-hidden-hints protocol, deterministic runtime/assertion fixture, bootstrap/tool/reference/safety/proof targets, machine scorer, and separate tool/skill/model/environment attribution. Two passing observational runs from distinct agent implementations remain the release gate (#67).
 - Search promotion harness: a broad, predeclared scorecard across structural families, budgets, depths, and seeds before any experimental strategy can change the default.
 - Bounded specialist search: detect mechanical shapes and dispatch small expert probes for compound gates, loops/counters, storylet eligibility, assertion boundaries, and behavioral frontier diversity (#107-#112). Specialists earn expansion through portfolio-new value and retain protected general/long-tail work.
 - Large-story performance controls: quick, standard, and deep check presets with clearer time/coverage tradeoffs.
