@@ -11,7 +11,7 @@ This skill targets Inkcheck 0.6.x, capabilities schema 1, report schema 1, searc
 
 ## Default Loop
 
-1. **Discover.** Call `inkcheck_capabilities`, then `inspect_story` once on the project entrypoint. Inspection reads bounded structural metadata without compiling, executing, or returning narrative prose.
+1. **Discover.** Call `inkcheck_capabilities`, then `inspect_story` once on the project entrypoint. Inspection reads a compact structural overview without compiling, executing, or returning narrative prose. Request only the needed inventory section when the overview shows more knots or variables.
 2. **Compile.** Call `compile_story`. Compile issues are prerequisite failures. Fix syntax or structural defects before interpreting exploration results.
 3. **Explore in a result window.** Prefer `start_search` for agent work. Its response is bounded, durable, source-bound, and paginated. Use `start_campaign` only when the user has chosen a campaign posture or deadline. Avoid loading a full one-shot report merely to find the first action.
 4. **Select and replay.** Inspect privacy-minimal finding summaries. Fetch one finding with `get_finding`, then use `replay_witness` before editing a runtime defect. Keep the search seed and Ink `storySeed` fixed.

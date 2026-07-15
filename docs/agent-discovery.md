@@ -39,3 +39,7 @@ Variable locations are capped at 20 per read/write collection and the variable l
 For a predictable trust boundary, includes must resolve within the entrypoint's directory tree. Missing files and attempts to leave that root fail inspection explicitly. This restriction applies to discovery; existing compile behavior is unchanged.
 
 The successful response recommends `compile_story` as the next operation. Inspection is a map, not validation: compilation remains authoritative for Ink syntax and structure.
+
+MCP `inspect_story` defaults to a compact overview capped at 16 KiB: complete shape/semantic counters plus at most ten names/locations from each inventory. It omits variable initial values, expressions, and full read/write locations. The local CLI's explicit JSON inspection retains its established detailed bounded map.
+
+For projects whose overview reports additional inventory, MCP `inspect_story` accepts `section: includes | externals | knots | variables`, a page size up to 100, and the returned source-bound cursor. Section pages are deterministic and expose total/returned counts. A cursor fails closed after the relevant inventory changes or when reused for another section. Variable pages are an explicit content-revealing request: they include names, initial values or expressions, and bounded read/write locations.

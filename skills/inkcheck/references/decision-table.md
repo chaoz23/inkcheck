@@ -4,6 +4,7 @@
 | --- | --- | --- |
 | Capabilities unknown | `inkcheck_capabilities` | Feature support from memory |
 | Project unfamiliar | `inspect_story` once | Syntax validity or reachability |
+| Inspection inventory omitted | Page only the needed `inspect_story` section | Need to load every variable or knot |
 | Compile errors | Fix one issue, recompile | Exploration evidence |
 | Compile clean, no session | `start_search` | Full coverage |
 | Runtime finding | `get_finding`, `replay_witness`, optionally `pin_regression` | Approximate line is exact |

@@ -74,7 +74,7 @@ export interface SavedFindingSummary {
   section: string;
   hasWitness: boolean;
   hasReplay: boolean;
-  sourceLocation?: { file: string; line: number | null; approximate?: boolean };
+  sourceLocation?: { file: string; line: number | null; approximate?: boolean; pathTruncated?: boolean };
 }
 
 interface SavedFindingRecord {
@@ -249,12 +249,14 @@ function recordsFromReport(report: Record<string, unknown>): SavedFindingRecord[
       : undefined) ?? (typeof finding.file === "string"
       ? { file: finding.file, line: finding.line ?? null }
       : undefined)) as Record<string, unknown> | undefined;
-    const sourceLocation = rawLocation && typeof rawLocation.file === "string"
+    const locationFile = typeof rawLocation?.file === "string" ? rawLocation.file : undefined;
+    const sourceLocation = rawLocation && locationFile
       && (rawLocation.line === null || Number.isSafeInteger(rawLocation.line))
       ? {
-          file: rawLocation.file,
+          file: locationFile.length <= 256 ? locationFile : `...${locationFile.slice(-253)}`,
           line: rawLocation.line as number | null,
           ...(typeof rawLocation.approximate === "boolean" ? { approximate: rawLocation.approximate } : {}),
+          ...(locationFile.length > 256 ? { pathTruncated: true as const } : {}),
         }
       : undefined;
     records.push({
