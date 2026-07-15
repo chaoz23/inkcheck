@@ -128,6 +128,51 @@ test("directed child allocations are deterministic and do not consume protected 
   assert.strictEqual(committedAfterProof.status, "complete");
   assert.strictEqual(committedAfterProof.stopReason, "exhaustive");
   assert.strictEqual(committedAfterProof.spend.states, 0);
+
+  const ceilingLedger = createCampaignLedger(policy("balanced", {
+    totalStates: 100,
+    typicalWindowStates: 100,
+    longTailShare: 0,
+    minLongTailProbes: 0,
+    regressionReserveStates: 0,
+  }), fingerprint, start);
+  const stateLimited = planCampaignRun(ceilingLedger, {
+    now: start,
+    bindingFingerprint: fingerprint,
+    recommendation: "continue",
+  });
+  const committedBase = commitCampaignRun(stateLimited.ledger, {
+    now: "2026-07-14T12:00:01.000Z",
+    bindingFingerprint: fingerprint,
+    allocationId: stateLimited.allocation.id,
+    consumedStates: stateLimited.allocation.grantedStates,
+    peakMemoryBytes: 100,
+    currentDiskBytes: 100,
+    stopReason: "max_states",
+  });
+  const atCeiling = planCampaignRun(committedBase, {
+    now: "2026-07-14T12:00:02.000Z",
+    bindingFingerprint: fingerprint,
+    recommendation: "continue",
+  });
+  assert.strictEqual(atCeiling.action, "stop");
+  assert.strictEqual(atCeiling.ledger.stopReason, "state_ceiling");
+  const afterStateCeiling = allocateDirectedCampaignRun(atCeiling.ledger, {
+    ...input,
+    now: "2026-07-14T12:00:03.000Z",
+  });
+  const committedAfterCeiling = commitCampaignRun(afterStateCeiling.ledger, {
+    now: "2026-07-14T12:00:04.000Z",
+    bindingFingerprint: fingerprint,
+    allocationId: afterStateCeiling.allocation.id,
+    consumedStates: 1,
+    peakMemoryBytes: 100,
+    currentDiskBytes: 100,
+    stopReason: "goal_reached",
+  });
+  assert.strictEqual(committedAfterCeiling.status, "complete");
+  assert.strictEqual(committedAfterCeiling.stopReason, "state_ceiling");
+  assert.strictEqual(committedAfterCeiling.spend.states, 100);
 });
 
 test("protected long-tail work continues past a knee, then stops with unused budget", () => {
@@ -223,6 +268,16 @@ test("aggregate ceilings and concurrency reject work before ledger mutation", ()
     currentDiskBytes: 1,
     stopReason: "memory",
   }), /memory ceiling/);
+  const retainedMemoryStop = commitCampaignRun(planned.ledger, {
+    now: "2026-07-14T12:00:01.000Z",
+    bindingFingerprint: fingerprint,
+    allocationId: planned.allocation.id,
+    consumedStates: 1,
+    peakMemoryBytes: 1_000_001,
+    currentDiskBytes: 1,
+    stopReason: "memory_ceiling",
+  });
+  assert.strictEqual(retainedMemoryStop.spend.peakMemoryBytes, 1_000_001);
   assert.strictEqual(planned.ledger.spend.states, 0);
 });
 

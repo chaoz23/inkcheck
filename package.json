@@ -9,6 +9,7 @@
     "test": "tsc && node --test --test-concurrency=1 \"test/**/*.test.js\"",
     "evaluate-shadow": "node dist/shadow-evaluation-cli.js",
     "evaluate-promotion": "node dist/promotion-benchmark-cli.js",
+    "evaluate-campaign-children": "node dist/campaign-child-evaluation-cli.js",
     "web": "node dist/web.js",
     "usage-report": "node dist/usage-report.js"
   },

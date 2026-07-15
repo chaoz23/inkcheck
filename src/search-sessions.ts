@@ -11,7 +11,11 @@ import {
   saveReportArtifact,
   type FindingPage,
 } from "./artifacts";
-import { loadCheckpointForResume, saveCheckpointArtifact } from "./checkpoints";
+import {
+  DEFAULT_MAX_CHECKPOINT_BYTES,
+  loadCheckpointForResume,
+  saveCheckpointArtifact,
+} from "./checkpoints";
 import {
   DEFAULT_STORY_SEED,
   MAX_STORY_SEED,
@@ -75,6 +79,12 @@ import {
   SEARCH_SESSION_SCHEMA_VERSION,
 } from "./search-session-contract";
 import { VERSION } from "./version";
+
+const CAMPAIGN_RUN_MEMORY_SHARE = 0.9;
+
+function campaignRunMemoryMb(maxMemoryBytes: number): number {
+  return Math.max(1, Math.floor(maxMemoryBytes / (1024 * 1024) * CAMPAIGN_RUN_MEMORY_SHARE));
+}
 
 export {
   DEFAULT_MCP_SESSION_WINDOW_STATES,
@@ -214,6 +224,10 @@ interface SearchBindings {
   maxMemoryMb?: number;
   maxTimeMs?: number;
   maxArtifactBytes?: number;
+}
+
+interface WindowBindings extends SearchBindings {
+  commitMemoryBytes?: number;
 }
 
 interface FindingOptions {
@@ -737,7 +751,7 @@ async function runWindow(
   projectRoot: string,
   file: string,
   totalGrant: number,
-  bindings: SearchBindings,
+  bindings: WindowBindings,
   checkpoint?: SharedSearchCheckpoint
 ): Promise<{
   result: ExploreResult;
@@ -776,6 +790,16 @@ async function runWindow(
     sharedMaxPendingStates: bindings.maxFrontierStates,
     sharedMaxPendingBytes: bindings.maxFrontierMb === undefined ? undefined : bindings.maxFrontierMb * 1024 * 1024,
   }, checkpoint);
+  let checkpointCandidate = run.checkpoint;
+  let memoryLimited = bindings.commitMemoryBytes !== undefined
+    && guards.peakMemoryBytes() > bindings.commitMemoryBytes;
+  if (memoryLimited) {
+    checkpointCandidate = undefined;
+    run.result.truncated = true;
+    run.result.exhaustive = false;
+    run.result.truncatedBy.memory = true;
+    run.result.truncatedBy.maxStates = false;
+  }
   classifyUnvisitedKnots(run.result, scanInboundDiverts(file));
   const configuration: EffectiveReportConfiguration = {
     search: "shared",
@@ -814,34 +838,55 @@ async function runWindow(
   }
   const reportReference = saveReportArtifact(projectRoot, file, report);
   const reportBytes = fs.statSync(path.resolve(projectRoot, reportReference.path)).size;
-  const checkpointEstimate = run.checkpoint ? estimate({
-    artifactSchemaVersion: 1,
-    artifactType: "shared-search-checkpoint",
-    id: "checkpoint-000000000000000000000000",
-    createdAt: new Date().toISOString(),
-    inkcheckVersion: VERSION,
-    checkpointSchemaVersion: run.checkpoint.schemaVersion,
-    source: { entrypoint: relative },
-    storySha256: run.checkpoint.configuration.storySha256,
-    knotsSha256: run.checkpoint.configuration.knotsSha256,
-    configuration: run.checkpoint.configuration,
-    checkpoint: run.checkpoint,
-  }) : 0;
-  const diskLimited = Boolean(run.checkpoint && bindings.maxArtifactBytes !== undefined
-    && reportBytes + checkpointEstimate > bindings.maxArtifactBytes);
-  const checkpointReference = run.checkpoint && !diskLimited
-    ? saveCheckpointArtifact(projectRoot, file, run.checkpoint)
+  let checkpointEstimate = 0;
+  let checkpointSerializationLimited = false;
+  if (checkpointCandidate) {
+    try {
+      checkpointEstimate = estimate({
+        artifactSchemaVersion: 1,
+        artifactType: "shared-search-checkpoint",
+        id: "checkpoint-000000000000000000000000",
+        createdAt: new Date().toISOString(),
+        inkcheckVersion: VERSION,
+        checkpointSchemaVersion: checkpointCandidate.schemaVersion,
+        source: { entrypoint: relative },
+        storySha256: checkpointCandidate.configuration.storySha256,
+        knotsSha256: checkpointCandidate.configuration.knotsSha256,
+        configuration: checkpointCandidate.configuration,
+        checkpoint: checkpointCandidate,
+      });
+    } catch (error) {
+      if (!(error instanceof RangeError) || !/Invalid string length/.test(error.message)) throw error;
+      checkpointSerializationLimited = true;
+    }
+  }
+  const diskLimited = Boolean(checkpointCandidate && (
+    checkpointSerializationLimited
+    || checkpointEstimate > DEFAULT_MAX_CHECKPOINT_BYTES
+    || (bindings.maxArtifactBytes !== undefined && reportBytes + checkpointEstimate > bindings.maxArtifactBytes)
+  ));
+  if (bindings.commitMemoryBytes !== undefined && guards.peakMemoryBytes() > bindings.commitMemoryBytes) {
+    memoryLimited = true;
+  }
+  const persistedCheckpointReference = checkpointCandidate && !diskLimited && !memoryLimited
+    ? saveCheckpointArtifact(projectRoot, file, checkpointCandidate)
     : undefined;
-  const artifactBytes = [reportReference.path, checkpointReference?.path]
+  let checkpointReference = persistedCheckpointReference;
+  const peakMemoryBytes = guards.peakMemoryBytes();
+  if (bindings.commitMemoryBytes !== undefined && peakMemoryBytes > bindings.commitMemoryBytes) {
+    memoryLimited = true;
+    checkpointReference = undefined;
+  }
+  const artifactBytes = [reportReference.path, persistedCheckpointReference?.path]
     .filter((value): value is string => Boolean(value))
     .reduce((total, relative) => total + fs.statSync(path.resolve(projectRoot, relative)).size, 0);
   return {
     result: run.result,
     reportId: reportReference.id,
     ...(checkpointReference ? { checkpointId: checkpointReference.id } : {}),
-    bindingLimit: diskLimited ? "maxDiskBytes" : report.bindingLimit,
+    bindingLimit: memoryLimited ? "maxMemory" : diskLimited ? "maxDiskBytes" : report.bindingLimit,
     elapsedMs: Date.now() - startedAtMs,
-    peakMemoryBytes: guards.peakMemoryBytes(),
+    peakMemoryBytes,
     artifactBytes,
     diskLimited,
   };
@@ -957,16 +1002,17 @@ export async function startSearchSession(input: StartSearchInput): Promise<Searc
   return sessionResponse(projectRoot, record, input, capability);
 }
 
-function campaignRunBindings(input: StartCampaignInput, policy: CampaignLedger["policy"], remainingMs: number): SearchBindings {
+function campaignRunBindings(input: StartCampaignInput, policy: CampaignLedger["policy"], remainingMs: number): WindowBindings {
   return {
     maxDepth: input.maxDepth,
     seed: input.seed,
     storySeed: input.storySeed,
     maxFrontierStates: input.maxFrontierStates,
     maxFrontierMb: input.maxFrontierMb,
-    maxMemoryMb: Math.max(1, Math.floor(policy.ceilings.maxMemoryBytes / (1024 * 1024) * 0.95)),
+    maxMemoryMb: campaignRunMemoryMb(policy.ceilings.maxMemoryBytes),
     maxTimeMs: Math.max(1, remainingMs - 100),
     maxArtifactBytes: policy.ceilings.maxDiskBytes,
+    commitMemoryBytes: policy.ceilings.maxMemoryBytes,
   };
 }
 
@@ -1032,8 +1078,13 @@ async function directedCampaignYield(
   };
 }
 
-function terminalCampaignReason(result: ExploreResult, diskLimited = false): Parameters<typeof finishCampaignLedger>[1]["reason"] {
+function terminalCampaignReason(
+  result: ExploreResult,
+  diskLimited = false,
+  memoryLimited = false
+): Parameters<typeof finishCampaignLedger>[1]["reason"] {
   if (diskLimited) return "disk_ceiling";
+  if (memoryLimited) return "memory_ceiling";
   if (result.exhaustive) return "exhaustive";
   if (result.truncatedBy.memory) return "memory_ceiling";
   if (result.truncatedBy.time) return "time_ceiling";
@@ -1136,7 +1187,7 @@ export async function startCampaign(input: StartCampaignInput): Promise<SearchSe
     ledger = finishCampaignLedger(ledger, {
       now: completedAt,
       bindingFingerprint: binding,
-      reason: terminalCampaignReason(run.result, run.diskLimited),
+      reason: terminalCampaignReason(run.result, run.diskLimited, run.bindingLimit === "maxMemory"),
       message: terminalCampaignMessage(run.result, run.diskLimited),
     });
   }
@@ -1322,9 +1373,10 @@ export async function continueCampaign(input: ContinueCampaignInput): Promise<Se
     storySeed: saved.storySeed,
     ...(saved.maxPendingStates === null ? {} : { maxFrontierStates: saved.maxPendingStates }),
     ...(saved.maxPendingBytes === null ? {} : { maxFrontierMb: saved.maxPendingBytes / (1024 * 1024) }),
-    maxMemoryMb: Math.max(1, Math.floor(ledger.policy.ceilings.maxMemoryBytes / (1024 * 1024) * 0.95)),
+    maxMemoryMb: campaignRunMemoryMb(ledger.policy.ceilings.maxMemoryBytes),
     maxTimeMs: Math.max(1, remainingMs - 100),
     maxArtifactBytes: Math.max(0, ledger.policy.ceilings.maxDiskBytes - ledger.spend.currentDiskBytes),
+    commitMemoryBytes: ledger.policy.ceilings.maxMemoryBytes,
   }, resumed.checkpoint);
   const completedAt = new Date().toISOString();
   const diskBytes = campaignDiskBytes(projectRoot, plan.ledger, run.reportId, run.checkpointId);
@@ -1346,7 +1398,7 @@ export async function continueCampaign(input: ContinueCampaignInput): Promise<Se
     completedLedger = finishCampaignLedger(completedLedger, {
       now: completedAt,
       bindingFingerprint: ledger.bindingFingerprint,
-      reason: terminalCampaignReason(run.result, run.diskLimited),
+      reason: terminalCampaignReason(run.result, run.diskLimited, run.bindingLimit === "maxMemory"),
       message: terminalCampaignMessage(run.result, run.diskLimited),
     });
   }
@@ -1435,7 +1487,7 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
     ? Math.max(1, record.campaign.ledger.policy.ceilings.maxElapsedMs - campaignAllocation.ledger.spend.elapsedMs - 100)
     : undefined;
   const guards = createResourceGuards({
-    ...(record.campaign ? { maxMemoryMb: Math.max(1, Math.floor(record.campaign.ledger.policy.ceilings.maxMemoryBytes / (1024 * 1024) * 0.95)) } : {}),
+    ...(record.campaign ? { maxMemoryMb: campaignRunMemoryMb(record.campaign.ledger.policy.ceilings.maxMemoryBytes) } : {}),
     ...(campaignRemainingMs === undefined ? {} : { maxTimeMs: campaignRemainingMs }),
     startedAtMs,
   });
@@ -1618,7 +1670,7 @@ export async function addCampaignAssertions(input: AddAssertionsInput): Promise<
   const semantics = scanStorySemantics(input.file);
   const remainingMs = Math.max(1, record.campaign.ledger.policy.ceilings.maxElapsedMs - allocation.ledger.spend.elapsedMs - 100);
   const guards = createResourceGuards({
-    maxMemoryMb: Math.max(1, Math.floor(record.campaign.ledger.policy.ceilings.maxMemoryBytes / (1024 * 1024) * 0.95)),
+    maxMemoryMb: campaignRunMemoryMb(record.campaign.ledger.policy.ceilings.maxMemoryBytes),
     maxTimeMs: remainingMs,
     startedAtMs,
   });

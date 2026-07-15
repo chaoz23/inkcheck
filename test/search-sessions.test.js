@@ -341,6 +341,53 @@ test("an exhaustive small base campaign still accepts an additive assertion chil
   }
 });
 
+test("a state-limited base campaign accepts an additive assertion child", async () => {
+  const { root, file } = project();
+  try {
+    const started = await startCampaign({
+      file,
+      mode: "fixed",
+      valuePreference: "runtime_assertions",
+      totalStates: 10,
+      windowStates: 10,
+      maxElapsedSeconds: 60,
+      maxDiskMb: 100,
+      longTailShare: 0,
+      minLongTailProbes: 0,
+      regressionReserveStates: 0,
+    });
+    assert.strictEqual(started.session.status, "paused");
+    const closed = await continueCampaign({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: started.session.revision,
+    });
+    assert.strictEqual(closed.session.status, "stopped");
+    assert.strictEqual(closed.campaign.stopReason, "state_ceiling");
+    const baseReportId = closed.session.latestReportId;
+    const added = await addCampaignAssertions({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: closed.session.revision,
+      maxStates: 11,
+      assertions: [{
+        id: "depth_stays_zero",
+        when: "always",
+        condition: { left: { variable: "depth" }, operator: "==", right: { literal: 0 } },
+      }],
+    });
+    assert.strictEqual(added.results[0].status, "violated");
+    assert.strictEqual(added.session.latestReportId, baseReportId);
+    const inspected = await inspectSearchSession({ file, sessionCapability: started.sessionCapability });
+    assert.strictEqual(inspected.session.status, "stopped");
+    assert.strictEqual(inspected.campaign.stopReason, "state_ceiling");
+    assert.strictEqual(inspected.campaign.spend.states, 10);
+    assert.strictEqual(inspected.campaign.latestWindow.purpose, "assertion");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("campaign policies are bounded by the durable metadata window quota", async () => {
   const { root, file } = project();
   try {

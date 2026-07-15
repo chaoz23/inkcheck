@@ -1,0 +1,444 @@
+{
+  "schemaVersion": 1,
+  "inkcheckVersion": "0.6.0-beta.2",
+  "manifestSha256": "6a2bf93cc3ebcff6df0c6c9d6ac982122d34a9368c617746f3cda054af1d3739",
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "node": "v24.14.0",
+    "cpuCount": 8,
+    "totalMemoryBytes": 8589934592
+  },
+  "cases": [
+    {
+      "id": "the-intercept-500k-base-5m-child",
+      "source": {
+        "name": "The Intercept",
+        "license": "MIT",
+        "commit": "2a816b56e61ce4bf02bec1c638074645bdd871e3",
+        "licenseFile": "authored/the-intercept/LICENSE-AND-PROVENANCE.md"
+      },
+      "configuration": {
+        "baseStates": 500000,
+        "specialistStates": 5000000,
+        "maxDepth": 100,
+        "seed": 7,
+        "storySeed": 1
+      },
+      "goalCampaign": {
+        "base": {
+          "grant": 500000,
+          "consumed": 500000,
+          "elapsedMs": 148907,
+          "reportId": "report-7bbc0dc5709f94f31f0e3a54",
+          "checkpointId": null,
+          "summary": {
+            "strategy": "campaign-base",
+            "statesExplored": 500000,
+            "configuration": {
+              "searchSeed": 7,
+              "storySeed": 1
+            },
+            "findings": {
+              "runtimeErrors": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "assertionViolations": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "visitedKnots": {
+                "count": 29,
+                "sha256": "4ae2b2205a59da03a36e388cee3915551976ff690538d5c61bd4b656b464c48d",
+                "examples": [
+                  "admitted_to_something",
+                  "all_too_farfetched",
+                  "claim_hooper_took_component",
+                  "ending_return_to_normal",
+                  "go_to_hoopers_dorm",
+                  "go_to_where_component_is_hidden",
+                  "harris_asks_for_theory",
+                  "harris_certain_is_you",
+                  "harris_demands_component",
+                  "harris_demands_you_speak",
+                  "harris_has_seen_it_before",
+                  "harris_presses_for_details",
+                  "harris_takes_you_to_hooper",
+                  "harris_threatens_lynching",
+                  "head_for_my_dorm_free",
+                  "i_met_a_young_man",
+                  "inside_hoopers_hut",
+                  "left_alone",
+                  "live_on_the_run",
+                  "make_your_peace"
+                ]
+              },
+              "visibleEndings": {
+                "count": 12,
+                "sha256": "a1e23cf0939b58db6e8964e6c6bfd13496533e62a8939c3e679d13b230f42bb5",
+                "examples": [
+                  "\"I have, rather.\" I put my hands into my pockets. \"I seem to have done exactly that.\" \"I'm afraid my little story about Hooper confessing wasn't true. I wanted to see if you'd go to retrieve the part.\" Harris gestures me to start walking. \"You were close, Manning, I'll give you that. I wanted to believe you. But I'm glad I didn't.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "\"I spoke to Russell. He said he saw Hooper doing something round here. I wanted to see what it was.\" \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, if it hadn't have been you who hid the component, then you wouldn't be here now.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "\"I spoke to Russell. He said he saw Hooper doing something round here. I wanted to see what it was.\" \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, you told Hooper where to look with your little riddle.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "Better to live on the run than die on the spit. Creeping around the edge of the compound, I make my way to the front gate. As always, it's manned by two guards, but I slip past their box by crawling on my belly. And then I'm on the road. Walking, not running. Silent. Free. For the moment, at least.",
+                  "Better to live on the run than die on the spit. Creeping around the edge of the compound, the Bombe component heavy in my pocket, I make my way to the front gate. As always, it's manned by two guards, but I slip past their box by crawling on my belly. And then I'm on the road. Walking, not running. Silent. Free. For the moment, at least.",
+                  "But for now, there's yesterday's intercept to be resolved. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve.",
+                  "But not today. Today, there's an intercept to resolve. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve.",
+                  "He drags me up to my feet. \"You think you have to re—invent everything.\" With that, he hustles me out of the door and I can't help thinking that, with a little more strategy, I could still have won the day. But too late now, of course.",
+                  "I almost wish I had a way to make the hut explode, but of course I don't. \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, if it hadn't have been you who hid the component, then you wouldn't be here now.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "I almost wish I had a way to make the hut explode, but of course I don't. \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, you told Hooper where to look with your little riddle.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "I've more important problems to think about now. There's still yesterday's intercept to be resolved. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve.",
+                  "In a week's time, this whole affair will be in the past and quite forgotten. I'm quite sure of that. I've more important problems to think about now. There's still yesterday's intercept to be resolved. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve."
+                ]
+              },
+              "terminalStates": {
+                "count": 1174,
+                "sha256": "e1b17b06444589f3813d06bc73b106b61387d2d162af067dbc5fbd971e55aeb8",
+                "examples": [
+                  "sha256:00c3f1ef42ca233cae45c1b80bf55463ca2fb306722091832d331f79dd21d1f7",
+                  "sha256:00dd219e17d8221df83b689f4569e4b95927af8fb8515b3549789e16113ce47a",
+                  "sha256:00dd5052bd3f50e988eaf6737fd8cc13ea473a519962124a2a1e75bb4439a90d",
+                  "sha256:00edf643ec729cc3988f1602b0ae06ef2fc8f4df4b4a6808fb2a068ad4446ff9",
+                  "sha256:01247828de93fc4ed87b26970adedf55dc440b51700f1a6914ae4d45df3e1af7",
+                  "sha256:012a504fa77cf3c933d3758a9e03a9c70e9911db44594ddb88ff43430a720d57",
+                  "sha256:0141f88b9110eb18dcff4e58a041016be74db5eb3aafbe44595e1ca174e961fb",
+                  "sha256:01d88a75e01a05511d69e7d19593eb42bf5cad4c2c4047fa42ff03b330dc5800",
+                  "sha256:01eecefed329a8fc4983d127782d353a8f64405b950faf1547f41c8dc668539d",
+                  "sha256:01ef381a9b5a4f060ffbc6a754bcb4ab8d2b73b6cacf040e5f04dad717bda7ff",
+                  "sha256:02772d28a9333cf2c12f091cc56ef4d5c33cfbd75a556c4aa992d4b065224f57",
+                  "sha256:02b22956e43029862d69c0540f4073db54e16cf9dd9cf0a7242c6752d18cbc78",
+                  "sha256:0351a100f571a0fe38cf4e52cf932c11604ca064434ddce594e2ef4dc4e6166c",
+                  "sha256:03830b1ea08ba013e8719dca479d9994444535d8c06e37fa8d159339425e1406",
+                  "sha256:03c3feab5fafd0e54a360e22e7197813ea3c2367171be7d0032efe52de8a3013",
+                  "sha256:03cfac3bccd8bc14058414175559c3d847db2b2d7322650881d9ef4a8fb79b79",
+                  "sha256:03dd6b40c94da87c52b092f2612989e16855f21132e8514008c34eb233a9b1c3",
+                  "sha256:03f2d251dcbc1d5b292c53839757c23ff9e739367f68771892e68e49ba079817",
+                  "sha256:04f02220aeb9edea5dedb639a5842049cfbfd58fc62d59dc11f5866c6f7f4cfc",
+                  "sha256:04fa9b09d8157afc5825167eeaadf9f7129fbf5db75f94874db55c2261572801"
+                ]
+              },
+              "externalFunctionsStubbed": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              }
+            },
+            "stateSpace": {
+              "terminalStates": 1174,
+              "terminalVariableStates": 832,
+              "dedupeHits": 0,
+              "maxDepthReached": 60,
+              "peakFrontier": null,
+              "peakPendingStates": 107697,
+              "peakPendingBytes": 380858686
+            },
+            "result": {
+              "exhaustive": false,
+              "truncated": true,
+              "truncatedBy": {
+                "maxDepth": false,
+                "maxStates": true,
+                "beamWidth": false,
+                "frontier": false,
+                "memory": false,
+                "time": false
+              },
+              "randomnessDetected": false
+            },
+            "passes": [
+              {
+                "pass": "shared:deep-novelty-v1:seed=7",
+                "systematic": true,
+                "statesExplored": 500000,
+                "newEndings": 1174,
+                "newKnots": 29,
+                "newRuntimeErrors": 0,
+                "dedupeHits": 0,
+                "maxDepthReached": 60,
+                "lastDiscoveryAtState": 499974,
+                "peakPendingStates": 107697,
+                "peakPendingBytes": 380858686,
+                "sharedMemory": {
+                  "current": {
+                    "pendingStateBytes": 380852517,
+                    "pendingVariableBytes": 47398467,
+                    "activeStateBytes": 0,
+                    "activeVariableBytes": 0,
+                    "ancestryBytes": 17225268,
+                    "dedupeBytes": 28498281,
+                    "semanticIndexBytes": 1869471,
+                    "frontierReferenceBytes": 4307840,
+                    "findingBytes": 1544271,
+                    "totalAccountedBytes": 481696115,
+                    "pendingStates": 107696,
+                    "retainedNodes": 200231,
+                    "frontierReferences": 323088
+                  },
+                  "peak": {
+                    "pendingStateBytes": 380858686,
+                    "pendingVariableBytes": 47398905,
+                    "activeStateBytes": 7294,
+                    "activeVariableBytes": 443,
+                    "ancestryBytes": 17225337,
+                    "dedupeBytes": 28498281,
+                    "semanticIndexBytes": 1869471,
+                    "frontierReferenceBytes": 8490312,
+                    "findingBytes": 1544271,
+                    "totalAccountedBytes": 485888371,
+                    "pendingStates": 107697,
+                    "retainedNodes": 200232,
+                    "frontierReferences": 641269
+                  },
+                  "limits": {
+                    "maxPendingStates": null,
+                    "maxPendingBytes": null
+                  },
+                  "releasedNodes": 123374,
+                  "frontierCompactions": 1
+                },
+                "exhaustive": false
+              }
+            ]
+          },
+          "ledger": {
+            "purpose": "typical",
+            "grantedStates": 500000,
+            "consumedStates": 500000,
+            "yield": {
+              "critical": 0,
+              "intent": 0,
+              "authoredCoverage": 41,
+              "terminalVariants": 1174
+            },
+            "elapsedMs": 148406,
+            "peakMemoryBytes": 1332585256,
+            "campaignBaseStates": 500000,
+            "campaignStatus": "complete",
+            "campaignStopReason": "disk_ceiling",
+            "ceilings": {
+              "totalStates": 500000,
+              "maxElapsedMs": 7200000,
+              "maxMemoryBytes": 1996488704,
+              "maxDiskBytes": 2147483648
+            }
+          }
+        },
+        "child": {
+          "status": "blocked",
+          "reason": "base campaign stopped at disk_ceiling; directed work cannot bypass a hard campaign resource boundary",
+          "baseStopReason": "disk_ceiling"
+        }
+      },
+      "assertionCampaign": {
+        "base": {
+          "grant": 500000,
+          "consumed": 500000,
+          "elapsedMs": 156366,
+          "reportId": "report-7bbc0dc5709f94f31f0e3a54",
+          "checkpointId": null,
+          "summary": {
+            "strategy": "campaign-base",
+            "statesExplored": 500000,
+            "configuration": {
+              "searchSeed": 7,
+              "storySeed": 1
+            },
+            "findings": {
+              "runtimeErrors": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "assertionViolations": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "visitedKnots": {
+                "count": 29,
+                "sha256": "4ae2b2205a59da03a36e388cee3915551976ff690538d5c61bd4b656b464c48d",
+                "examples": [
+                  "admitted_to_something",
+                  "all_too_farfetched",
+                  "claim_hooper_took_component",
+                  "ending_return_to_normal",
+                  "go_to_hoopers_dorm",
+                  "go_to_where_component_is_hidden",
+                  "harris_asks_for_theory",
+                  "harris_certain_is_you",
+                  "harris_demands_component",
+                  "harris_demands_you_speak",
+                  "harris_has_seen_it_before",
+                  "harris_presses_for_details",
+                  "harris_takes_you_to_hooper",
+                  "harris_threatens_lynching",
+                  "head_for_my_dorm_free",
+                  "i_met_a_young_man",
+                  "inside_hoopers_hut",
+                  "left_alone",
+                  "live_on_the_run",
+                  "make_your_peace"
+                ]
+              },
+              "visibleEndings": {
+                "count": 12,
+                "sha256": "a1e23cf0939b58db6e8964e6c6bfd13496533e62a8939c3e679d13b230f42bb5",
+                "examples": [
+                  "\"I have, rather.\" I put my hands into my pockets. \"I seem to have done exactly that.\" \"I'm afraid my little story about Hooper confessing wasn't true. I wanted to see if you'd go to retrieve the part.\" Harris gestures me to start walking. \"You were close, Manning, I'll give you that. I wanted to believe you. But I'm glad I didn't.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "\"I spoke to Russell. He said he saw Hooper doing something round here. I wanted to see what it was.\" \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, if it hadn't have been you who hid the component, then you wouldn't be here now.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "\"I spoke to Russell. He said he saw Hooper doing something round here. I wanted to see what it was.\" \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, you told Hooper where to look with your little riddle.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "Better to live on the run than die on the spit. Creeping around the edge of the compound, I make my way to the front gate. As always, it's manned by two guards, but I slip past their box by crawling on my belly. And then I'm on the road. Walking, not running. Silent. Free. For the moment, at least.",
+                  "Better to live on the run than die on the spit. Creeping around the edge of the compound, the Bombe component heavy in my pocket, I make my way to the front gate. As always, it's manned by two guards, but I slip past their box by crawling on my belly. And then I'm on the road. Walking, not running. Silent. Free. For the moment, at least.",
+                  "But for now, there's yesterday's intercept to be resolved. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve.",
+                  "But not today. Today, there's an intercept to resolve. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve.",
+                  "He drags me up to my feet. \"You think you have to re—invent everything.\" With that, he hustles me out of the door and I can't help thinking that, with a little more strategy, I could still have won the day. But too late now, of course.",
+                  "I almost wish I had a way to make the hut explode, but of course I don't. \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, if it hadn't have been you who hid the component, then you wouldn't be here now.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "I almost wish I had a way to make the hut explode, but of course I don't. \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, you told Hooper where to look with your little riddle.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "I've more important problems to think about now. There's still yesterday's intercept to be resolved. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve.",
+                  "In a week's time, this whole affair will be in the past and quite forgotten. I'm quite sure of that. I've more important problems to think about now. There's still yesterday's intercept to be resolved. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve."
+                ]
+              },
+              "terminalStates": {
+                "count": 1174,
+                "sha256": "e1b17b06444589f3813d06bc73b106b61387d2d162af067dbc5fbd971e55aeb8",
+                "examples": [
+                  "sha256:00c3f1ef42ca233cae45c1b80bf55463ca2fb306722091832d331f79dd21d1f7",
+                  "sha256:00dd219e17d8221df83b689f4569e4b95927af8fb8515b3549789e16113ce47a",
+                  "sha256:00dd5052bd3f50e988eaf6737fd8cc13ea473a519962124a2a1e75bb4439a90d",
+                  "sha256:00edf643ec729cc3988f1602b0ae06ef2fc8f4df4b4a6808fb2a068ad4446ff9",
+                  "sha256:01247828de93fc4ed87b26970adedf55dc440b51700f1a6914ae4d45df3e1af7",
+                  "sha256:012a504fa77cf3c933d3758a9e03a9c70e9911db44594ddb88ff43430a720d57",
+                  "sha256:0141f88b9110eb18dcff4e58a041016be74db5eb3aafbe44595e1ca174e961fb",
+                  "sha256:01d88a75e01a05511d69e7d19593eb42bf5cad4c2c4047fa42ff03b330dc5800",
+                  "sha256:01eecefed329a8fc4983d127782d353a8f64405b950faf1547f41c8dc668539d",
+                  "sha256:01ef381a9b5a4f060ffbc6a754bcb4ab8d2b73b6cacf040e5f04dad717bda7ff",
+                  "sha256:02772d28a9333cf2c12f091cc56ef4d5c33cfbd75a556c4aa992d4b065224f57",
+                  "sha256:02b22956e43029862d69c0540f4073db54e16cf9dd9cf0a7242c6752d18cbc78",
+                  "sha256:0351a100f571a0fe38cf4e52cf932c11604ca064434ddce594e2ef4dc4e6166c",
+                  "sha256:03830b1ea08ba013e8719dca479d9994444535d8c06e37fa8d159339425e1406",
+                  "sha256:03c3feab5fafd0e54a360e22e7197813ea3c2367171be7d0032efe52de8a3013",
+                  "sha256:03cfac3bccd8bc14058414175559c3d847db2b2d7322650881d9ef4a8fb79b79",
+                  "sha256:03dd6b40c94da87c52b092f2612989e16855f21132e8514008c34eb233a9b1c3",
+                  "sha256:03f2d251dcbc1d5b292c53839757c23ff9e739367f68771892e68e49ba079817",
+                  "sha256:04f02220aeb9edea5dedb639a5842049cfbfd58fc62d59dc11f5866c6f7f4cfc",
+                  "sha256:04fa9b09d8157afc5825167eeaadf9f7129fbf5db75f94874db55c2261572801"
+                ]
+              },
+              "externalFunctionsStubbed": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              }
+            },
+            "stateSpace": {
+              "terminalStates": 1174,
+              "terminalVariableStates": 832,
+              "dedupeHits": 0,
+              "maxDepthReached": 60,
+              "peakFrontier": null,
+              "peakPendingStates": 107697,
+              "peakPendingBytes": 380858686
+            },
+            "result": {
+              "exhaustive": false,
+              "truncated": true,
+              "truncatedBy": {
+                "maxDepth": false,
+                "maxStates": true,
+                "beamWidth": false,
+                "frontier": false,
+                "memory": false,
+                "time": false
+              },
+              "randomnessDetected": false
+            },
+            "passes": [
+              {
+                "pass": "shared:deep-novelty-v1:seed=7",
+                "systematic": true,
+                "statesExplored": 500000,
+                "newEndings": 1174,
+                "newKnots": 29,
+                "newRuntimeErrors": 0,
+                "dedupeHits": 0,
+                "maxDepthReached": 60,
+                "lastDiscoveryAtState": 499974,
+                "peakPendingStates": 107697,
+                "peakPendingBytes": 380858686,
+                "sharedMemory": {
+                  "current": {
+                    "pendingStateBytes": 380852517,
+                    "pendingVariableBytes": 47398467,
+                    "activeStateBytes": 0,
+                    "activeVariableBytes": 0,
+                    "ancestryBytes": 17225268,
+                    "dedupeBytes": 28498281,
+                    "semanticIndexBytes": 1869471,
+                    "frontierReferenceBytes": 4307840,
+                    "findingBytes": 1544271,
+                    "totalAccountedBytes": 481696115,
+                    "pendingStates": 107696,
+                    "retainedNodes": 200231,
+                    "frontierReferences": 323088
+                  },
+                  "peak": {
+                    "pendingStateBytes": 380858686,
+                    "pendingVariableBytes": 47398905,
+                    "activeStateBytes": 7294,
+                    "activeVariableBytes": 443,
+                    "ancestryBytes": 17225337,
+                    "dedupeBytes": 28498281,
+                    "semanticIndexBytes": 1869471,
+                    "frontierReferenceBytes": 8490312,
+                    "findingBytes": 1544271,
+                    "totalAccountedBytes": 485888371,
+                    "pendingStates": 107697,
+                    "retainedNodes": 200232,
+                    "frontierReferences": 641269
+                  },
+                  "limits": {
+                    "maxPendingStates": null,
+                    "maxPendingBytes": null
+                  },
+                  "releasedNodes": 123374,
+                  "frontierCompactions": 1
+                },
+                "exhaustive": false
+              }
+            ]
+          },
+          "ledger": {
+            "purpose": "typical",
+            "grantedStates": 500000,
+            "consumedStates": 500000,
+            "yield": {
+              "critical": 0,
+              "intent": 0,
+              "authoredCoverage": 41,
+              "terminalVariants": 1174
+            },
+            "elapsedMs": 155774,
+            "peakMemoryBytes": 1626447224,
+            "campaignBaseStates": 500000,
+            "campaignStatus": "complete",
+            "campaignStopReason": "disk_ceiling",
+            "ceilings": {
+              "totalStates": 500000,
+              "maxElapsedMs": 7200000,
+              "maxMemoryBytes": 1996488704,
+              "maxDiskBytes": 2147483648
+            }
+          }
+        },
+        "child": {
+          "status": "blocked",
+          "reason": "base campaign stopped at disk_ceiling; directed work cannot bypass a hard campaign resource boundary",
+          "baseStopReason": "disk_ceiling"
+        }
+      }
+    }
+  ]
+}

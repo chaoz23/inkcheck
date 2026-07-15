@@ -477,8 +477,9 @@ export function allocateDirectedCampaignRun(
   ledger: CampaignLedger,
   input: AllocateDirectedCampaignRunInput
 ): { ledger: CampaignLedger; allocation: CampaignAllocation } {
-  const exhaustiveBase = ledger.status === "complete" && ledger.stopReason === "exhaustive";
-  if (ledger.status !== "active" && !exhaustiveBase) throw new Error(`campaign is ${ledger.status}`);
+  const completedBase = ledger.status === "complete"
+    && (ledger.stopReason === "exhaustive" || ledger.stopReason === "state_ceiling");
+  if (ledger.status !== "active" && !completedBase) throw new Error(`campaign is ${ledger.status}`);
   positiveFingerprint(input.bindingFingerprint);
   if (input.bindingFingerprint !== ledger.bindingFingerprint) {
     throw new Error("source/config fingerprint changed; invalidate the campaign before allocating directed work");
@@ -534,8 +535,9 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
   const allocation = ledger.allocations.find((item) => item.id === input.allocationId);
   if (!allocation) throw new Error("campaign allocation was not found");
   const directed = allocation.purpose === "assertion" || allocation.purpose === "approved_goal";
-  const exhaustiveBase = ledger.status === "complete" && ledger.stopReason === "exhaustive";
-  if (ledger.status !== "active" && !(directed && exhaustiveBase)) throw new Error(`campaign is ${ledger.status}`);
+  const completedBase = ledger.status === "complete"
+    && (ledger.stopReason === "exhaustive" || ledger.stopReason === "state_ceiling");
+  if (ledger.status !== "active" && !(directed && completedBase)) throw new Error(`campaign is ${ledger.status}`);
   if (allocation.status !== "allocated") throw new Error("campaign allocation was already completed");
   if (isoTime(input.now, "now") < isoTime(allocation.createdAt, "allocation.createdAt")) {
     throw new Error("run completion must not precede its allocation");
@@ -559,7 +561,10 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
   if (ledger.policy.ceilings.deadlineAt && isoTime(input.now, "now") > isoTime(ledger.policy.ceilings.deadlineAt, "deadlineAt")) {
     throw new Error("child result crossed the campaign deadline");
   }
-  if (input.peakMemoryBytes > ledger.policy.ceilings.maxMemoryBytes) throw new Error("child result crossed the campaign memory ceiling");
+  const memoryStop = input.stopReason === "maxMemory" || input.stopReason === "memory_ceiling";
+  if (input.peakMemoryBytes > ledger.policy.ceilings.maxMemoryBytes && !memoryStop) {
+    throw new Error("child result crossed the campaign memory ceiling without reporting a memory stop");
+  }
   if (input.currentDiskBytes > ledger.policy.ceilings.maxDiskBytes) throw new Error("child result crossed the campaign disk ceiling");
   if (!directed && ledger.spend.states + input.consumedStates > ledger.policy.ceilings.totalStates) {
     throw new Error("child result crossed the campaign state ceiling");
