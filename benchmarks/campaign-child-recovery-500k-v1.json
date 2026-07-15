@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "the-intercept-500k-base-5m-child",
+      "story": "authored/the-intercept/TheIntercept.ink",
+      "source": {
+        "name": "The Intercept",
+        "license": "MIT",
+        "commit": "2a816b56e61ce4bf02bec1c638074645bdd871e3",
+        "licenseFile": "authored/the-intercept/LICENSE-AND-PROVENANCE.md"
+      },
+      "baseStates": 500000,
+      "specialistStates": 5000000,
+      "maxDepth": 100,
+      "seed": 7,
+      "storySeed": 1,
+      "maxElapsedSeconds": 7200,
+      "maxDiskMb": 2048,
+      "goal": {
+        "id": "frame_and_return_after_breakout",
+        "description": "Seek the difficult source-derived state where the window was smashed, Hooper was framed, and the component was returned.",
+        "stages": [
+          {
+            "id": "breakout",
+            "condition": {
+              "left": { "variable": "smashedglass" },
+              "operator": "==",
+              "right": { "literal": true }
+            }
+          },
+          {
+            "id": "frame",
+            "condition": {
+              "left": { "variable": "framedhooper" },
+              "operator": "==",
+              "right": { "literal": true }
+            }
+          },
+          {
+            "id": "return",
+            "condition": {
+              "left": { "variable": "piecereturned" },
+              "operator": "==",
+              "right": { "literal": true }
+            }
+          }
+        ]
+      },
+      "assertions": [
+        {
+          "id": "component_disposition_exclusive",
+          "description": "Review any state that simultaneously records two mutually competing component dispositions.",
+          "when": "always",
+          "condition": {
+            "not": {
+              "any": [
+                {
+                  "all": [
+                    { "left": { "variable": "gotcomponent" }, "operator": "==", "right": { "literal": true } },
+                    { "left": { "variable": "throwncomponentaway" }, "operator": "==", "right": { "literal": true } }
+                  ]
+                },
+                {
+                  "all": [
+                    { "left": { "variable": "gotcomponent" }, "operator": "==", "right": { "literal": true } },
+                    { "left": { "variable": "piecereturned" }, "operator": "==", "right": { "literal": true } }
+                  ]
+                },
+                {
+                  "all": [
+                    { "left": { "variable": "throwncomponentaway" }, "operator": "==", "right": { "literal": true } },
+                    { "left": { "variable": "piecereturned" }, "operator": "==", "right": { "literal": true } }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "culprit_modes_exclusive",
+          "description": "Review any state that simultaneously records revealing Hooper and framing Hooper.",
+          "when": "always",
+          "condition": {
+            "not": {
+              "all": [
+                { "left": { "variable": "revealedhooperasculprit" }, "operator": "==", "right": { "literal": true } },
+                { "left": { "variable": "framedhooper" }, "operator": "==", "right": { "literal": true } }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

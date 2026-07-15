@@ -1,0 +1,1161 @@
+{
+  "schemaVersion": 1,
+  "inkcheckVersion": "0.6.0-beta.2",
+  "manifestSha256": "f42be37575eda0c800d55376a3acfb148f2ca3731861f4b3985fcbd159749ead",
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "node": "v24.14.0",
+    "cpuCount": 8,
+    "totalMemoryBytes": 8589934592
+  },
+  "cases": [
+    {
+      "id": "the-intercept-5m",
+      "source": {
+        "name": "The Intercept",
+        "license": "MIT",
+        "commit": "2a816b56e61ce4bf02bec1c638074645bdd871e3",
+        "licenseFile": "authored/the-intercept/LICENSE-AND-PROVENANCE.md"
+      },
+      "configuration": {
+        "baseStates": 5000000,
+        "specialistStates": 5000000,
+        "maxDepth": 100,
+        "seed": 7,
+        "storySeed": 1
+      },
+      "goalCampaign": {
+        "base": {
+          "grant": 5000000,
+          "consumed": 1213503,
+          "elapsedMs": 366886,
+          "reportId": "report-098a352f5559091bc1c06d07",
+          "checkpointId": null,
+          "summary": {
+            "strategy": "campaign-base",
+            "statesExplored": 1213503,
+            "configuration": {
+              "searchSeed": 7,
+              "storySeed": 1
+            },
+            "findings": {
+              "runtimeErrors": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "assertionViolations": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "visitedKnots": {
+                "count": 29,
+                "sha256": "4ae2b2205a59da03a36e388cee3915551976ff690538d5c61bd4b656b464c48d",
+                "examples": [
+                  "admitted_to_something",
+                  "all_too_farfetched",
+                  "claim_hooper_took_component",
+                  "ending_return_to_normal",
+                  "go_to_hoopers_dorm",
+                  "go_to_where_component_is_hidden",
+                  "harris_asks_for_theory",
+                  "harris_certain_is_you",
+                  "harris_demands_component",
+                  "harris_demands_you_speak",
+                  "harris_has_seen_it_before",
+                  "harris_presses_for_details",
+                  "harris_takes_you_to_hooper",
+                  "harris_threatens_lynching",
+                  "head_for_my_dorm_free",
+                  "i_met_a_young_man",
+                  "inside_hoopers_hut",
+                  "left_alone",
+                  "live_on_the_run",
+                  "make_your_peace"
+                ]
+              },
+              "visibleEndings": {
+                "count": 12,
+                "sha256": "a1e23cf0939b58db6e8964e6c6bfd13496533e62a8939c3e679d13b230f42bb5",
+                "examples": [
+                  "\"I have, rather.\" I put my hands into my pockets. \"I seem to have done exactly that.\" \"I'm afraid my little story about Hooper confessing wasn't true. I wanted to see if you'd go to retrieve the part.\" Harris gestures me to start walking. \"You were close, Manning, I'll give you that. I wanted to believe you. But I'm glad I didn't.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "\"I spoke to Russell. He said he saw Hooper doing something round here. I wanted to see what it was.\" \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, if it hadn't have been you who hid the component, then you wouldn't be here now.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "\"I spoke to Russell. He said he saw Hooper doing something round here. I wanted to see what it was.\" \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, you told Hooper where to look with your little riddle.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "Better to live on the run than die on the spit. Creeping around the edge of the compound, I make my way to the front gate. As always, it's manned by two guards, but I slip past their box by crawling on my belly. And then I'm on the road. Walking, not running. Silent. Free. For the moment, at least.",
+                  "Better to live on the run than die on the spit. Creeping around the edge of the compound, the Bombe component heavy in my pocket, I make my way to the front gate. As always, it's manned by two guards, but I slip past their box by crawling on my belly. And then I'm on the road. Walking, not running. Silent. Free. For the moment, at least.",
+                  "But for now, there's yesterday's intercept to be resolved. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve.",
+                  "But not today. Today, there's an intercept to resolve. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve.",
+                  "He drags me up to my feet. \"You think you have to re—invent everything.\" With that, he hustles me out of the door and I can't help thinking that, with a little more strategy, I could still have won the day. But too late now, of course.",
+                  "I almost wish I had a way to make the hut explode, but of course I don't. \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, if it hadn't have been you who hid the component, then you wouldn't be here now.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "I almost wish I had a way to make the hut explode, but of course I don't. \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, you told Hooper where to look with your little riddle.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "I've more important problems to think about now. There's still yesterday's intercept to be resolved. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve.",
+                  "In a week's time, this whole affair will be in the past and quite forgotten. I'm quite sure of that. I've more important problems to think about now. There's still yesterday's intercept to be resolved. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve."
+                ]
+              },
+              "terminalStates": {
+                "count": 2165,
+                "sha256": "ed59b56a2c251de847cb5da909ed172b25c75dc12bd0aa6ddbc8e899564b20d8",
+                "examples": [
+                  "sha256:00633d89fb2bc019750ce033b5950a414b966d1d468470c4998950551be09cdc",
+                  "sha256:00c3f1ef42ca233cae45c1b80bf55463ca2fb306722091832d331f79dd21d1f7",
+                  "sha256:00dd219e17d8221df83b689f4569e4b95927af8fb8515b3549789e16113ce47a",
+                  "sha256:00dd5052bd3f50e988eaf6737fd8cc13ea473a519962124a2a1e75bb4439a90d",
+                  "sha256:00df1b9cc576334fab2511035648de35d149e37337da3ea6ce718c72d6046972",
+                  "sha256:00edf643ec729cc3988f1602b0ae06ef2fc8f4df4b4a6808fb2a068ad4446ff9",
+                  "sha256:0104d75104f410e0fba244d68f73bb2a1c23c52876f855fdb95c2ff51c4c55ab",
+                  "sha256:01247828de93fc4ed87b26970adedf55dc440b51700f1a6914ae4d45df3e1af7",
+                  "sha256:0129f0cf0333582641525f95da50179af3a802ea54d542a5517b0dc50e297878",
+                  "sha256:012a504fa77cf3c933d3758a9e03a9c70e9911db44594ddb88ff43430a720d57",
+                  "sha256:0138001ba5c193c621c2a219fbb7a1a86529e5c10de85228b87bfc6f7acd5dec",
+                  "sha256:0141f88b9110eb18dcff4e58a041016be74db5eb3aafbe44595e1ca174e961fb",
+                  "sha256:01d88a75e01a05511d69e7d19593eb42bf5cad4c2c4047fa42ff03b330dc5800",
+                  "sha256:01eecefed329a8fc4983d127782d353a8f64405b950faf1547f41c8dc668539d",
+                  "sha256:01ef381a9b5a4f060ffbc6a754bcb4ab8d2b73b6cacf040e5f04dad717bda7ff",
+                  "sha256:01f45c29b91c3336591d8769502826b226de9eaa8153a02e65f0df8617cb7a51",
+                  "sha256:0250337cb13bcd55381eaa05620a4f95cb2b2437af6f6af542645d9b7fabf96f",
+                  "sha256:02772d28a9333cf2c12f091cc56ef4d5c33cfbd75a556c4aa992d4b065224f57",
+                  "sha256:02b22956e43029862d69c0540f4073db54e16cf9dd9cf0a7242c6752d18cbc78",
+                  "sha256:02b7c7a0c38c5077c2af10a5e983f352d1a89bafd29ebd41142f991b20e7ab6b"
+                ]
+              },
+              "externalFunctionsStubbed": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              }
+            },
+            "stateSpace": {
+              "terminalStates": 2165,
+              "terminalVariableStates": 1352,
+              "dedupeHits": 0,
+              "maxDepthReached": 63,
+              "peakFrontier": null,
+              "peakPendingStates": 249573,
+              "peakPendingBytes": 900801700
+            },
+            "result": {
+              "exhaustive": false,
+              "truncated": true,
+              "truncatedBy": {
+                "maxDepth": false,
+                "maxStates": false,
+                "beamWidth": false,
+                "frontier": false,
+                "memory": true,
+                "time": false
+              },
+              "randomnessDetected": false
+            },
+            "passes": [
+              {
+                "pass": "shared:deep-novelty-v1:seed=7",
+                "systematic": true,
+                "statesExplored": 1213503,
+                "newEndings": 2165,
+                "newKnots": 29,
+                "newRuntimeErrors": 0,
+                "dedupeHits": 0,
+                "maxDepthReached": 63,
+                "lastDiscoveryAtState": 1211940,
+                "peakPendingStates": 249573,
+                "peakPendingBytes": 900801700,
+                "sharedMemory": {
+                  "current": {
+                    "pendingStateBytes": 900801336,
+                    "pendingVariableBytes": 109833360,
+                    "activeStateBytes": 6406,
+                    "activeVariableBytes": 438,
+                    "ancestryBytes": 40389268,
+                    "dedupeBytes": 68279297,
+                    "semanticIndexBytes": 2639321,
+                    "frontierReferenceBytes": 9982936,
+                    "findingBytes": 2971961,
+                    "totalAccountedBytes": 1134904323,
+                    "pendingStates": 249573,
+                    "retainedNodes": 466820,
+                    "frontierReferences": 748721
+                  },
+                  "peak": {
+                    "pendingStateBytes": 900801700,
+                    "pendingVariableBytes": 109833360,
+                    "activeStateBytes": 7650,
+                    "activeVariableBytes": 443,
+                    "ancestryBytes": 40389268,
+                    "dedupeBytes": 68279297,
+                    "semanticIndexBytes": 2639321,
+                    "frontierReferenceBytes": 14455248,
+                    "findingBytes": 2971961,
+                    "totalAccountedBytes": 1139376547,
+                    "pendingStates": 249573,
+                    "retainedNodes": 466820,
+                    "frontierReferences": 1104556
+                  },
+                  "limits": {
+                    "maxPendingStates": null,
+                    "maxPendingBytes": null
+                  },
+                  "releasedNodes": 308842,
+                  "frontierCompactions": 2
+                },
+                "exhaustive": false
+              }
+            ]
+          },
+          "ledger": {
+            "purpose": "typical",
+            "grantedStates": 5000000,
+            "consumedStates": 1213503,
+            "yield": {
+              "critical": 0,
+              "intent": 0,
+              "authoredCoverage": 41,
+              "terminalVariants": 2165
+            },
+            "elapsedMs": 366063,
+            "peakMemoryBytes": 1797047056,
+            "campaignBaseStates": 1213503,
+            "campaignStatus": "complete",
+            "campaignStopReason": "memory_ceiling",
+            "ceilings": {
+              "totalStates": 5000000,
+              "maxElapsedMs": 7200000,
+              "maxMemoryBytes": 1996488704,
+              "maxDiskBytes": 2147483648
+            }
+          }
+        },
+        "child": {
+          "status": "blocked",
+          "reason": "base campaign stopped at memory_ceiling; directed work cannot bypass a hard campaign resource boundary",
+          "baseStopReason": "memory_ceiling"
+        }
+      },
+      "assertionCampaign": {
+        "base": {
+          "grant": 5000000,
+          "consumed": 1484991,
+          "elapsedMs": 516744,
+          "reportId": "report-98d0c411a9ff7b5830f7127e",
+          "checkpointId": null,
+          "summary": {
+            "strategy": "campaign-base",
+            "statesExplored": 1484991,
+            "configuration": {
+              "searchSeed": 7,
+              "storySeed": 1
+            },
+            "findings": {
+              "runtimeErrors": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "assertionViolations": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "visitedKnots": {
+                "count": 29,
+                "sha256": "4ae2b2205a59da03a36e388cee3915551976ff690538d5c61bd4b656b464c48d",
+                "examples": [
+                  "admitted_to_something",
+                  "all_too_farfetched",
+                  "claim_hooper_took_component",
+                  "ending_return_to_normal",
+                  "go_to_hoopers_dorm",
+                  "go_to_where_component_is_hidden",
+                  "harris_asks_for_theory",
+                  "harris_certain_is_you",
+                  "harris_demands_component",
+                  "harris_demands_you_speak",
+                  "harris_has_seen_it_before",
+                  "harris_presses_for_details",
+                  "harris_takes_you_to_hooper",
+                  "harris_threatens_lynching",
+                  "head_for_my_dorm_free",
+                  "i_met_a_young_man",
+                  "inside_hoopers_hut",
+                  "left_alone",
+                  "live_on_the_run",
+                  "make_your_peace"
+                ]
+              },
+              "visibleEndings": {
+                "count": 12,
+                "sha256": "a1e23cf0939b58db6e8964e6c6bfd13496533e62a8939c3e679d13b230f42bb5",
+                "examples": [
+                  "\"I have, rather.\" I put my hands into my pockets. \"I seem to have done exactly that.\" \"I'm afraid my little story about Hooper confessing wasn't true. I wanted to see if you'd go to retrieve the part.\" Harris gestures me to start walking. \"You were close, Manning, I'll give you that. I wanted to believe you. But I'm glad I didn't.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "\"I spoke to Russell. He said he saw Hooper doing something round here. I wanted to see what it was.\" \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, if it hadn't have been you who hid the component, then you wouldn't be here now.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "\"I spoke to Russell. He said he saw Hooper doing something round here. I wanted to see what it was.\" \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, you told Hooper where to look with your little riddle.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "Better to live on the run than die on the spit. Creeping around the edge of the compound, I make my way to the front gate. As always, it's manned by two guards, but I slip past their box by crawling on my belly. And then I'm on the road. Walking, not running. Silent. Free. For the moment, at least.",
+                  "Better to live on the run than die on the spit. Creeping around the edge of the compound, the Bombe component heavy in my pocket, I make my way to the front gate. As always, it's manned by two guards, but I slip past their box by crawling on my belly. And then I'm on the road. Walking, not running. Silent. Free. For the moment, at least.",
+                  "But for now, there's yesterday's intercept to be resolved. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve.",
+                  "But not today. Today, there's an intercept to resolve. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve.",
+                  "He drags me up to my feet. \"You think you have to re—invent everything.\" With that, he hustles me out of the door and I can't help thinking that, with a little more strategy, I could still have won the day. But too late now, of course.",
+                  "I almost wish I had a way to make the hut explode, but of course I don't. \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, if it hadn't have been you who hid the component, then you wouldn't be here now.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "I almost wish I had a way to make the hut explode, but of course I don't. \"Enough.\" Harris gestures for me to start walking. \"This story couldn't be simpler. You took it to cover your back. You hid it. You lied to get Hooper into trouble, and when you thought you'd won, you came to scoop your prize. A good hand but ultimately, you told Hooper where to look with your little riddle.\" He leads me across the yard. Back towards Hut 5 to be decoded, and taken to pieces, once again.",
+                  "I've more important problems to think about now. There's still yesterday's intercept to be resolved. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve.",
+                  "In a week's time, this whole affair will be in the past and quite forgotten. I'm quite sure of that. I've more important problems to think about now. There's still yesterday's intercept to be resolved. The Bombe needs to be set up once more and set running. It's time I tackled a problem I can solve."
+                ]
+              },
+              "terminalStates": {
+                "count": 2483,
+                "sha256": "4ae7465978ea134a1b1e996df4d7c5bf840dfc7279cffe93da396a19a4e2a25d",
+                "examples": [
+                  "sha256:0006beac25cba1cb142e2daaa9d4f2fde793a6ba55063f9cd0c85ed2e10045dd",
+                  "sha256:00633d89fb2bc019750ce033b5950a414b966d1d468470c4998950551be09cdc",
+                  "sha256:00c3f1ef42ca233cae45c1b80bf55463ca2fb306722091832d331f79dd21d1f7",
+                  "sha256:00dd219e17d8221df83b689f4569e4b95927af8fb8515b3549789e16113ce47a",
+                  "sha256:00dd5052bd3f50e988eaf6737fd8cc13ea473a519962124a2a1e75bb4439a90d",
+                  "sha256:00df1b9cc576334fab2511035648de35d149e37337da3ea6ce718c72d6046972",
+                  "sha256:00edf643ec729cc3988f1602b0ae06ef2fc8f4df4b4a6808fb2a068ad4446ff9",
+                  "sha256:0104d75104f410e0fba244d68f73bb2a1c23c52876f855fdb95c2ff51c4c55ab",
+                  "sha256:01247828de93fc4ed87b26970adedf55dc440b51700f1a6914ae4d45df3e1af7",
+                  "sha256:0129f0cf0333582641525f95da50179af3a802ea54d542a5517b0dc50e297878",
+                  "sha256:012a504fa77cf3c933d3758a9e03a9c70e9911db44594ddb88ff43430a720d57",
+                  "sha256:0138001ba5c193c621c2a219fbb7a1a86529e5c10de85228b87bfc6f7acd5dec",
+                  "sha256:0141f88b9110eb18dcff4e58a041016be74db5eb3aafbe44595e1ca174e961fb",
+                  "sha256:0165beab38911f0e8284b84f34d387786af4b4fcef6e1741c0519c330d5fef2a",
+                  "sha256:01d88a75e01a05511d69e7d19593eb42bf5cad4c2c4047fa42ff03b330dc5800",
+                  "sha256:01eecefed329a8fc4983d127782d353a8f64405b950faf1547f41c8dc668539d",
+                  "sha256:01ef381a9b5a4f060ffbc6a754bcb4ab8d2b73b6cacf040e5f04dad717bda7ff",
+                  "sha256:01f45c29b91c3336591d8769502826b226de9eaa8153a02e65f0df8617cb7a51",
+                  "sha256:0250337cb13bcd55381eaa05620a4f95cb2b2437af6f6af542645d9b7fabf96f",
+                  "sha256:02772d28a9333cf2c12f091cc56ef4d5c33cfbd75a556c4aa992d4b065224f57"
+                ]
+              },
+              "externalFunctionsStubbed": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              }
+            },
+            "stateSpace": {
+              "terminalStates": 2483,
+              "terminalVariableStates": 1534,
+              "dedupeHits": 0,
+              "maxDepthReached": 65,
+              "peakFrontier": null,
+              "peakPendingStates": 302284,
+              "peakPendingBytes": 1096437212
+            },
+            "result": {
+              "exhaustive": false,
+              "truncated": true,
+              "truncatedBy": {
+                "maxDepth": false,
+                "maxStates": false,
+                "beamWidth": false,
+                "frontier": false,
+                "memory": true,
+                "time": false
+              },
+              "randomnessDetected": false
+            },
+            "passes": [
+              {
+                "pass": "shared:deep-novelty-v1:seed=7",
+                "systematic": true,
+                "statesExplored": 1484991,
+                "newEndings": 2483,
+                "newKnots": 29,
+                "newRuntimeErrors": 0,
+                "dedupeHits": 0,
+                "maxDepthReached": 65,
+                "lastDiscoveryAtState": 1484926,
+                "peakPendingStates": 302284,
+                "peakPendingBytes": 1096437212,
+                "sharedMemory": {
+                  "current": {
+                    "pendingStateBytes": 1096437212,
+                    "pendingVariableBytes": 133028079,
+                    "activeStateBytes": 0,
+                    "activeVariableBytes": 0,
+                    "ancestryBytes": 49102409,
+                    "dedupeBytes": 83345337,
+                    "semanticIndexBytes": 2904992,
+                    "frontierReferenceBytes": 12091360,
+                    "findingBytes": 3438169,
+                    "totalAccountedBytes": 1380347558,
+                    "pendingStates": 302284,
+                    "retainedNodes": 566654,
+                    "frontierReferences": 906852
+                  },
+                  "peak": {
+                    "pendingStateBytes": 1096437212,
+                    "pendingVariableBytes": 133028079,
+                    "activeStateBytes": 8249,
+                    "activeVariableBytes": 443,
+                    "ancestryBytes": 49102409,
+                    "dedupeBytes": 83345337,
+                    "semanticIndexBytes": 2904992,
+                    "frontierReferenceBytes": 18889560,
+                    "findingBytes": 3438169,
+                    "totalAccountedBytes": 1387150268,
+                    "pendingStates": 302284,
+                    "retainedNodes": 566654,
+                    "frontierReferences": 1445039
+                  },
+                  "limits": {
+                    "maxPendingStates": null,
+                    "maxPendingBytes": null
+                  },
+                  "releasedNodes": 380213,
+                  "frontierCompactions": 2
+                },
+                "exhaustive": false
+              }
+            ]
+          },
+          "ledger": {
+            "purpose": "typical",
+            "grantedStates": 5000000,
+            "consumedStates": 1484991,
+            "yield": {
+              "critical": 0,
+              "intent": 0,
+              "authoredCoverage": 41,
+              "terminalVariants": 2483
+            },
+            "elapsedMs": 516130,
+            "peakMemoryBytes": 1798921624,
+            "campaignBaseStates": 1484991,
+            "campaignStatus": "complete",
+            "campaignStopReason": "memory_ceiling",
+            "ceilings": {
+              "totalStates": 5000000,
+              "maxElapsedMs": 7200000,
+              "maxMemoryBytes": 1996488704,
+              "maxDiskBytes": 2147483648
+            }
+          }
+        },
+        "child": {
+          "status": "blocked",
+          "reason": "base campaign stopped at memory_ceiling; directed work cannot bypass a hard campaign resource boundary",
+          "baseStopReason": "memory_ceiling"
+        }
+      }
+    },
+    {
+      "id": "exhaustive-control",
+      "source": {
+        "name": "Repository-owned campaign child control",
+        "license": "MIT",
+        "commit": "repository fixture",
+        "licenseFile": null
+      },
+      "configuration": {
+        "baseStates": 5000000,
+        "specialistStates": 5000000,
+        "maxDepth": 30,
+        "seed": 7,
+        "storySeed": 1
+      },
+      "goalCampaign": {
+        "base": {
+          "grant": 5000000,
+          "consumed": 2,
+          "elapsedMs": 324,
+          "reportId": "report-2a892346c13e853b43c5ddc3",
+          "checkpointId": null,
+          "summary": {
+            "strategy": "campaign-base",
+            "statesExplored": 2,
+            "configuration": {
+              "searchSeed": 7,
+              "storySeed": 1
+            },
+            "findings": {
+              "runtimeErrors": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "assertionViolations": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "visitedKnots": {
+                "count": 1,
+                "sha256": "0bb1c9383448e5060327530066bb9271bd61487a19694fb01ae98876a10e1e75",
+                "examples": [
+                  "done"
+                ]
+              },
+              "visibleEndings": {
+                "count": 1,
+                "sha256": "dc8fd4c2944f0be04629e6496f33e3eca0ce9f4aedea0bc358eabdfe8ae75fea",
+                "examples": [
+                  "Transaction complete."
+                ]
+              },
+              "terminalStates": {
+                "count": 2,
+                "sha256": "3362910d6b3c2400cd4692fa7507e826d77e90847aa5ffe75bd73a3e8b0ad1d9",
+                "examples": [
+                  "sha256:0a0027255aba9a4a4950344841cd361fe71e2f87c64b3aa3c6e519b46189f3ca",
+                  "sha256:81f0afb0cc1b24facdee957b6f4cb73a98f75fc27d2e57ee6ef80155ed6c5987"
+                ]
+              },
+              "externalFunctionsStubbed": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              }
+            },
+            "stateSpace": {
+              "terminalStates": 2,
+              "terminalVariableStates": 2,
+              "dedupeHits": 0,
+              "maxDepthReached": 1,
+              "peakFrontier": null,
+              "peakPendingStates": 1,
+              "peakPendingBytes": 929
+            },
+            "result": {
+              "exhaustive": true,
+              "truncated": false,
+              "truncatedBy": {
+                "maxDepth": false,
+                "maxStates": false,
+                "beamWidth": false,
+                "frontier": false,
+                "memory": false,
+                "time": false
+              },
+              "randomnessDetected": false
+            },
+            "passes": [
+              {
+                "pass": "shared:deep-novelty-v1:seed=7",
+                "systematic": true,
+                "statesExplored": 2,
+                "newEndings": 2,
+                "newKnots": 1,
+                "newRuntimeErrors": 0,
+                "dedupeHits": 0,
+                "maxDepthReached": 1,
+                "lastDiscoveryAtState": 2,
+                "peakPendingStates": 1,
+                "peakPendingBytes": 929,
+                "sharedMemory": {
+                  "current": {
+                    "pendingStateBytes": 0,
+                    "pendingVariableBytes": 0,
+                    "activeStateBytes": 0,
+                    "activeVariableBytes": 0,
+                    "ancestryBytes": 8,
+                    "dedupeBytes": 170,
+                    "semanticIndexBytes": 324,
+                    "frontierReferenceBytes": 0,
+                    "findingBytes": 424,
+                    "totalAccountedBytes": 926,
+                    "pendingStates": 0,
+                    "retainedNodes": 0,
+                    "frontierReferences": 0
+                  },
+                  "peak": {
+                    "pendingStateBytes": 929,
+                    "pendingVariableBytes": 10,
+                    "activeStateBytes": 929,
+                    "activeVariableBytes": 10,
+                    "ancestryBytes": 72,
+                    "dedupeBytes": 170,
+                    "semanticIndexBytes": 324,
+                    "frontierReferenceBytes": 40,
+                    "findingBytes": 424,
+                    "totalAccountedBytes": 1945,
+                    "pendingStates": 1,
+                    "retainedNodes": 1,
+                    "frontierReferences": 3
+                  },
+                  "limits": {
+                    "maxPendingStates": null,
+                    "maxPendingBytes": null
+                  },
+                  "releasedNodes": 1,
+                  "frontierCompactions": 1
+                },
+                "exhaustive": true
+              }
+            ]
+          },
+          "ledger": {
+            "purpose": "typical",
+            "grantedStates": 5000000,
+            "consumedStates": 2,
+            "yield": {
+              "critical": 0,
+              "intent": 0,
+              "authoredCoverage": 2,
+              "terminalVariants": 2
+            },
+            "elapsedMs": 115,
+            "peakMemoryBytes": 211729080,
+            "campaignBaseStates": 2,
+            "campaignStatus": "complete",
+            "campaignStopReason": "exhaustive",
+            "ceilings": {
+              "totalStates": 5000000,
+              "maxElapsedMs": 300000,
+              "maxMemoryBytes": 1996488704,
+              "maxDiskBytes": 134217728
+            }
+          }
+        },
+        "child": {
+          "grant": 5000000,
+          "consumed": 2,
+          "elapsedMs": 301,
+          "reportId": "report-f32e116f4b86ca91d931ae70",
+          "goal": {
+            "id": "negative_gold",
+            "status": "reached",
+            "statesEvaluated": 3,
+            "witness": {
+              "firstDiscoveredAtState": 2,
+              "pathLength": 1,
+              "observedValues": {
+                "gold": -1
+              }
+            }
+          },
+          "summary": {
+            "strategy": "approved-goal-child",
+            "statesExplored": 2,
+            "configuration": {
+              "searchSeed": 7,
+              "storySeed": 1
+            },
+            "findings": {
+              "runtimeErrors": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "assertionViolations": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "visitedKnots": {
+                "count": 1,
+                "sha256": "0bb1c9383448e5060327530066bb9271bd61487a19694fb01ae98876a10e1e75",
+                "examples": [
+                  "done"
+                ]
+              },
+              "visibleEndings": {
+                "count": 1,
+                "sha256": "dc8fd4c2944f0be04629e6496f33e3eca0ce9f4aedea0bc358eabdfe8ae75fea",
+                "examples": [
+                  "Transaction complete."
+                ]
+              },
+              "terminalStates": {
+                "count": 2,
+                "sha256": "3362910d6b3c2400cd4692fa7507e826d77e90847aa5ffe75bd73a3e8b0ad1d9",
+                "examples": [
+                  "sha256:0a0027255aba9a4a4950344841cd361fe71e2f87c64b3aa3c6e519b46189f3ca",
+                  "sha256:81f0afb0cc1b24facdee957b6f4cb73a98f75fc27d2e57ee6ef80155ed6c5987"
+                ]
+              },
+              "externalFunctionsStubbed": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              }
+            },
+            "stateSpace": {
+              "terminalStates": 2,
+              "terminalVariableStates": 2,
+              "dedupeHits": 0,
+              "maxDepthReached": 1,
+              "peakFrontier": null,
+              "peakPendingStates": 1,
+              "peakPendingBytes": 929
+            },
+            "result": {
+              "exhaustive": true,
+              "truncated": false,
+              "truncatedBy": {
+                "maxDepth": false,
+                "maxStates": false,
+                "beamWidth": false,
+                "frontier": false,
+                "memory": false,
+                "time": false
+              },
+              "randomnessDetected": false
+            },
+            "passes": [
+              {
+                "pass": "shared:goal-directed-v1:seed=7",
+                "systematic": true,
+                "statesExplored": 2,
+                "newEndings": 2,
+                "newKnots": 1,
+                "newRuntimeErrors": 0,
+                "dedupeHits": 0,
+                "maxDepthReached": 1,
+                "lastDiscoveryAtState": 2,
+                "peakPendingStates": 1,
+                "peakPendingBytes": 929,
+                "sharedMemory": {
+                  "current": {
+                    "pendingStateBytes": 0,
+                    "pendingVariableBytes": 0,
+                    "activeStateBytes": 0,
+                    "activeVariableBytes": 0,
+                    "ancestryBytes": 8,
+                    "dedupeBytes": 170,
+                    "semanticIndexBytes": 324,
+                    "frontierReferenceBytes": 0,
+                    "findingBytes": 707,
+                    "totalAccountedBytes": 1209,
+                    "pendingStates": 0,
+                    "retainedNodes": 0,
+                    "frontierReferences": 0
+                  },
+                  "peak": {
+                    "pendingStateBytes": 929,
+                    "pendingVariableBytes": 10,
+                    "activeStateBytes": 929,
+                    "activeVariableBytes": 10,
+                    "ancestryBytes": 72,
+                    "dedupeBytes": 170,
+                    "semanticIndexBytes": 324,
+                    "frontierReferenceBytes": 64,
+                    "findingBytes": 707,
+                    "totalAccountedBytes": 2252,
+                    "pendingStates": 1,
+                    "retainedNodes": 1,
+                    "frontierReferences": 4
+                  },
+                  "limits": {
+                    "maxPendingStates": null,
+                    "maxPendingBytes": null
+                  },
+                  "releasedNodes": 1,
+                  "frontierCompactions": 0
+                },
+                "exhaustive": true
+              }
+            ]
+          },
+          "newEvidence": {
+            "runtimeErrors": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "assertionViolations": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "visitedKnots": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "visibleEndings": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "terminalStates": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            }
+          },
+          "ledger": {
+            "purpose": "approved_goal",
+            "grantedStates": 5000000,
+            "consumedStates": 2,
+            "yield": {
+              "critical": 0,
+              "intent": 1,
+              "authoredCoverage": 0,
+              "terminalVariants": 0
+            },
+            "elapsedMs": 109,
+            "peakMemoryBytes": 213868640,
+            "campaignBaseStates": 2,
+            "campaignStatus": "complete",
+            "campaignStopReason": "exhaustive",
+            "ceilings": {
+              "totalStates": 5000000,
+              "maxElapsedMs": 300000,
+              "maxMemoryBytes": 1996488704,
+              "maxDiskBytes": 134217728
+            }
+          }
+        },
+        "invariants": {
+          "baseReportPreserved": true,
+          "baseCheckpointPreserved": true,
+          "protectedBaseGrantPreserved": true,
+          "specialistClaimsNoBroadYield": true
+        }
+      },
+      "assertionCampaign": {
+        "base": {
+          "grant": 5000000,
+          "consumed": 2,
+          "elapsedMs": 344,
+          "reportId": "report-2a892346c13e853b43c5ddc3",
+          "checkpointId": null,
+          "summary": {
+            "strategy": "campaign-base",
+            "statesExplored": 2,
+            "configuration": {
+              "searchSeed": 7,
+              "storySeed": 1
+            },
+            "findings": {
+              "runtimeErrors": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "assertionViolations": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "visitedKnots": {
+                "count": 1,
+                "sha256": "0bb1c9383448e5060327530066bb9271bd61487a19694fb01ae98876a10e1e75",
+                "examples": [
+                  "done"
+                ]
+              },
+              "visibleEndings": {
+                "count": 1,
+                "sha256": "dc8fd4c2944f0be04629e6496f33e3eca0ce9f4aedea0bc358eabdfe8ae75fea",
+                "examples": [
+                  "Transaction complete."
+                ]
+              },
+              "terminalStates": {
+                "count": 2,
+                "sha256": "3362910d6b3c2400cd4692fa7507e826d77e90847aa5ffe75bd73a3e8b0ad1d9",
+                "examples": [
+                  "sha256:0a0027255aba9a4a4950344841cd361fe71e2f87c64b3aa3c6e519b46189f3ca",
+                  "sha256:81f0afb0cc1b24facdee957b6f4cb73a98f75fc27d2e57ee6ef80155ed6c5987"
+                ]
+              },
+              "externalFunctionsStubbed": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              }
+            },
+            "stateSpace": {
+              "terminalStates": 2,
+              "terminalVariableStates": 2,
+              "dedupeHits": 0,
+              "maxDepthReached": 1,
+              "peakFrontier": null,
+              "peakPendingStates": 1,
+              "peakPendingBytes": 929
+            },
+            "result": {
+              "exhaustive": true,
+              "truncated": false,
+              "truncatedBy": {
+                "maxDepth": false,
+                "maxStates": false,
+                "beamWidth": false,
+                "frontier": false,
+                "memory": false,
+                "time": false
+              },
+              "randomnessDetected": false
+            },
+            "passes": [
+              {
+                "pass": "shared:deep-novelty-v1:seed=7",
+                "systematic": true,
+                "statesExplored": 2,
+                "newEndings": 2,
+                "newKnots": 1,
+                "newRuntimeErrors": 0,
+                "dedupeHits": 0,
+                "maxDepthReached": 1,
+                "lastDiscoveryAtState": 2,
+                "peakPendingStates": 1,
+                "peakPendingBytes": 929,
+                "sharedMemory": {
+                  "current": {
+                    "pendingStateBytes": 0,
+                    "pendingVariableBytes": 0,
+                    "activeStateBytes": 0,
+                    "activeVariableBytes": 0,
+                    "ancestryBytes": 8,
+                    "dedupeBytes": 170,
+                    "semanticIndexBytes": 324,
+                    "frontierReferenceBytes": 0,
+                    "findingBytes": 424,
+                    "totalAccountedBytes": 926,
+                    "pendingStates": 0,
+                    "retainedNodes": 0,
+                    "frontierReferences": 0
+                  },
+                  "peak": {
+                    "pendingStateBytes": 929,
+                    "pendingVariableBytes": 10,
+                    "activeStateBytes": 929,
+                    "activeVariableBytes": 10,
+                    "ancestryBytes": 72,
+                    "dedupeBytes": 170,
+                    "semanticIndexBytes": 324,
+                    "frontierReferenceBytes": 40,
+                    "findingBytes": 424,
+                    "totalAccountedBytes": 1945,
+                    "pendingStates": 1,
+                    "retainedNodes": 1,
+                    "frontierReferences": 3
+                  },
+                  "limits": {
+                    "maxPendingStates": null,
+                    "maxPendingBytes": null
+                  },
+                  "releasedNodes": 1,
+                  "frontierCompactions": 1
+                },
+                "exhaustive": true
+              }
+            ]
+          },
+          "ledger": {
+            "purpose": "typical",
+            "grantedStates": 5000000,
+            "consumedStates": 2,
+            "yield": {
+              "critical": 0,
+              "intent": 0,
+              "authoredCoverage": 2,
+              "terminalVariants": 2
+            },
+            "elapsedMs": 138,
+            "peakMemoryBytes": 214368536,
+            "campaignBaseStates": 2,
+            "campaignStatus": "complete",
+            "campaignStopReason": "exhaustive",
+            "ceilings": {
+              "totalStates": 5000000,
+              "maxElapsedMs": 300000,
+              "maxMemoryBytes": 1996488704,
+              "maxDiskBytes": 134217728
+            }
+          }
+        },
+        "child": {
+          "grant": 5000000,
+          "consumed": 2,
+          "elapsedMs": 293,
+          "reportId": "report-da7b85f10df66e72a70de5d2",
+          "assertions": [
+            {
+              "id": "gold_nonnegative",
+              "status": "violated",
+              "observations": 3,
+              "violations": 1,
+              "firstViolationAtState": 2
+            }
+          ],
+          "summary": {
+            "strategy": "assertion-child",
+            "statesExplored": 2,
+            "configuration": {
+              "searchSeed": 7,
+              "storySeed": 1
+            },
+            "findings": {
+              "runtimeErrors": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "assertionViolations": {
+                "count": 1,
+                "sha256": "dc490edccc859b5221a64d08b929b0010786299d66d991b0c86b606121364744",
+                "examples": [
+                  "gold_nonnegative|{\"gold\":-1}|[1]"
+                ]
+              },
+              "visitedKnots": {
+                "count": 1,
+                "sha256": "0bb1c9383448e5060327530066bb9271bd61487a19694fb01ae98876a10e1e75",
+                "examples": [
+                  "done"
+                ]
+              },
+              "visibleEndings": {
+                "count": 1,
+                "sha256": "dc8fd4c2944f0be04629e6496f33e3eca0ce9f4aedea0bc358eabdfe8ae75fea",
+                "examples": [
+                  "Transaction complete."
+                ]
+              },
+              "terminalStates": {
+                "count": 2,
+                "sha256": "3362910d6b3c2400cd4692fa7507e826d77e90847aa5ffe75bd73a3e8b0ad1d9",
+                "examples": [
+                  "sha256:0a0027255aba9a4a4950344841cd361fe71e2f87c64b3aa3c6e519b46189f3ca",
+                  "sha256:81f0afb0cc1b24facdee957b6f4cb73a98f75fc27d2e57ee6ef80155ed6c5987"
+                ]
+              },
+              "externalFunctionsStubbed": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              }
+            },
+            "stateSpace": {
+              "terminalStates": 2,
+              "terminalVariableStates": 2,
+              "dedupeHits": 0,
+              "maxDepthReached": 1,
+              "peakFrontier": null,
+              "peakPendingStates": 1,
+              "peakPendingBytes": 929
+            },
+            "result": {
+              "exhaustive": true,
+              "truncated": false,
+              "truncatedBy": {
+                "maxDepth": false,
+                "maxStates": false,
+                "beamWidth": false,
+                "frontier": false,
+                "memory": false,
+                "time": false
+              },
+              "randomnessDetected": false
+            },
+            "passes": [
+              {
+                "pass": "shared:deep-novelty-v1:seed=7",
+                "systematic": true,
+                "statesExplored": 2,
+                "newEndings": 2,
+                "newKnots": 1,
+                "newRuntimeErrors": 0,
+                "dedupeHits": 0,
+                "maxDepthReached": 1,
+                "lastDiscoveryAtState": 2,
+                "peakPendingStates": 1,
+                "peakPendingBytes": 929,
+                "sharedMemory": {
+                  "current": {
+                    "pendingStateBytes": 0,
+                    "pendingVariableBytes": 0,
+                    "activeStateBytes": 0,
+                    "activeVariableBytes": 0,
+                    "ancestryBytes": 8,
+                    "dedupeBytes": 170,
+                    "semanticIndexBytes": 324,
+                    "frontierReferenceBytes": 0,
+                    "findingBytes": 776,
+                    "totalAccountedBytes": 1278,
+                    "pendingStates": 0,
+                    "retainedNodes": 0,
+                    "frontierReferences": 0
+                  },
+                  "peak": {
+                    "pendingStateBytes": 929,
+                    "pendingVariableBytes": 10,
+                    "activeStateBytes": 929,
+                    "activeVariableBytes": 10,
+                    "ancestryBytes": 72,
+                    "dedupeBytes": 170,
+                    "semanticIndexBytes": 324,
+                    "frontierReferenceBytes": 40,
+                    "findingBytes": 776,
+                    "totalAccountedBytes": 2297,
+                    "pendingStates": 1,
+                    "retainedNodes": 1,
+                    "frontierReferences": 3
+                  },
+                  "limits": {
+                    "maxPendingStates": null,
+                    "maxPendingBytes": null
+                  },
+                  "releasedNodes": 1,
+                  "frontierCompactions": 0
+                },
+                "exhaustive": true
+              }
+            ]
+          },
+          "newEvidence": {
+            "runtimeErrors": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "assertionViolations": {
+              "count": 1,
+              "sha256": "dc490edccc859b5221a64d08b929b0010786299d66d991b0c86b606121364744",
+              "examples": [
+                "gold_nonnegative|{\"gold\":-1}|[1]"
+              ]
+            },
+            "visitedKnots": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "visibleEndings": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "terminalStates": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            }
+          },
+          "ledger": {
+            "purpose": "assertion",
+            "grantedStates": 5000000,
+            "consumedStates": 2,
+            "yield": {
+              "critical": 1,
+              "intent": 0,
+              "authoredCoverage": 0,
+              "terminalVariants": 0
+            },
+            "elapsedMs": 102,
+            "peakMemoryBytes": 10859208,
+            "campaignBaseStates": 2,
+            "campaignStatus": "complete",
+            "campaignStopReason": "exhaustive",
+            "ceilings": {
+              "totalStates": 5000000,
+              "maxElapsedMs": 300000,
+              "maxMemoryBytes": 1996488704,
+              "maxDiskBytes": 134217728
+            }
+          }
+        },
+        "invariants": {
+          "baseReportPreserved": true,
+          "baseCheckpointPreserved": true,
+          "protectedBaseGrantPreserved": true,
+          "specialistClaimsNoBroadYield": true
+        }
+      }
+    }
+  ]
+}

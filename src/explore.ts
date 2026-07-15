@@ -1293,6 +1293,18 @@ export interface SharedCheckpointHeapItem {
   order: number;
 }
 
+function cloneJsonValue<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => item === undefined ? null : cloneJsonValue(item)) as T;
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value)
+      .filter(([, item]) => item !== undefined)
+      .map(([key, item]) => [key, cloneJsonValue(item)])) as T;
+  }
+  return value;
+}
+
 export interface SharedSearchCheckpoint {
   schemaVersion: 1;
   engine: "shared:deep-novelty-v1";
@@ -2323,7 +2335,7 @@ function createSharedEngine(
         peakRetainedMemory: { ...peakRetainedMemory },
       },
     };
-    return JSON.parse(JSON.stringify(value)) as SharedSearchCheckpoint;
+    return cloneJsonValue(value);
   };
 
   return {

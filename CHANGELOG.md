@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Add explicit assertion and approved-goal campaign children. Matching MCP campaigns can spend separately accounted root-started specialist windows without mutating or reducing the exact resumable base frontier; deterministic ledger purposes, source-bound child reports, hard campaign resource ceilings, privacy-minimal metadata, and cross-report evidence deduplication keep the work attributable. Exhaustive base campaigns can still run an explicitly requested specialist while retaining the base proof boundary.
+- Add the first authored-story campaign-child evaluation harness and checked-in 5M-grant evidence. The study records blocked resource cells instead of treating them as misses, separates specialist intent/critical yield from broad evidence deltas, and documents one credible Intercept assertion lead, one rejected rule hypothesis, one staged-goal miss, and current checkpoint/specialist economics.
+- Let explicit specialist children run after a protected base closes at its state ceiling, while time, memory, disk, deadline, cancellation, and invalidation stops remain binding. Oversized or unstringifiable shared checkpoints now retain a partial report instead of throwing `Invalid string length`; campaign workers reserve commit headroom and may persist a measured over-ceiling peak only when the allocation explicitly reports a memory stop.
 
 ## 0.6.0-beta.2 — 2026-07-14
 
