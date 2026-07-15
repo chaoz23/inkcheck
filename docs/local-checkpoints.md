@@ -38,7 +38,9 @@ Resume requires `current`, the supported artifact and checkpoint schema versions
 
 ## Atomicity and retention
 
-Checkpoints live under `.inkcheck/checkpoints/checkpoint-<hash>.json`. Their stable ID derives from exact checkpoint content plus the project-relative entrypoint, so repeating the same deterministic boundary reuses one artifact.
+New checkpoints live under `.inkcheck/checkpoints/checkpoint-<hash>.json.gz`. Their stable ID derives from the exact logical checkpoint content plus the project-relative entrypoint, not from compression bytes, so repeating the same deterministic boundary reuses one artifact. Existing schema-v1 `.json` artifacts remain readable and resumable.
+
+The writer emits compact JSON through gzip directly into the private same-directory temporary file. It never constructs a second artifact-sized JSON string in memory, and it enforces the single-artifact ceiling against bytes that would actually remain on disk. A malformed gzip stream fails closed as storage corruption; a valid stream still passes the normal schema, stable-ID, source, and configuration checks after decompression.
 
 Inkcheck writes a same-directory temporary file with mode `0600`, flushes it, atomically renames it, and removes temporary files on failure. Only after the new file is durable does retention remove older artifacts. Defaults are hard safety ceilings:
 
@@ -46,7 +48,7 @@ Inkcheck writes a same-directory temporary file with mode `0600`, flushes it, at
 - 1 GiB across checkpoint artifacts in one project;
 - three generations per entrypoint.
 
-An individually oversized checkpoint is rejected. Once a new generation is durable, oldest generations for that entrypoint are removed first, then the oldest project checkpoints if needed to satisfy the project byte ceiling. The saved generation is protected from that cleanup.
+An individually oversized compressed checkpoint is rejected. Once a new generation is durable, oldest generations for that entrypoint are removed first, then the oldest project checkpoints if needed to satisfy the project byte ceiling. The saved generation is protected from that cleanup. `checkpoints list/show` reports `storageEncoding` and the actual durable `sizeBytes`; this is storage cost, not an estimate of process heap or future search value.
 
 ## Privacy
 

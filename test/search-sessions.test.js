@@ -204,7 +204,7 @@ test("approved-goal campaigns accept additive children without changing the exac
       minLongTailProbes: 0,
       regressionReserveStates: 0,
     });
-    const checkpointFile = path.join(root, ".inkcheck", "checkpoints", `${started.session.latestCheckpointId}.json`);
+    const checkpointFile = path.join(root, ".inkcheck", "checkpoints", `${started.session.latestCheckpointId}.json.gz`);
     const checkpointHash = createHash("sha256").update(fs.readFileSync(checkpointFile)).digest("hex");
     const added = await addSessionGoal({
       file,
@@ -256,7 +256,7 @@ test("runtime-assertion campaign children deduplicate yield and preserve broad Q
       minLongTailProbes: 0,
       regressionReserveStates: 0,
     });
-    const checkpointFile = path.join(root, ".inkcheck", "checkpoints", `${started.session.latestCheckpointId}.json`);
+    const checkpointFile = path.join(root, ".inkcheck", "checkpoints", `${started.session.latestCheckpointId}.json.gz`);
     const checkpointHash = createHash("sha256").update(fs.readFileSync(checkpointFile)).digest("hex");
     const assertions = [{
       id: "depth_stays_zero",
@@ -712,7 +712,7 @@ test("add_goal spends additive directed work while preserving the exact base ses
     const started = await startSearchSession({ file, maxStates: 73, maxDepth: 150, seed: 7 });
     const baseReportId = started.session.latestReportId;
     const baseCheckpointId = started.session.latestCheckpointId;
-    const checkpointFile = path.join(root, ".inkcheck", "checkpoints", `${baseCheckpointId}.json`);
+    const checkpointFile = path.join(root, ".inkcheck", "checkpoints", `${baseCheckpointId}.json.gz`);
     const checkpointHash = createHash("sha256").update(fs.readFileSync(checkpointFile)).digest("hex");
     const added = await addSessionGoal({
       file,

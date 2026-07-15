@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { openReportArtifact } from "./artifacts";
+import { openCheckpointArtifact } from "./checkpoints";
 import type { AssertionDefinition, AssertionResult } from "./assertions";
 import type { CampaignAllocation, CampaignLedger, CampaignValuePreference } from "./campaign-policy";
 import type { ExploreResult } from "./explore";
@@ -243,10 +244,14 @@ async function reportSummary(projectRoot: string, reportId: string, label: strin
   return summarizeSearchResult(label, (artifact.report as { explore: ExploreResult }).explore);
 }
 
-function checkpointFile(projectRoot: string, response: SearchSessionResponse): string | undefined {
-  return response.session.latestCheckpointId
-    ? path.join(projectRoot, ".inkcheck", "checkpoints", `${response.session.latestCheckpointId}.json`)
-    : undefined;
+async function checkpointDetails(projectRoot: string, response: SearchSessionResponse) {
+  if (!response.session.latestCheckpointId) return undefined;
+  const opened = await openCheckpointArtifact(projectRoot, response.session.latestCheckpointId);
+  return {
+    file: path.resolve(projectRoot, opened.artifact.path),
+    sizeBytes: opened.artifact.sizeBytes,
+    storageEncoding: opened.artifact.storageEncoding,
+  };
 }
 
 function copyStory(source: string, root: string): string {
@@ -264,18 +269,21 @@ async function runGoalCampaign(source: string, entry: EvaluationCase, root: stri
   if (!base.sessionCapability) throw new Error("start_campaign omitted its capability");
   const baseReport = await reportSummary(root, base.session.latestReportId, "campaign-base");
   const baseMetadata = sessionMetadata(root);
+  const baseCheckpoint = await checkpointDetails(root, base);
   const baseResult = {
     grant: entry.baseStates,
     consumed: base.session.statesExplored,
     elapsedMs: baseElapsedMs,
     reportId: base.session.latestReportId,
     checkpointId: base.session.latestCheckpointId ?? null,
+    checkpointBytes: baseCheckpoint?.sizeBytes ?? null,
+    checkpointStorageEncoding: baseCheckpoint?.storageEncoding ?? null,
     summary: compactSummary(baseReport),
     ledger: ledgerObservation(baseMetadata.ledger, baseMetadata.latest),
   };
   const blocked = directedBlock(base);
   if (blocked) return { base: baseResult, child: blocked };
-  const checkpoint = checkpointFile(root, base);
+  const checkpoint = baseCheckpoint?.file;
   const checkpointBefore = checkpoint ? sha256File(checkpoint) : null;
   const childStarted = Date.now();
   const child = await addSessionGoal({
@@ -365,18 +373,21 @@ async function runAssertionCampaign(source: string, entry: EvaluationCase, root:
   if (!base.sessionCapability) throw new Error("start_campaign omitted its capability");
   const baseReport = await reportSummary(root, base.session.latestReportId, "campaign-base");
   const baseMetadata = sessionMetadata(root);
+  const baseCheckpoint = await checkpointDetails(root, base);
   const baseResult = {
     grant: entry.baseStates,
     consumed: base.session.statesExplored,
     elapsedMs: baseElapsedMs,
     reportId: base.session.latestReportId,
     checkpointId: base.session.latestCheckpointId ?? null,
+    checkpointBytes: baseCheckpoint?.sizeBytes ?? null,
+    checkpointStorageEncoding: baseCheckpoint?.storageEncoding ?? null,
     summary: compactSummary(baseReport),
     ledger: ledgerObservation(baseMetadata.ledger, baseMetadata.latest),
   };
   const blocked = directedBlock(base);
   if (blocked) return { base: baseResult, child: blocked };
-  const checkpoint = checkpointFile(root, base);
+  const checkpoint = baseCheckpoint?.file;
   const checkpointBefore = checkpoint ? sha256File(checkpoint) : null;
   const childStarted = Date.now();
   const child = await addCampaignAssertions({

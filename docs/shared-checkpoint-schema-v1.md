@@ -42,6 +42,8 @@ inkcheck resume checkpoint-0123456789abcdef01234567 --max-states 1000000 --json
 
 See [local resumable checkpoints](local-checkpoints.md) for freshness, privacy, atomic-write, quota, and retention behavior.
 
+The logical checkpoint remains schema v1 JSON. New local artifacts stream that JSON through gzip as `.json.gz`; stable IDs still hash the same uncompressed logical checkpoint, and readers continue to accept earlier plain `.json` artifacts. Storage compression therefore changes neither deterministic frontier order nor split-run equivalence.
+
 ## Deliberate limits
 
 Schema v1 supports only base `shared:deep-novelty-v1`; assertions, goals, variable-aware steering, goal-aware steering, and the default portfolio are rejected rather than resumed approximately. Hosted/MCP resume, frontier partitioning, and cross-version migration remain future work.

@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import { Readable, Transform } from "stream";
+import { pipeline } from "stream/promises";
+import { createGzip, gunzipSync } from "zlib";
 import { compile, scanKnots } from "./inklecate";
 import {
   SHARED_SEARCH_CHECKPOINT_SCHEMA_VERSION,
@@ -33,6 +36,7 @@ export interface CheckpointArtifactSummary {
   totalGranted: number;
   statesExplored: number;
   sizeBytes: number;
+  storageEncoding: "json" | "gzip";
 }
 
 export interface CheckpointStorageLimits {
@@ -59,8 +63,8 @@ function checkpointsDirectory(projectRoot: string): string {
   return path.join(path.resolve(projectRoot), ".inkcheck", "checkpoints");
 }
 
-function checkpointRelativePath(id: string): string {
-  return path.posix.join(".inkcheck", "checkpoints", `${id}.json`);
+function checkpointRelativePath(id: string, encoding: "json" | "gzip" = "gzip"): string {
+  return path.posix.join(".inkcheck", "checkpoints", `${id}.${encoding === "gzip" ? "json.gz" : "json"}`);
 }
 
 function validateId(id: string): void {
@@ -69,9 +73,18 @@ function validateId(id: string): void {
   }
 }
 
+function checkpointDestination(projectRoot: string, id: string): string {
+  validateId(id);
+  return path.join(checkpointsDirectory(projectRoot), `${id}.json.gz`);
+}
+
 function checkpointFile(projectRoot: string, id: string): string {
   validateId(id);
-  return path.join(checkpointsDirectory(projectRoot), `${id}.json`);
+  const compressed = checkpointDestination(projectRoot, id);
+  if (fs.existsSync(compressed)) return compressed;
+  const legacy = path.join(checkpointsDirectory(projectRoot), `${id}.json`);
+  if (fs.existsSync(legacy)) return legacy;
+  return compressed;
 }
 
 function sourcePath(projectRoot: string, entrypoint: string): string {
@@ -94,9 +107,59 @@ function relativeEntrypoint(projectRoot: string, entrypoint: string): string {
   return relative;
 }
 
+function *jsonChunks(value: unknown, ancestors = new Set<object>()): Generator<string> {
+  if (value === null) {
+    yield "null";
+    return;
+  }
+  if (typeof value === "string") {
+    yield JSON.stringify(value);
+    return;
+  }
+  if (typeof value === "number") {
+    yield Number.isFinite(value) ? String(value) : "null";
+    return;
+  }
+  if (typeof value === "boolean") {
+    yield value ? "true" : "false";
+    return;
+  }
+  if (typeof value !== "object") throw new TypeError(`checkpoint contains a non-JSON ${typeof value} value`);
+  if (ancestors.has(value)) throw new TypeError("checkpoint contains a circular reference");
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      yield "[";
+      for (let index = 0; index < value.length; index++) {
+        if (index > 0) yield ",";
+        const item = value[index];
+        if (item === undefined || typeof item === "function" || typeof item === "symbol") yield "null";
+        else yield *jsonChunks(item, ancestors);
+      }
+      yield "]";
+      return;
+    }
+    yield "{";
+    let first = true;
+    for (const key of Object.keys(value)) {
+      const item = (value as Record<string, unknown>)[key];
+      if (item === undefined || typeof item === "function" || typeof item === "symbol") continue;
+      if (!first) yield ",";
+      first = false;
+      yield JSON.stringify(key);
+      yield ":";
+      yield *jsonChunks(item, ancestors);
+    }
+    yield "}";
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
 function checkpointId(entrypoint: string, checkpoint: SharedSearchCheckpoint): string {
-  const content = JSON.stringify(checkpoint);
-  return `checkpoint-${createHash("sha256").update(entrypoint).update("\0").update(content).digest("hex").slice(0, 24)}`;
+  const hash = createHash("sha256").update(entrypoint).update("\0");
+  for (const chunk of jsonChunks(checkpoint)) hash.update(chunk);
+  return `checkpoint-${hash.digest("hex").slice(0, 24)}`;
 }
 
 function parseArtifact(raw: string, expectedId?: string): CheckpointArtifact {
@@ -145,14 +208,24 @@ function parseArtifact(raw: string, expectedId?: string): CheckpointArtifact {
 function loadArtifact(projectRoot: string, id: string): CheckpointArtifact {
   const file = checkpointFile(projectRoot, id);
   if (!fs.existsSync(file)) throw new Error(`checkpoint not found: ${id}`);
+  if (file.endsWith(".gz")) {
+    let raw: string;
+    try {
+      raw = gunzipSync(fs.readFileSync(file)).toString("utf8");
+    } catch {
+      throw new Error("checkpoint artifact is corrupt gzip; remove it or restore a valid copy before reopening it");
+    }
+    return parseArtifact(raw, id);
+  }
   return parseArtifact(fs.readFileSync(file, "utf8"), id);
 }
 
 function summary(projectRoot: string, artifact: CheckpointArtifact): CheckpointArtifactSummary {
   const file = checkpointFile(projectRoot, artifact.id);
+  const storageEncoding = file.endsWith(".gz") ? "gzip" : "json";
   return {
     id: artifact.id,
-    path: checkpointRelativePath(artifact.id),
+    path: checkpointRelativePath(artifact.id, storageEncoding),
     artifactType: "shared-search-checkpoint",
     createdAt: artifact.createdAt,
     inkcheckVersion: artifact.inkcheckVersion,
@@ -162,18 +235,79 @@ function summary(projectRoot: string, artifact: CheckpointArtifact): CheckpointA
     totalGranted: artifact.checkpoint.state.totalGranted,
     statesExplored: artifact.checkpoint.state.statesExplored,
     sizeBytes: fs.statSync(file).size,
+    storageEncoding,
   };
 }
 
 function checkpointRecords(projectRoot: string): Array<CheckpointArtifactSummary & { file: string }> {
   const directory = checkpointsDirectory(projectRoot);
   if (!fs.existsSync(directory)) return [];
-  return fs.readdirSync(directory)
-    .filter((name) => /^checkpoint-[0-9a-f]{24}\.json$/.test(name))
-    .map((name) => {
-      const id = name.slice(0, -5);
+  const names = fs.readdirSync(directory)
+    .filter((name) => /^checkpoint-[0-9a-f]{24}\.json(?:\.gz)?$/.test(name));
+  const ids = new Set<string>();
+  return names.map((name) => {
+      const id = name.slice(0, name.indexOf(".json"));
+      if (ids.has(id)) throw new Error(`checkpoint ${id} has duplicate JSON and gzip artifacts; retain only one valid copy`);
+      ids.add(id);
       return { ...summary(projectRoot, loadArtifact(projectRoot, id)), file: checkpointFile(projectRoot, id) };
     });
+}
+
+export class CheckpointSizeLimitError extends Error {
+  constructor(
+    public readonly kind: "single" | "project",
+    public readonly observedBytes: number,
+    public readonly limitBytes: number
+  ) {
+    super(kind === "single"
+      ? `checkpoint exceeded the ${limitBytes}-byte single-checkpoint limit after ${observedBytes} durable bytes`
+      : `checkpoint exceeded the ${limitBytes}-byte project checkpoint quota after ${observedBytes} durable bytes`);
+    this.name = "CheckpointSizeLimitError";
+  }
+}
+
+class ByteLimitTransform extends Transform {
+  bytes = 0;
+
+  constructor(private readonly kind: "single" | "project", private readonly limit: number) {
+    super();
+  }
+
+  override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null, data?: Buffer) => void): void {
+    this.bytes += chunk.length;
+    if (this.bytes > this.limit) {
+      callback(new CheckpointSizeLimitError(this.kind, this.bytes, this.limit));
+      return;
+    }
+    callback(null, chunk);
+  }
+}
+
+async function writeCompressedArtifact(
+  temporary: string,
+  artifact: CheckpointArtifact,
+  limits: Required<CheckpointStorageLimits>
+): Promise<void> {
+  const kind = limits.maxCheckpointBytes <= limits.maxProjectBytes ? "single" : "project";
+  const limit = Math.min(limits.maxCheckpointBytes, limits.maxProjectBytes);
+  const limiter = new ByteLimitTransform(kind, limit);
+  await pipeline(
+    Readable.from(jsonChunks(artifact)),
+    // Checkpoints favor fast commits over archival density. Their repeated Ink
+    // state still compresses heavily at level 1, while users and agents wait at
+    // this durable result-window boundary.
+    createGzip({ level: 1 }),
+    limiter,
+    fs.createWriteStream(temporary, { flags: "wx", mode: 0o600 })
+  );
+  // Windows requires a writable handle for fsync even after the stream has
+  // closed; reopening r+ preserves the same durability step on every platform.
+  const fd = fs.openSync(temporary, "r+");
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 function oldestFirst<T extends { createdAt: string; id: string }>(a: T, b: T): number {
@@ -236,24 +370,25 @@ function syncDirectory(directory: string): void {
   }
 }
 
-export function saveCheckpointArtifact(
+export async function saveCheckpointArtifact(
   projectRoot: string,
   entrypoint: string,
   checkpoint: SharedSearchCheckpoint,
   inputLimits: CheckpointStorageLimits = {}
-): CheckpointArtifactReference {
+): Promise<CheckpointArtifactReference> {
   const root = path.resolve(projectRoot);
   const relative = relativeEntrypoint(root, entrypoint);
   const id = checkpointId(relative, checkpoint);
   const directory = checkpointsDirectory(root);
-  const destination = checkpointFile(root, id);
+  const destination = checkpointDestination(root, id);
   const limits = storageLimits(inputLimits);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (process.platform !== "win32") fs.chmodSync(directory, 0o700);
-  if (fs.existsSync(destination)) {
+  const existing = checkpointFile(root, id);
+  if (fs.existsSync(existing)) {
     loadArtifact(root, id);
-    if (process.platform !== "win32") fs.chmodSync(destination, 0o600);
-    const bytes = fs.statSync(destination).size;
+    if (process.platform !== "win32") fs.chmodSync(existing, 0o600);
+    const bytes = fs.statSync(existing).size;
     if (bytes > limits.maxCheckpointBytes) {
       throw new Error(`checkpoint is ${bytes} bytes, above the ${limits.maxCheckpointBytes}-byte single-checkpoint limit`);
     }
@@ -262,7 +397,8 @@ export function saveCheckpointArtifact(
     }
     const pruned = pruneCheckpoints(root, id, limits);
     if (pruned.length > 0) syncDirectory(directory);
-    return { id, path: checkpointRelativePath(id), pruned };
+    const encoding = checkpointFile(root, id).endsWith(".gz") ? "gzip" : "json";
+    return { id, path: checkpointRelativePath(id, encoding), pruned };
   }
   // Validate the existing retention set before creating a new durable file.
   // Corrupt old state must not turn a successful write into a partial cleanup.
@@ -280,26 +416,12 @@ export function saveCheckpointArtifact(
     configuration: checkpoint.configuration,
     checkpoint,
   };
-  const serialized = `${JSON.stringify(artifact, null, 2)}\n`;
-  const bytes = Buffer.byteLength(serialized, "utf8");
-  if (bytes > limits.maxCheckpointBytes) {
-    throw new Error(`checkpoint is ${bytes} bytes, above the ${limits.maxCheckpointBytes}-byte single-checkpoint limit`);
-  }
-  if (bytes > limits.maxProjectBytes) {
-    throw new Error(`checkpoint is ${bytes} bytes, above the ${limits.maxProjectBytes}-byte project checkpoint quota`);
-  }
   const temporary = path.join(directory, `.${id}.${process.pid}.${randomUUID()}.tmp`);
-  let fd: number | undefined;
   try {
-    fd = fs.openSync(temporary, "wx", 0o600);
-    fs.writeFileSync(fd, serialized, "utf8");
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-    fd = undefined;
+    await writeCompressedArtifact(temporary, artifact, limits);
     fs.renameSync(temporary, destination);
     syncDirectory(directory);
   } finally {
-    if (fd !== undefined) fs.closeSync(fd);
     fs.rmSync(temporary, { force: true });
   }
   const pruned = pruneCheckpoints(root, id, limits);
