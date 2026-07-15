@@ -23,7 +23,7 @@ function story(name) {
 
 test("bundled agent skill is compact, versioned, progressively linked, and packaged", () => {
   const skill = fs.readFileSync(path.join(ROOT, "SKILL.md"), "utf8");
-  assert.match(skill, /^---\nname: inkcheck\n/);
+  assert.match(skill, /^---\r?\nname: inkcheck\r?\n/);
   assert.match(skill, /inspect.*compile.*explore.*replay.*fix.*verify/is);
   assert.match(skill, /does not prove complete coverage/i);
   assert.match(skill, /ask before changing story prose/i);
