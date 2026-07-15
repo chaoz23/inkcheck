@@ -12,6 +12,7 @@ const {
   parseMultipartBody,
   webConfigFromEnv,
 } = require("../dist/web");
+const { FileHostedJobStore } = require("../dist/hosted-job-store");
 
 const LIMITS = {
   maxBodyBytes: 5242880,
@@ -208,6 +209,136 @@ test("hosted cancellation retains a source-bound final progress window", async (
   assert.deepStrictEqual(snapshot.job.resultWindow.stableFindingIds, []);
   assert.strictEqual(snapshot.job.resultWindow.omittedFindingCount, 4);
   assert.match(snapshot.job.resultWindow.sourceFingerprint.value, /^[0-9a-f]{64}$/);
+});
+
+test("hosted progress survives restart without persisting uploaded story content", async (t) => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-hosted-jobs-"));
+  const config = {
+    ...webConfigFromEnv(),
+    host: "127.0.0.1",
+    port: 0,
+    staticDir: path.join(__dirname, "..", "web"),
+    rateLimit: 100,
+    jobStoreDir: directory,
+  };
+  let release;
+  const first = createInkcheckWebServer({
+    config,
+    runner: async (submission, _config, options) => {
+      options?.onProgress?.({
+        schemaVersion: 1,
+        sequence: 1,
+        type: "progress",
+        phase: "explore",
+        elapsedMs: 25,
+        statesExplored: 321,
+        stateBudget: submission.maxStates,
+        budgetFraction: 321 / submission.maxStates,
+        endingsFound: 1,
+        runtimeErrorsFound: 0,
+        unvisitedKnots: 2,
+      });
+      await new Promise((resolve) => { release = resolve; });
+      return {
+        report: { compile: { success: true } },
+        meta: { durationMs: 30, uploadedFiles: 2, uploadedBytes: 56, retained: false },
+      };
+    },
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      first.once("error", reject);
+      first.listen(0, "127.0.0.1", resolve);
+    });
+  } catch (error) {
+    fs.rmSync(directory, { recursive: true, force: true });
+    if (error?.code === "EPERM") { t.skip("the local execution sandbox forbids listening sockets"); return; }
+    throw error;
+  }
+  const firstBase = `http://127.0.0.1:${first.address().port}`;
+  const accepted = await fetch(`${firstBase}/api/check`, {
+    method: "POST",
+    headers: { "X-Inkcheck-Async": "1" },
+    body: multipartBody(),
+  });
+  assert.strictEqual(accepted.status, 202);
+  const created = await accepted.json();
+  await new Promise((resolve) => first.close(resolve));
+
+  const second = createInkcheckWebServer({ config, runner: async () => { throw new Error("recovered jobs must not rerun"); } });
+  try {
+    await new Promise((resolve, reject) => {
+      second.once("error", reject);
+      second.listen(0, "127.0.0.1", resolve);
+    });
+    const secondBase = `http://127.0.0.1:${second.address().port}`;
+    const response = await fetch(`${secondBase}${created.job.statusUrl}`);
+    assert.strictEqual(response.status, 200);
+    const snapshot = await response.json();
+    assert.strictEqual(snapshot.job.status, "failed");
+    assert.match(snapshot.job.error, /service restarted/i);
+    assert.strictEqual(snapshot.job.progress.type, "run_end");
+    assert.strictEqual(snapshot.job.progress.statesExplored, 321);
+    const stream = await fetch(`${secondBase}${created.job.eventUrl}`);
+    const streamText = await stream.text();
+    assert.match(streamText, /"statesExplored":321/);
+    assert.match(streamText, /"status":"failed"/);
+    const stored = fs.readdirSync(directory)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => fs.readFileSync(path.join(directory, name), "utf8"))
+      .join("\n");
+    assert.doesNotMatch(stored, /main\.ink|chapters\/one\.ink|Hello|INCLUDE|one\.ink/);
+    assert.doesNotMatch(stored, /"report"|"files"|"submission"|"content"/);
+  } finally {
+    await new Promise((resolve) => second.close(resolve));
+    release?.();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("hosted job store purges expired and malformed records", () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-hosted-ttl-"));
+  const store = new FileHostedJobStore(directory);
+  const record = {
+    schemaVersion: 1,
+    id: "11111111-1111-4111-8111-111111111111",
+    token: "22222222-2222-4222-8222-222222222222",
+    createdAt: 1_000,
+    status: "failed",
+    stateBudget: 1_000_000,
+    sourceFingerprint: "a".repeat(64),
+    events: [{
+      schemaVersion: 1,
+      sequence: 1,
+      type: "run_end",
+      elapsedMs: 10,
+      statesExplored: 5,
+      stateBudget: 1_000_000,
+      budgetFraction: 0.000005,
+      status: "failed",
+      source: "must not survive the allowlist",
+    }],
+    nextSequence: 1,
+    expiresAt: 2_000,
+    submission: "must not survive the top-level allowlist",
+  };
+  store.save(record);
+  const file = path.join(directory, `${record.id}.json`);
+  if (process.platform !== "win32") {
+    assert.strictEqual(fs.statSync(directory).mode & 0o777, 0o700);
+    assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
+  }
+  assert.doesNotMatch(fs.readFileSync(file, "utf8"), /must not survive|submission/);
+  fs.writeFileSync(path.join(directory, "broken.json"), "not json", { mode: 0o600 });
+  assert.deepStrictEqual(store.load(2_000), []);
+  assert.strictEqual(fs.existsSync(file), false);
+  assert.strictEqual(fs.existsSync(path.join(directory, "broken.json")), false);
+  fs.rmSync(directory, { recursive: true, force: true });
 });
 
 test("web API validates input and returns a no-retention report", async (t) => {

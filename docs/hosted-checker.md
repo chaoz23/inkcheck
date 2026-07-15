@@ -47,6 +47,8 @@ The container runs as a non-root user with a read-only root filesystem, all Linu
 
 `INKCHECK_WEB_CONCURRENCY` limits simultaneous hosted jobs. `INKCHECK_WEB_PORTFOLIO_CONCURRENCY` separately limits explorer workers inside each job from 1 to 4 and defaults to 1. The local CLI's ceiling cannot raise this hosted setting. On the production one-CPU container, higher values still fall back safely to one effective worker.
 
+`INKCHECK_WEB_JOB_STORE_DIR` enables private TTL-backed async-job persistence. The Compose deployment sets it to `/var/lib/inkcheck/jobs` in the existing private volume. Records contain only opaque job credentials, timestamps, run limits, a source hash, and at most 160 allowlisted numeric progress events. Uploaded filenames, source, choice text, variables, findings, and reports are never written to this store. A restart preserves progress history but cannot resume source processing or recover a deliberately unretained report, so an in-flight or completed source-less record becomes an explicit failed/retry status. Cancelled and failed terminal metadata remains available until `INKCHECK_WEB_JOB_TTL_MS` expires; expired or malformed records are deleted.
+
 ## Deploy on a small VPS
 
 Install Docker Engine and the Compose plugin, point a DNS record at the VPS, then:
@@ -65,7 +67,7 @@ Alternatively, copy `.env.example` to `.env` and replace both values. `.env` fil
 
 Caddy obtains and renews TLS certificates automatically. Do not expose the Inkcheck container's port directly. Permit inbound TCP 80/443 and UDP 443; keep administrative SSH restricted by key and source address where possible.
 
-The Compose deployment keeps aggregate counters in the `inkcheck_usage` volume. The file contains only daily totals, is pruned to 400 days, and survives container rebuilds. Caddy access logging is disabled so source addresses and user agents are not retained; bounded application and operational logs remain available through Docker.
+The Compose deployment keeps aggregate counters and short-lived progress metadata in the `inkcheck_usage` volume. Usage data contains only daily totals and is pruned to 400 days. Job progress expires after 15 minutes by default. Both survive container rebuilds; neither contains uploaded story source or reports. Caddy access logging is disabled so source addresses and user agents are not retained; bounded application and operational logs remain available through Docker.
 
 Update with:
 
