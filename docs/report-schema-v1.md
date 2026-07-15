@@ -25,7 +25,7 @@ When local CLI checkpoint persistence is active, emitted JSON additionally conta
 
 ## Findings
 
-Compile issues, runtime errors, and endings have deterministic IDs derived from their normalized kind and stable identity fields. IDs do not depend on report formatting or array position.
+Compile issues, runtime errors, and endings have deterministic IDs derived from their normalized kind and stable identity fields. IDs do not depend on report formatting or array position. Runtime-error identity uses the normalized kind and runtime message. An exact runtime/compiler source location may distinguish otherwise identical failures; an approximate source mapping never participates in identity. Approximate location, witness path, discovery order, and search strategy remain mutable evidence attached to that stable finding.
 
 Common kinds include:
 

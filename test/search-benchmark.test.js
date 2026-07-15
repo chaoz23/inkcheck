@@ -198,6 +198,52 @@ test("promotion comparison keeps critical losses separate and timing observation
   assert.match(deterministic, /memoryCapBytes/);
 });
 
+test("promotion comparison separates semantic runtime retention from approximate metadata drift", () => {
+  const report = shadowReport(100);
+  const runtime = {
+    message: "RUNTIME ERROR: ran out of content. Do you need a '-> DONE' or '-> END'?",
+    path: ["Left"],
+    choiceIndices: [0],
+    foundBy: "dfs:first",
+    firstDiscoveredAtState: 7,
+    sourceLocation: { file: "story.ink", line: 21, approximate: true },
+  };
+  const summary = (strategy, line) => summarizeSearchResult(strategy, {
+    ...report,
+    runtimeErrors: [{ ...runtime, sourceLocation: { ...runtime.sourceLocation, line } }],
+  });
+  const pair = comparePromotionPair({
+    caseId: "approximate-location-drift",
+    family: "sparse-runtime-failure",
+    source: { name: "fixture", license: "MIT", consent: "repository fixture" },
+    budget: 100,
+    depth: 30,
+    seed: 7,
+    storySeed: 1,
+    baseline: {
+      elapsedMs: 1,
+      peakRssBytes: 1,
+      resourceLimits: { memoryCapBytes: 1024, timeLimitMs: null },
+      workerExit: "completed",
+      summary: summary("fixed-portfolio", 21),
+    },
+    candidate: {
+      elapsedMs: 1,
+      peakRssBytes: 1,
+      resourceLimits: { memoryCapBytes: 1024, timeLimitMs: null },
+      workerExit: "completed",
+      summary: summary("candidate", 27),
+    },
+  });
+  assert.deepStrictEqual(pair.comparison.baselineOnly.runtimeErrors, []);
+  assert.deepStrictEqual(pair.comparison.candidateOnly.runtimeErrors, []);
+  assert.strictEqual(pair.comparison.regressionRisk, "none");
+  assert.strictEqual(pair.comparison.gainClass, "none");
+  assert.strictEqual(pair.comparison.runtimeMetadataDrift.drift, true);
+  assert.strictEqual(pair.comparison.runtimeMetadataDrift.baselineOnly.length, 1);
+  assert.strictEqual(pair.comparison.runtimeMetadataDrift.candidateOnly.length, 1);
+});
+
 test("resource guards expose explicit caps without choosing an efficiency stop", () => {
   const guards = createResourceGuards({ maxMemoryMb: 512, maxTimeMs: 10_000, startedAtMs: 1_000 });
   assert.strictEqual(guards.memoryCapBytes, 512 * 1024 * 1024);

@@ -24,7 +24,7 @@ This is a broad structural-fixture evaluation, not validation on medium or large
 - The assertion family actively evaluated `gold_nonnegative` and `ready_at_end`. Both strategies found the same two violations at every matrix point.
 - At 100 states and depth 300, policy replay missed seven deep-chain knots found by the baseline for both seeds. It recovered at larger budgets; #118 tracks that gated-off replay still applied floor-only allocation while claiming no policy allocation was active.
 - At 100 states and depth 100, policy replay found one additional visible storylet outcome for seed 1 and one additional exact terminal state for seed 7. Those gains disappeared as differences at larger budgets.
-- Four deceptive-suffix pairs reported the same content-exhaustion failure with different approximate source lines. This is identity drift, not four lost and four new semantic errors, and remains tracked by #84.
+- Four deceptive-suffix pairs reported the same content-exhaustion failure with different approximate source lines. This historical run predates #84's correction; current IDs and promotion comparisons retain one semantic error and report the differing approximate lines only as metadata drift.
 - Every largest-budget difference came from Ink `RANDOM()` output. At this stage the search seed did not control the story runtime's random sequence, so those rows could not establish a strategy advantage (#117).
 - Fixed-source repeat checks passed for the seeded early-choice family. In the random/turn family, both baseline and candidate failed exact repeat equality in 10 of 12 pairs.
 

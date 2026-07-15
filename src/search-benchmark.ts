@@ -4,6 +4,7 @@ import type {
   PassTelemetry,
   RuntimeErrorReport,
 } from "./explore";
+import { runtimeMetadataKey, runtimeSemanticKey } from "./runtime-identity";
 
 /** Exact terminal-state identity retained by Inkcheck's report. */
 export function terminalStateKey(ending: EndingReport): string {
@@ -20,10 +21,7 @@ export function visibleEndingKey(ending: EndingReport): string {
 }
 
 export function runtimeErrorKey(error: RuntimeErrorReport): string {
-  const location = error.sourceLocation
-    ? `${error.sourceLocation.file}:${error.sourceLocation.line}`
-    : "unknown";
-  return `${error.message}|${location}`;
+  return runtimeSemanticKey(error);
 }
 
 function stableValue(value: unknown): string {
@@ -77,6 +75,8 @@ export interface SearchBenchmarkSummary {
   };
   findings: {
     runtimeErrors: string[];
+    /** Location/witness drift is diagnostic and never classified as critical evidence loss. */
+    runtimeErrorMetadata: string[];
     assertionViolations: string[];
     visitedKnots: string[];
     visibleEndings: string[];
@@ -177,6 +177,7 @@ export function summarizeSearchResult(
     },
     findings: {
       runtimeErrors: sortedUnique(report.runtimeErrors.map(runtimeErrorKey)),
+      runtimeErrorMetadata: sortedUnique(report.runtimeErrors.map(runtimeMetadataKey)),
       assertionViolations: sortedUnique((report.assertionResults ?? []).flatMap((result) =>
         result.violations.map((violation) =>
           assertionViolationKey(violation.ruleId, violation.observedValues, violation.choiceIndices)
