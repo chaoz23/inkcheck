@@ -22,7 +22,7 @@ This is cooperative **result-window execution**, not a background job. A `start_
 - Base plus cumulative directed grants: at most 100,000,000 states.
 - One recoverable session per story entrypoint.
 - At most 100 session metadata files per project and 64 retained events per session.
-- At most 512 planned campaign windows so the private metadata envelope remains bounded.
+- At most 1,024 planned campaign windows. This is a hard metadata safety ceiling, not a useful-work target; knee stopping normally ends campaigns earlier and the independent session-byte ceiling remains authoritative.
 
 For `continue_search`, `maxStates` is always the new cumulative base total. A session at 1M can continue to 6M in one call, not to 7M. For `add_goal`, `maxStates` is additional directed work for that probe. Inspection exposes `budget.base`, `budget.directed`, and `budget.total`; directed work never disappears inside the base total. Every mutation requires the last returned `revision`; stale concurrent operations fail closed.
 
@@ -31,6 +31,8 @@ For `continue_search`, `maxStates` is always the new cumulative base total. A se
 Sessions preserve the exact frontier only for base shared search without assertions, goals, variable-aware steering, or the min-repro slice. Source, knot map, depth, seeds, hidden turn/random sensitivity, external bindings, and frontier envelopes are checkpoint-bound. A source change makes continuation fail rather than silently restart.
 
 Every completed window writes a normal source-bound report under `.inkcheck/reports/`. When live work remains it also writes an exact checkpoint under `.inkcheck/checkpoints/`. Session responses expose stable IDs, counters, binding reason, bounded event history, and paged finding summaries; they do not return the full report or checkpoint payload.
+
+Default session responses are capped at 32 KiB and expose at most ten recent events and goal probes plus 20 finding summaries. `inspect_search`, `continue_search`, and `continue_campaign` accept the opaque `session.eventPage.nextSince` cursor from an earlier response. When supplied, `session.events` contains only newer retained events. `eventPage` states the returned/latest sequence, omitted/dropped-history boundaries, and whether a gap exists; the cursor is bound to one private session and fails closed when foreign or ahead of the durable log. This output cursor does not change exploration state or coverage.
 
 ## Campaign windows
 

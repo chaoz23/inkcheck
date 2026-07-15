@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make MCP inspection, compilation, statistics, and one-shot exploration compact and privacy-minimal by default with explicit drill-down/full detail, source-bound inventory pages, and incremental session-event cursors. Raise the bounded campaign-window ceiling to 1,024 while retaining byte/resource guards.
+
 - Ship a versioned Inkcheck agent skill in the npm artifact. Its compact inspect-compile-search-replay-fix-verify loop uses progressive Ink and finding references, preserves author intent and bounded-evidence language, and includes ten golden QA exercises spanning compile errors, runtime exhaustion, assertions, state, turns, randomness, externals, unreachable content, and stale witness paths.
 - Stabilize runtime finding IDs across search strategies and witness shortening. Approximate source mappings remain visible metadata but no longer participate in identity; exact locations may still distinguish otherwise identical generic failures. Promotion evidence now separates semantic runtime retention from approximate location drift so a line-mapping difference cannot become a false critical regression.
 - Store new exact shared-search checkpoints as compact streamed gzip artifacts while retaining backward-compatible reads of schema-v1 `.json` files. Stable checkpoint IDs and logical resume state are unchanged; the writer enforces ceilings against compressed durable bytes without constructing one duplicate artifact-sized JSON string, and corrupt compression fails closed before envelope validation.

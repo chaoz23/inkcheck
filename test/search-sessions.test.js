@@ -23,6 +23,7 @@ const {
   startCampaign,
 } = require("../dist/search-sessions");
 const { campaignLedgerDigest } = require("../dist/campaign-policy");
+const { MAX_MCP_SESSION_RESPONSE_BYTES } = require("../dist/search-session-contract");
 
 const FIXTURE = path.join(__dirname, "fixtures", "search", "low-dedup-wide.ink");
 
@@ -67,6 +68,46 @@ test("MCP result-window continuation equals one uninterrupted shared run", async
   } finally {
     fs.rmSync(split.root, { recursive: true, force: true });
     fs.rmSync(full.root, { recursive: true, force: true });
+  }
+});
+
+test("search-session event cursors return only incremental bounded activity", async () => {
+  const firstProject = project();
+  const otherProject = project();
+  try {
+    const started = await startSearchSession({ file: firstProject.file, maxStates: 73, maxDepth: 150, seed: 7 });
+    assert.strictEqual(started.session.events.length, 1);
+    assert.strictEqual(started.session.eventPage.returned, 1);
+    assert.strictEqual(started.session.eventPage.historyGap, false);
+    const resumed = await continueSearchSession({
+      file: firstProject.file,
+      sessionCapability: started.sessionCapability,
+      revision: started.session.revision,
+      maxStates: 146,
+      since: started.session.eventPage.nextSince,
+    });
+    assert.deepStrictEqual(resumed.session.events.map((event) => event.type), ["continued"]);
+    assert.strictEqual(resumed.session.eventPage.returned, 1);
+    const quiet = await inspectSearchSession({
+      file: firstProject.file,
+      sessionCapability: started.sessionCapability,
+      since: resumed.session.eventPage.nextSince,
+    });
+    assert.deepStrictEqual(quiet.session.events, []);
+    assert.strictEqual(quiet.session.eventPage.returned, 0);
+
+    const other = await startSearchSession({ file: otherProject.file, maxStates: 73, maxDepth: 150, seed: 7 });
+    await assert.rejects(
+      () => inspectSearchSession({
+        file: otherProject.file,
+        sessionCapability: other.sessionCapability,
+        since: started.session.eventPage.nextSince,
+      }),
+      /invalid, stale, or foreign search-session event cursor/
+    );
+  } finally {
+    fs.rmSync(firstProject.root, { recursive: true, force: true });
+    fs.rmSync(otherProject.root, { recursive: true, force: true });
   }
 });
 
@@ -395,7 +436,7 @@ test("campaign policies are bounded by the durable metadata window quota", async
       () => startCampaign({
         file,
         intent: "balanced",
-        totalStates: 1_000,
+        totalStates: 2_000,
         windowStates: 1,
         maxElapsedSeconds: 60,
         maxDiskMb: 100,
@@ -403,7 +444,7 @@ test("campaign policies are bounded by the durable metadata window quota", async
         minLongTailProbes: 0,
         regressionReserveStates: 0,
       }),
-      /more than 512 durable windows/
+      /more than 1024 durable windows/
     );
     assert.strictEqual(fs.existsSync(path.join(root, ".inkcheck", "sessions")), false);
   } finally {
@@ -560,6 +601,7 @@ test("MCP session inspection is bounded, private, and usable without process mem
     assert.ok(inspected.savedFindings.page.returned <= 1);
     assert.strictEqual("report" in inspected, false);
     assert.strictEqual("checkpoint" in inspected, false);
+    assert.ok(Buffer.byteLength(JSON.stringify(inspected), "utf8") <= MAX_MCP_SESSION_RESPONSE_BYTES);
 
     const directory = path.join(root, ".inkcheck", "sessions");
     const names = fs.readdirSync(directory);

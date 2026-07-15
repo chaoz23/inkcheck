@@ -43,6 +43,9 @@ const { SubmissionError, validateSubmission } = require("../dist/web-validation"
 const {
   capabilities,
   inspectProject,
+  inspectProjectOverview,
+  inspectProjectSection,
+  MAX_INSPECTION_OVERVIEW_BYTES,
   PROJECT_INSPECTION_SCHEMA_VERSION,
 } = require("../dist/discovery");
 const {
@@ -914,6 +917,66 @@ test("project inspection caps large variable inventories explicitly", () => {
     const result = inspectProject(file);
     assert.strictEqual(result.variables.length, 200);
     assert.strictEqual(result.truncation.variables, true);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("project inspection pages large inventories with stable source-bound cursors", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-inspect-pages-"));
+  try {
+    const file = path.join(tmp, "large.ink");
+    fs.writeFileSync(
+      file,
+      Array.from({ length: 205 }, (_, index) => `VAR value_${String(index).padStart(3, "0")} = ${index}`).join("\n") +
+        "\n-> END\n"
+    );
+    const first = inspectProjectSection(file, "variables", { limit: 100 });
+    assert.deepStrictEqual(first.page, {
+      limit: 100,
+      returned: 100,
+      total: 205,
+      nextCursor: first.page.nextCursor,
+    });
+    assert.ok(first.page.nextCursor);
+    const second = inspectProjectSection(file, "variables", { limit: 100, cursor: first.page.nextCursor });
+    const third = inspectProjectSection(file, "variables", { limit: 100, cursor: second.page.nextCursor });
+    assert.strictEqual(second.items.length, 100);
+    assert.strictEqual(third.items.length, 5);
+    assert.strictEqual(third.page.nextCursor, null);
+    assert.strictEqual(new Set([...first.items, ...second.items, ...third.items].map((item) => item.name)).size, 205);
+    assert.throws(
+      () => inspectProjectSection(file, "knots", { cursor: first.page.nextCursor }),
+      /invalid, stale, or foreign/
+    );
+    fs.appendFileSync(file, "VAR value_999 = 999\n");
+    assert.throws(
+      () => inspectProjectSection(file, "variables", { cursor: first.page.nextCursor }),
+      /invalid, stale, or foreign/
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("project inspection overview stays token-bounded and omits variable values", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-inspect-overview-"));
+  try {
+    const file = path.join(tmp, "large.ink");
+    fs.writeFileSync(
+      file,
+      Array.from({ length: 500 }, (_, index) => `VAR private_${String(index).padStart(3, "0")} = "SECRET_${index}"`).join("\n") +
+        "\n-> END\n"
+    );
+    const overview = inspectProjectOverview(file);
+    const serialized = JSON.stringify(overview);
+    assert.ok(Buffer.byteLength(serialized, "utf8") <= MAX_INSPECTION_OVERVIEW_BYTES);
+    assert.strictEqual(overview.inventory.variables, 500);
+    assert.strictEqual(overview.samples.variables.length, 10);
+    assert.strictEqual(overview.response.dataTruncated, true);
+    assert.strictEqual(serialized.includes("SECRET_"), false);
+    assert.strictEqual(serialized.includes("initialValue"), false);
+    assert.strictEqual(serialized.includes("initialExpression"), false);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

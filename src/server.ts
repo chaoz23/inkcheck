@@ -6,7 +6,14 @@ import { compile, stats, scanKnots, scanExternals, scanInboundDiverts, scanShape
 import { DEFAULT_STORY_SEED, MAX_STORY_SEED, classifyUnvisitedKnots, playtest, explore, exploreWithGoals, mergeMinRepro, validateAssertionsForStory, validateGoalsForStory } from "./explore";
 import { recommendNextRun } from "./advice";
 import { VERSION } from "./version";
-import { capabilities, inspectProject, REPORT_SCHEMA_VERSION } from "./discovery";
+import {
+  capabilities,
+  DEFAULT_INSPECT_PAGE_SIZE,
+  inspectProjectOverview,
+  inspectProjectSection,
+  MAX_INSPECT_PAGE_SIZE,
+  REPORT_SCHEMA_VERSION,
+} from "./discovery";
 import {
   buildCompileFailureEnvelope,
   buildReportEnvelope,
@@ -15,6 +22,13 @@ import {
 import { parseAssertionDefinitions } from "./assertions";
 import { parseGoalDefinitions } from "./goals";
 import { createResourceGuards } from "./resource-guards";
+import {
+  DEFAULT_MACHINE_DETAIL,
+  DEFAULT_MACHINE_FINDING_LIMIT,
+  MAX_MACHINE_FINDING_LIMIT,
+  MAX_STANDARD_MACHINE_RESPONSE_BYTES,
+  projectMachineReport,
+} from "./machine-output";
 import {
   addCampaignAssertions,
   addSessionGoal,
@@ -103,11 +117,19 @@ server.registerTool(
       "Inspect an Ink project from source without compiling or exploring it. Returns a bounded project map with includes, shape, semantics, externals, knots, variables, and the recommended next operation.",
     inputSchema: {
       file: z.string().describe("Path to the root .ink file"),
+      section: z.enum(["includes", "externals", "knots", "variables"]).optional()
+        .describe("Optional inventory section for stable paged drill-down; omit for the bounded overview"),
+      limit: z.number().int().min(1).max(MAX_INSPECT_PAGE_SIZE).optional()
+        .describe(`Section page size (default ${DEFAULT_INSPECT_PAGE_SIZE}, max ${MAX_INSPECT_PAGE_SIZE})`),
+      cursor: z.string().optional().describe("Source-bound cursor returned by an earlier page of the same section"),
     },
   },
-  async ({ file }) => {
+  async ({ file, section, limit, cursor }) => {
     try {
-      return json(inspectProject(file));
+      if (!section && (limit !== undefined || cursor !== undefined)) {
+        return err("inspect_story limit/cursor requires an explicit section");
+      }
+      return json(section ? inspectProjectSection(file, section, { limit, cursor }) : inspectProjectOverview(file));
     } catch (error) {
       return err(error instanceof Error ? error.message : String(error));
     }
@@ -121,16 +143,21 @@ server.registerTool(
       "Compile an .ink file with inklecate and return structured issues (errors, warnings, TODOs) with file and line numbers. The authoritative syntax/structure check — run this after any edit to an .ink file.",
     inputSchema: {
       file: z.string().describe("Path to the root .ink file"),
+      detail: z.enum(["summary", "standard", "full"]).optional()
+        .describe(`Response detail (default ${DEFAULT_MACHINE_DETAIL}); full returns every compile issue`),
+      findingLimit: z.number().int().min(1).max(MAX_MACHINE_FINDING_LIMIT).optional()
+        .describe(`Maximum compile issue summaries in standard detail (default ${DEFAULT_MACHINE_FINDING_LIMIT})`),
     },
   },
-  async ({ file }) => {
+  async ({ file, detail = DEFAULT_MACHINE_DETAIL, findingLimit = DEFAULT_MACHINE_FINDING_LIMIT }) => {
     const result = await compile(file);
     const { storyJson, ...rest } = result;
-    return json({
+    return json(projectMachineReport({
       schemaVersion: REPORT_SCHEMA_VERSION,
       inkcheckVersion: VERSION,
+      bindingLimit: null,
       compile: enrichCompile(rest),
-    });
+    }, detail, findingLimit));
   }
 );
 
@@ -141,11 +168,35 @@ server.registerTool(
       "Word count, knot/stitch/choice/divert counts, plus the full list of authored knots (with file and line) for an .ink story, following INCLUDEs.",
     inputSchema: {
       file: z.string().describe("Path to the root .ink file"),
+      detail: z.enum(["summary", "standard", "full"]).optional()
+        .describe(`Response detail (default ${DEFAULT_MACHINE_DETAIL}); full returns the complete knot list`),
+      knotLimit: z.number().int().min(1).max(MAX_MACHINE_FINDING_LIMIT).optional()
+        .describe(`Maximum knots in standard detail (default ${DEFAULT_MACHINE_FINDING_LIMIT})`),
     },
   },
-  async ({ file }) => {
+  async ({ file, detail = DEFAULT_MACHINE_DETAIL, knotLimit = DEFAULT_MACHINE_FINDING_LIMIT }) => {
     const [s, knots] = [await stats(file), scanKnots(file)];
-    return json({ ...s, knot_list: knots });
+    if (detail === "full") return json({ ...s, knot_list: knots, response: { detail, dataTruncated: false } });
+    const returned = detail === "standard" ? knots.slice(0, knotLimit).map((knot) => ({
+      ...knot,
+      name: knot.name.length <= 128 ? knot.name : `${knot.name.slice(0, 125)}...`,
+      file: knot.file.length <= 256 ? knot.file : `...${knot.file.slice(-253)}`,
+      ...(knot.file.length > 256 ? { pathTruncated: true } : {}),
+    })) : [];
+    const response = {
+      ...s,
+      ...(detail === "standard" ? { knot_list: returned } : {}),
+      response: {
+        detail,
+        dataTruncated: returned.length < knots.length,
+        knots: { returned: returned.length, total: knots.length, omitted: knots.length - returned.length },
+        drillDown: { tool: "inspect_story", section: "knots", note: "Use source-bound section pages for stable pagination." },
+      },
+    };
+    if (Buffer.byteLength(JSON.stringify(response), "utf8") > MAX_STANDARD_MACHINE_RESPONSE_BYTES) {
+      return err(`bounded story-stats response exceeded ${MAX_STANDARD_MACHINE_RESPONSE_BYTES} bytes`);
+    }
+    return json(response);
   }
 );
 
@@ -204,9 +255,13 @@ server.registerTool(
         .describe("Safe typed assertion definitions using comparisons plus all, any, and not"),
       goals: z.array(z.unknown()).optional()
         .describe("Safe typed target conditions; goalMaxStates enables explicit additional steering work"),
+      detail: z.enum(["summary", "standard", "full"]).optional()
+        .describe(`Response detail (default ${DEFAULT_MACHINE_DETAIL}); full may contain story prose, choices, variables, and witnesses`),
+      findingLimit: z.number().int().min(1).max(MAX_MACHINE_FINDING_LIMIT).optional()
+        .describe(`Maximum privacy-minimal finding summaries in standard detail (default ${DEFAULT_MACHINE_FINDING_LIMIT})`),
     },
   },
-  async ({ file, maxDepth, maxStates, goalMaxStates, seed, storySeed = DEFAULT_STORY_SEED, minRepro, search, maxFrontierStates, maxFrontierMb, assertions: assertionInput, goals: goalInput }) => {
+  async ({ file, maxDepth, maxStates, goalMaxStates, seed, storySeed = DEFAULT_STORY_SEED, minRepro, search, maxFrontierStates, maxFrontierMb, assertions: assertionInput, goals: goalInput, detail = DEFAULT_MACHINE_DETAIL, findingLimit = DEFAULT_MACHINE_FINDING_LIMIT }) => {
     const assertionIssues: string[] = [];
     const assertions = parseAssertionDefinitions(assertionInput, "assertions", assertionIssues) ?? [];
     if (assertionIssues.length) return err(`Invalid assertions:\n${assertionIssues.map((issue) => `- ${issue}`).join("\n")}`);
@@ -239,11 +294,11 @@ server.registerTool(
     };
     if (!compiled.success || !compiled.storyJson) {
       return {
-        ...json(buildCompileFailureEnvelope(
+        ...json(projectMachineReport(buildCompileFailureEnvelope(
           compileReport,
           file,
           configuration
-        )),
+        ), detail, findingLimit)),
         isError: true,
       };
     }
@@ -294,13 +349,13 @@ server.registerTool(
     }
     classifyUnvisitedKnots(result, scanInboundDiverts(file));
     const nextRun = recommendNextRun(result, scanShapeProfile(file));
-    return json(buildReportEnvelope({
+    return json(projectMachineReport(buildReportEnvelope({
       compile: compileReport,
       explore: result,
       nextRun,
       storyJson: compiled.storyJson,
       configuration,
-    }));
+    }), detail, findingLimit));
   }
 );
 
@@ -353,6 +408,7 @@ server.registerTool(
       revision: z.number().int().min(1).describe("Last observed campaign session revision"),
       findingLimit: z.number().int().min(1).max(100).optional(),
       findingCursor: z.string().optional(),
+      since: z.string().optional().describe("Optional event cursor; return only newer bounded campaign events"),
     },
   },
   async (input) => {
@@ -406,6 +462,7 @@ server.registerTool(
       sessionCapability: z.string().describe("Opaque bearer capability returned by start_search"),
       findingLimit: z.number().int().min(1).max(100).optional(),
       findingCursor: z.string().optional().describe("Cursor returned by the previous immutable saved-finding page"),
+      since: z.string().optional().describe("Optional event cursor; return only newer bounded session events"),
     },
   },
   async (input) => {
@@ -471,6 +528,7 @@ server.registerTool(
         .describe("New cumulative total grant; must increase by no more than 5000000 states"),
       findingLimit: z.number().int().min(1).max(100).optional(),
       findingCursor: z.string().optional(),
+      since: z.string().optional().describe("Optional event cursor; return only newer bounded session events"),
     },
   },
   async (input) => {

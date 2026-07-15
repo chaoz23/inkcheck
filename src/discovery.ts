@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { createHash } from "crypto";
 import { scanExternals, scanShapeProfile, scanStorySemantics } from "./inklecate";
 import { VERSION } from "./version";
 import { CONFIG_SCHEMA_VERSION } from "./config";
@@ -14,6 +15,7 @@ import {
   MAX_MCP_SESSION_EVENTS,
   MAX_MCP_SESSION_FILES,
   MAX_MCP_SESSION_TOTAL_STATES,
+  MAX_MCP_SESSION_RESPONSE_BYTES,
   MAX_MCP_SESSION_WINDOW_STATES,
   MAX_MCP_CAMPAIGN_WINDOWS,
   SEARCH_SESSION_SCHEMA_VERSION,
@@ -26,7 +28,7 @@ import {
 import { CAMPAIGN_POLICY_SCHEMA_VERSION } from "./campaign-policy";
 
 export const CAPABILITIES_SCHEMA_VERSION = 1;
-export const PROJECT_INSPECTION_SCHEMA_VERSION = 1;
+export const PROJECT_INSPECTION_SCHEMA_VERSION = 2;
 export const REPORT_SCHEMA_VERSION = 1;
 export const ARTIFACT_SCHEMA_VERSION = 1;
 export const DEFAULT_MAX_REPORT_BYTES = 256 * 1024 * 1024;
@@ -37,6 +39,10 @@ export const MAX_INSPECT_LOCATIONS = 20;
 export const MAX_INSPECT_INCLUDES = 500;
 export const MAX_INSPECT_KNOTS = 1_000;
 export const MAX_INSPECT_EXTERNALS = 200;
+export const DEFAULT_INSPECT_PAGE_SIZE = 50;
+export const MAX_INSPECT_PAGE_SIZE = 100;
+export const DEFAULT_INSPECT_SAMPLE_SIZE = 10;
+export const MAX_INSPECTION_OVERVIEW_BYTES = 16 * 1024;
 
 export interface InkcheckCapabilities {
   schemaVersion: number;
@@ -63,6 +69,7 @@ export interface InkcheckCapabilities {
     maxMcpSessionTotalStates: number;
     maxMcpSessionFiles: number;
     maxMcpSessionEvents: number;
+    maxMcpSessionResponseBytes: number;
     maxMcpCampaignWindows: number;
     maxRegressionPinBytes: number;
     maxRegressionPinsPerProject: number;
@@ -90,6 +97,7 @@ export interface InkcheckCapabilities {
     campaignResultWindows: boolean;
     campaignPolicyControls: boolean;
     bundledAgentSkill: boolean;
+    compactMachineOutput: boolean;
   };
 }
 
@@ -128,6 +136,7 @@ export function capabilities(): InkcheckCapabilities {
       maxMcpSessionTotalStates: MAX_MCP_SESSION_TOTAL_STATES,
       maxMcpSessionFiles: MAX_MCP_SESSION_FILES,
       maxMcpSessionEvents: MAX_MCP_SESSION_EVENTS,
+      maxMcpSessionResponseBytes: MAX_MCP_SESSION_RESPONSE_BYTES,
       maxMcpCampaignWindows: MAX_MCP_CAMPAIGN_WINDOWS,
       maxRegressionPinBytes: MAX_REGRESSION_PIN_BYTES,
       maxRegressionPinsPerProject: MAX_REGRESSION_PINS_PER_PROJECT,
@@ -155,6 +164,7 @@ export function capabilities(): InkcheckCapabilities {
       campaignResultWindows: true,
       campaignPolicyControls: true,
       bundledAgentSkill: true,
+      compactMachineOutput: true,
     },
   };
 }
@@ -219,8 +229,8 @@ export interface ProjectInspection {
   recommendedNextOperation: "compile_story";
 }
 
-/** Deterministic, source-only project discovery for agents. */
-export function inspectProject(entryFile: string): ProjectInspection {
+/** Complete deterministic inventory used to produce bounded overview and section pages. */
+function inspectProjectInventory(entryFile: string): ProjectInspection {
   const entry = path.resolve(entryFile);
   if (!fs.existsSync(entry) || !fs.statSync(entry).isFile()) {
     throw new Error(`Ink entrypoint not found: ${entryFile}`);
@@ -330,12 +340,12 @@ export function inspectProject(entryFile: string): ProjectInspection {
     schemaVersion: PROJECT_INSPECTION_SCHEMA_VERSION,
     inkcheckVersion: VERSION,
     entrypoint: relativeFile(root, entry),
-    includes: sortedIncludes.slice(0, MAX_INSPECT_INCLUDES),
+    includes: sortedIncludes,
     shape: scanShapeProfile(entry),
     semantics: scanStorySemantics(entry),
-    externals: sortedExternals.slice(0, MAX_INSPECT_EXTERNALS),
-    knots: sortedKnots.slice(0, MAX_INSPECT_KNOTS),
-    variables: sortedVariables.slice(0, MAX_INSPECT_VARIABLES),
+    externals: sortedExternals,
+    knots: sortedKnots,
+    variables: sortedVariables,
     truncation: {
       includes: sortedIncludes.length > MAX_INSPECT_INCLUDES,
       knots: sortedKnots.length > MAX_INSPECT_KNOTS,
@@ -344,6 +354,152 @@ export function inspectProject(entryFile: string): ProjectInspection {
       locationsPerVariable: locationsTruncated,
     },
     recommendedNextOperation: "compile_story",
+  };
+}
+
+/** Deterministic, source-only project overview for agents. */
+export function inspectProject(entryFile: string): ProjectInspection {
+  const inventory = inspectProjectInventory(entryFile);
+  return {
+    ...inventory,
+    includes: inventory.includes.slice(0, MAX_INSPECT_INCLUDES),
+    externals: inventory.externals.slice(0, MAX_INSPECT_EXTERNALS),
+    knots: inventory.knots.slice(0, MAX_INSPECT_KNOTS),
+    variables: inventory.variables.slice(0, MAX_INSPECT_VARIABLES),
+  };
+}
+
+function compactPath(value: string): string {
+  return value.length <= 256 ? value : `...${value.slice(-253)}`;
+}
+
+/** Compact MCP discovery response; detailed values and locations require an explicit section page. */
+export function inspectProjectOverview(entryFile: string) {
+  const inventory = inspectProjectInventory(entryFile);
+  const result = {
+    schemaVersion: PROJECT_INSPECTION_SCHEMA_VERSION,
+    inkcheckVersion: VERSION,
+    entrypoint: compactPath(inventory.entrypoint),
+    ...(inventory.entrypoint.length > 256 ? { entrypointPathTruncated: true as const } : {}),
+    shape: inventory.shape,
+    semantics: inventory.semantics,
+    inventory: {
+      includes: inventory.includes.length,
+      externals: inventory.externals.length,
+      knots: inventory.knots.length,
+      variables: inventory.variables.length,
+    },
+    samples: {
+      includes: inventory.includes.slice(0, DEFAULT_INSPECT_SAMPLE_SIZE).map((item) => ({
+        path: compactPath(item),
+        ...(item.length > 256 ? { pathTruncated: true as const } : {}),
+      })),
+      externals: inventory.externals.slice(0, DEFAULT_INSPECT_SAMPLE_SIZE).map((name) => ({
+        name: boundedName(name),
+        ...(name.length > 128 ? { nameTruncated: true as const } : {}),
+      })),
+      knots: inventory.knots.slice(0, DEFAULT_INSPECT_SAMPLE_SIZE).map((item) => ({
+        name: boundedName(item.name),
+        ...(item.name.length > 128 ? { nameTruncated: true as const } : {}),
+        kind: item.kind,
+        file: compactPath(item.file),
+        ...(item.file.length > 256 ? { pathTruncated: true as const } : {}),
+        line: item.line,
+      })),
+      variables: inventory.variables.slice(0, DEFAULT_INSPECT_SAMPLE_SIZE).map((item) => ({
+        name: boundedName(item.name),
+        ...(item.name.length > 128 ? { nameTruncated: true as const } : {}),
+        readCount: item.readCount,
+        writeCount: item.writeCount,
+        ...(item.declaration ? { declaration: {
+          file: compactPath(item.declaration.file),
+          ...(item.declaration.file.length > 256 ? { pathTruncated: true as const } : {}),
+          line: item.declaration.line,
+        } } : {}),
+      })),
+    },
+    response: {
+      detail: "summary" as const,
+      dataTruncated: inventory.includes.length > DEFAULT_INSPECT_SAMPLE_SIZE
+        || inventory.externals.length > DEFAULT_INSPECT_SAMPLE_SIZE
+        || inventory.knots.length > DEFAULT_INSPECT_SAMPLE_SIZE
+        || inventory.variables.length > DEFAULT_INSPECT_SAMPLE_SIZE,
+      sampleLimit: DEFAULT_INSPECT_SAMPLE_SIZE,
+      drillDown: {
+        tool: "inspect_story" as const,
+        sections: ["includes", "externals", "knots", "variables"] as const,
+        note: "Request one section for stable source-bound pages. Variable pages explicitly reveal initial values/expressions and locations.",
+      },
+      contentPolicy: "Counts and small name/location samples only; variable initial values, expressions, and full read/write locations are omitted.",
+    },
+    recommendedNextOperation: "compile_story" as const,
+  };
+  if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_INSPECTION_OVERVIEW_BYTES) {
+    throw new Error(`bounded project-inspection overview exceeded ${MAX_INSPECTION_OVERVIEW_BYTES} bytes`);
+  }
+  return result;
+}
+
+function boundedName(value: string): string {
+  return value.length <= 128 ? value : `${value.slice(0, 125)}...`;
+}
+
+export type InspectionSection = "includes" | "externals" | "knots" | "variables";
+
+function inspectionCursor(fingerprint: string, section: InspectionSection, offset: number): string {
+  return `inspection-cursor-${Buffer.from(JSON.stringify({ v: 1, fingerprint, section, offset }), "utf8").toString("base64url")}`;
+}
+
+function inspectionOffset(fingerprint: string, section: InspectionSection, cursor?: string): number {
+  if (!cursor) return 0;
+  if (!cursor.startsWith("inspection-cursor-")) throw new Error("invalid source-inspection cursor");
+  try {
+    const value = JSON.parse(Buffer.from(cursor.slice("inspection-cursor-".length), "base64url").toString("utf8")) as {
+      v?: unknown; fingerprint?: unknown; section?: unknown; offset?: unknown;
+    };
+    if (value.v !== 1 || value.fingerprint !== fingerprint || value.section !== section
+      || !Number.isSafeInteger(value.offset) || (value.offset as number) < 0) throw new Error();
+    return value.offset as number;
+  } catch {
+    throw new Error("invalid, stale, or foreign source-inspection cursor");
+  }
+}
+
+export function inspectProjectSection(
+  entryFile: string,
+  section: InspectionSection,
+  options: { limit?: number; cursor?: string } = {}
+) {
+  const limit = options.limit ?? DEFAULT_INSPECT_PAGE_SIZE;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_INSPECT_PAGE_SIZE) {
+    throw new RangeError(`source-inspection page limit must be an integer from 1 to ${MAX_INSPECT_PAGE_SIZE}`);
+  }
+  const inventory = inspectProjectInventory(entryFile);
+  const items = inventory[section];
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify({ entrypoint: inventory.entrypoint, section, items }))
+    .digest("hex");
+  const offset = inspectionOffset(fingerprint, section, options.cursor);
+  if (offset > items.length) throw new Error("source-inspection cursor is beyond the immutable inventory");
+  const page = items.slice(offset, offset + limit);
+  const nextOffset = offset + page.length;
+  return {
+    schemaVersion: PROJECT_INSPECTION_SCHEMA_VERSION,
+    inkcheckVersion: VERSION,
+    entrypoint: inventory.entrypoint,
+    inventoryFingerprint: { algorithm: "sha256" as const, value: fingerprint },
+    section,
+    items: page,
+    page: {
+      limit,
+      returned: page.length,
+      total: items.length,
+      nextCursor: nextOffset < items.length ? inspectionCursor(fingerprint, section, nextOffset) : null,
+    },
+    contentPolicy: section === "variables"
+      ? "Variable names, initial values/expressions, and bounded read/write locations are included because this section was explicitly requested."
+      : "Only the explicitly requested source-inventory section is included.",
+    recommendedNextOperation: "compile_story" as const,
   };
 }
 

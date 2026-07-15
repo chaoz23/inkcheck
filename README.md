@@ -213,7 +213,7 @@ Tools for AI agents working on ink stories:
 | `compile_story` | Structured compile issues (severity, file, line) |
 | `story_stats` | Word/knot/choice counts + full knot list with locations |
 | `playtest_story` | Play one scripted choice path headlessly; returns transcript, tags, variables, errors |
-| `explore_story` | Bounded systematic walk: terminal states, error repro paths, knot coverage, limitations |
+| `explore_story` | Bounded systematic walk with compact `standard` output by default; request `summary` or explicit prose-revealing `full` detail |
 | `start_campaign` | Start a durable policy-bound campaign and execute its first exact result window |
 | `continue_campaign` | Execute the next campaign-allocated exact window under aggregate limits |
 | `start_search` | Start one durable exact shared-search result window and receive a bearer capability |
@@ -265,6 +265,8 @@ inkcheck mcp    # start the MCP server on stdio
 `inkcheck capabilities --json` lets agents check schema versions, limits, search modes, and explicit supported or unavailable features before relying on them. `inkcheck inspect story.ink --json` performs deterministic source-only discovery without compiling or exploring: it follows project-local includes and returns a bounded map of story shape, semantics, externals, knots/functions, and variable declarations/reads/writes. See the [agent discovery contract](docs/agent-discovery.md).
 
 JSON checks use the versioned [report schema](docs/report-schema-v1.md). Findings have stable IDs and normalized kinds; ending and runtime-error witnesses carry both human choice text and zero-based choice indices, so duplicate labels remain exactly replayable through `playtest_story`. The envelope records the Inkcheck version, compiled-story fingerprint, effective configuration, binding limit, and an observation-only `shadowDecision` while retaining the established `compile`, `stats`, `explore`, and `nextRun` sections.
+
+MCP uses [compact machine output](docs/machine-output.md) by default: inspection is capped at 16 KiB and compilation, statistics, one-shot exploration, and result-window responses at 32 KiB. Output omission is reported separately from bounded-search truncation. Full story-bearing reports remain available only through explicit detail or drill-down calls.
 
 Saved reports support bounded finding drill-down without loading the full report. `artifacts findings` returns at most 20 privacy-minimal summaries by default (maximum 100) and a report-bound cursor; summaries omit story prose, variables, choice text, and witness paths. `artifacts finding` fetches one complete stable finding. `artifacts replay` recompiles the saved entrypoint and follows that finding's indexed choices with its saved story seed, but only while artifact freshness is `current`; stale or moved source fails closed.
 

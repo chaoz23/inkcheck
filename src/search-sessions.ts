@@ -71,8 +71,11 @@ import {
 } from "./regressions";
 import {
   DEFAULT_MCP_SESSION_WINDOW_STATES,
+  DEFAULT_MCP_SESSION_EVENT_PAGE_SIZE,
+  DEFAULT_MCP_SESSION_GOAL_PAGE_SIZE,
   MAX_MCP_SESSION_BYTES,
   MAX_MCP_SESSION_EVENTS,
+  MAX_MCP_SESSION_RESPONSE_BYTES,
   MAX_MCP_SESSION_FILES,
   MAX_MCP_SESSION_TOTAL_STATES,
   MAX_MCP_SESSION_WINDOW_STATES,
@@ -180,8 +183,17 @@ export interface SearchSessionResponse {
       total: { granted: number; consumed: number };
     };
     goalProbes: GoalProbeSummary[];
+    goalProbePage: { returned: number; total: number; omitted: number };
     events: SearchSessionEvent[];
     droppedEventCount: number;
+    eventPage: {
+      returned: number;
+      latestSequence: number;
+      droppedBeforeSequence: number;
+      omittedBeforeSequence: number;
+      historyGap: boolean;
+      nextSince: string;
+    };
   };
   campaign?: {
     campaignId: string;
@@ -234,6 +246,7 @@ interface WindowBindings extends SearchBindings {
 interface FindingOptions {
   findingLimit?: number;
   findingCursor?: string;
+  since?: string;
 }
 
 export interface StartSearchInput extends SearchBindings, FindingOptions {
@@ -882,9 +895,38 @@ async function runWindow(
   };
 }
 
-function responseSession(record: SearchSessionRecord): SearchSessionResponse["session"] {
+function eventCursor(record: SearchSessionRecord, sequence: number): string {
+  return `session-event-cursor-${Buffer.from(JSON.stringify({
+    v: 1,
+    capabilityHash: record.capabilityHash,
+    sequence,
+  }), "utf8").toString("base64url")}`;
+}
+
+function eventSequence(record: SearchSessionRecord, since?: string): number {
+  if (!since) return Math.max(record.droppedEventCount, record.droppedEventCount + record.events.length - DEFAULT_MCP_SESSION_EVENT_PAGE_SIZE);
+  if (!since.startsWith("session-event-cursor-")) throw new Error("invalid search-session event cursor");
+  try {
+    const value = JSON.parse(Buffer.from(since.slice("session-event-cursor-".length), "base64url").toString("utf8")) as {
+      v?: unknown; capabilityHash?: unknown; sequence?: unknown;
+    };
+    const latest = record.droppedEventCount + record.events.length;
+    if (value.v !== 1 || value.capabilityHash !== record.capabilityHash
+      || !Number.isSafeInteger(value.sequence) || (value.sequence as number) < 0
+      || (value.sequence as number) > latest) throw new Error();
+    return value.sequence as number;
+  } catch {
+    throw new Error("invalid, stale, or foreign search-session event cursor");
+  }
+}
+
+function responseSession(record: SearchSessionRecord, since?: string): SearchSessionResponse["session"] {
   const campaignGranted = record.totalGranted + record.directedGranted;
   const campaignConsumed = record.statesExplored + record.directedStatesExplored;
+  const afterSequence = eventSequence(record, since);
+  const events = record.events.filter((event) => event.sequence > afterSequence);
+  const latestSequence = record.droppedEventCount + record.events.length;
+  const goalProbes = record.goalProbes.slice(-DEFAULT_MCP_SESSION_GOAL_PAGE_SIZE);
   return {
     revision: record.revision,
     status: record.status,
@@ -900,9 +942,22 @@ function responseSession(record: SearchSessionRecord): SearchSessionResponse["se
       directed: { granted: record.directedGranted, consumed: record.directedStatesExplored },
       total: { granted: campaignGranted, consumed: campaignConsumed },
     },
-    goalProbes: record.goalProbes,
-    events: record.events,
+    goalProbes,
+    goalProbePage: {
+      returned: goalProbes.length,
+      total: record.goalProbes.length,
+      omitted: record.goalProbes.length - goalProbes.length,
+    },
+    events,
     droppedEventCount: record.droppedEventCount,
+    eventPage: {
+      returned: events.length,
+      latestSequence,
+      droppedBeforeSequence: record.droppedEventCount,
+      omittedBeforeSequence: afterSequence,
+      historyGap: afterSequence > 0,
+      nextSince: eventCursor(record, latestSequence),
+    },
   };
 }
 
@@ -925,15 +980,20 @@ async function sessionResponse(
       : record.campaign
         ? { tool: "start_campaign" as const, reason: `The campaign stopped at ${record.campaign.ledger.stopReason ?? record.bindingLimit ?? "a resource boundary"}; its latest partial report remains available.` }
         : { tool: "start_search" as const, reason: `The run stopped at ${record.bindingLimit ?? "a resource boundary"} without a recoverable frontier.` };
-  return {
+  const response: SearchSessionResponse = {
     schemaVersion: SEARCH_SESSION_SCHEMA_VERSION,
     inkcheckVersion: VERSION,
     ...(capability ? { sessionCapability: capability } : {}),
-    session: responseSession(record),
+    session: responseSession(record, findings.since),
     ...(record.campaign ? { campaign: campaignSummary(record) } : {}),
     savedFindings,
     nextOperation,
   };
+  const bytes = Buffer.byteLength(JSON.stringify(response), "utf8");
+  if (bytes > MAX_MCP_SESSION_RESPONSE_BYTES) {
+    throw new Error(`bounded search-session response exceeded ${MAX_MCP_SESSION_RESPONSE_BYTES} bytes`);
+  }
+  return response;
 }
 
 export async function startSearchSession(input: StartSearchInput): Promise<SearchSessionResponse> {
