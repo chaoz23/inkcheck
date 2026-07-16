@@ -152,6 +152,23 @@ export interface LongTailShadowRecommendation {
     trend: "insufficient_evidence" | "dry" | "rising" | "flat" | "declining" | "mixed";
     yield: NonNullable<CampaignAllocation["yield"]>;
   };
+  signals: {
+    duplicateRate: null | {
+      scope: "selected_value_report_rediscovery";
+      observed: number;
+      campaignNew: number;
+      rediscovered: number;
+      rate: number | null;
+    };
+    discoverySpacing: null | {
+      scope: "report_meaningful_events";
+      windows: number;
+      discoveryEvents: number;
+      statesSinceLastDiscovery: number | null;
+      latestDiscoveryGap: number | null;
+      longestObservedDiscoveryGap: number | null;
+    };
+  };
   unavailableSignals: Array<"duplicate_rate" | "discovery_spacing">;
   disclosure: string;
 }
@@ -216,13 +233,16 @@ export function campaignPolicyInput(control: ResolvedCampaignControl): CampaignP
   };
 }
 
-function meaningful(allocation: CampaignAllocation, preference: CampaignValuePreference): number {
-  const value = allocation.yield;
+function meaningfulYield(value: CampaignAllocation["yield"], preference: CampaignValuePreference): number {
   if (!value) return 0;
   if (preference === "runtime_assertions") return value.critical;
   if (preference === "outcomes") return value.terminalVariants;
   if (preference === "approved_goals") return value.intent;
   return value.critical + value.intent + value.authoredCoverage + value.terminalVariants;
+}
+
+function meaningful(allocation: CampaignAllocation, preference: CampaignValuePreference): number {
+  return meaningfulYield(allocation.yield, preference);
 }
 
 function completed(ledger: CampaignLedger): CampaignAllocation[] {
@@ -277,6 +297,20 @@ export function recommendLongTailShadow(ledger: CampaignLedger): LongTailShadowR
   const recentDiscoveries = recent.reduce((sum, probe) => sum + meaningful(probe, control.valuePreference), 0);
   const totals = yieldTotals(recent);
   const trend = yieldTrend(recent, control.valuePreference);
+  const observedRecent = recent.filter((probe) => probe.observability !== undefined);
+  const signalsAvailable = recent.length > 0 && observedRecent.length === recent.length;
+  const selectedObserved = signalsAvailable
+    ? observedRecent.reduce((sum, probe) => sum + meaningfulYield(probe.observability!.observedYield, control.valuePreference), 0)
+    : 0;
+  const selectedRediscovered = signalsAvailable
+    ? observedRecent.reduce((sum, probe) => sum + meaningfulYield(probe.observability!.rediscoveredYield, control.valuePreference), 0)
+    : 0;
+  const spacings = observedRecent.map((probe) => probe.observability!.discoverySpacing);
+  const latestSpacing = spacings.at(-1);
+  const longestObservedDiscoveryGap = spacings.reduce<number | null>((longest, spacing) => {
+    if (spacing.longestObservedDiscoveryGap === null) return longest;
+    return longest === null ? spacing.longestObservedDiscoveryGap : Math.max(longest, spacing.longestObservedDiscoveryGap);
+  }, null);
   const dryEvidence = probes.length >= threshold
     && probes.slice(-threshold).every((probe) => meaningful(probe, control.valuePreference) === 0);
   const latest = probes.at(-1);
@@ -333,8 +367,25 @@ export function recommendLongTailShadow(ledger: CampaignLedger): LongTailShadowR
       trend,
       yield: totals,
     },
-    unavailableSignals: ["duplicate_rate", "discovery_spacing"],
-    disclosure: "Shadow only. This recommendation uses campaign-new bounded evidence, does not alter allocation, and is not an asymptote or coverage claim.",
+    signals: {
+      duplicateRate: signalsAvailable ? {
+        scope: "selected_value_report_rediscovery",
+        observed: selectedObserved,
+        campaignNew: selectedObserved - selectedRediscovered,
+        rediscovered: selectedRediscovered,
+        rate: selectedObserved > 0 ? Number((selectedRediscovered / selectedObserved).toFixed(6)) : null,
+      } : null,
+      discoverySpacing: signalsAvailable && latestSpacing ? {
+        scope: "report_meaningful_events",
+        windows: spacings.length,
+        discoveryEvents: spacings.reduce((sum, spacing) => sum + spacing.discoveryEvents, 0),
+        statesSinceLastDiscovery: latestSpacing.statesSinceLastDiscovery,
+        latestDiscoveryGap: latestSpacing.latestDiscoveryGap,
+        longestObservedDiscoveryGap,
+      } : null,
+    },
+    unavailableSignals: signalsAvailable ? [] : ["duplicate_rate", "discovery_spacing"],
+    disclosure: "Shadow only. Campaign-new yield, report rediscovery, and report-local discovery gaps are bounded observations; they do not alter allocation and are not an asymptote or coverage claim.",
   };
 }
 

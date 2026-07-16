@@ -169,6 +169,7 @@ function compactLedger(projectRoot: string) {
       consumedStates: latest.consumedStates,
       stopReason: latest.stopReason,
       yield: latest.yield,
+      observability: latest.observability,
       provenance: latest.provenance,
     },
   };
@@ -227,6 +228,7 @@ async function runArm(source: string, entry: EvaluationCase, root: string, indep
     elapsedMs: number;
     stopReason: string;
     marginalYield: NonNullable<CampaignAllocation["yield"]>;
+    observability?: NonNullable<CampaignAllocation["observability"]>;
     result: ReturnType<typeof compactResult>;
     newEvidence: ReturnType<typeof delta>;
   }> = [];
@@ -250,6 +252,9 @@ async function runArm(source: string, entry: EvaluationCase, root: string, indep
       elapsedMs: Date.now() - windowStarted,
       stopReason: response.campaign!.latestWindow!.stopReason,
       marginalYield: response.campaign!.latestWindow!.yield,
+      ...(response.campaign!.latestWindow!.observability
+        ? { observability: response.campaign!.latestWindow!.observability }
+        : {}),
       result: compactResult(windowResult),
       newEvidence: delta(baseResult, windowResult),
     });
