@@ -220,10 +220,24 @@ function campaignInput(file: string, entry: EvaluationCase, independent: boolean
   };
 }
 
+function copyProjectDirectory(sourceDirectory: string, destination: string): void {
+  for (const entry of fs.readdirSync(sourceDirectory, { withFileTypes: true })) {
+    if ([".git", ".inkcheck", "node_modules"].includes(entry.name)) continue;
+    const source = path.join(sourceDirectory, entry.name);
+    const target = path.join(destination, entry.name);
+    if (entry.isSymbolicLink()) throw new Error(`evaluation project contains unsupported symbolic link: ${source}`);
+    if (entry.isDirectory()) {
+      fs.mkdirSync(target, { recursive: true });
+      copyProjectDirectory(source, target);
+    } else if (entry.isFile()) {
+      fs.copyFileSync(source, target);
+    }
+  }
+}
+
 function copyStory(source: string, root: string): string {
-  const target = path.join(root, "story.ink");
-  fs.copyFileSync(source, target);
-  return target;
+  copyProjectDirectory(path.dirname(source), root);
+  return path.join(root, path.basename(source));
 }
 
 async function runArm(
