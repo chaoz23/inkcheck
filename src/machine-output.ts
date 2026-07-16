@@ -107,6 +107,10 @@ function configurationSummary(configuration: Record<string, unknown> | undefined
   return {
     search: configuration?.search,
     concurrency: configuration?.concurrency,
+    concurrencyMode: configuration?.concurrencyMode,
+    ...(configuration?.concurrencyFallbackReason === undefined
+      ? {}
+      : { concurrencyFallbackReason: configuration.concurrencyFallbackReason }),
     minRepro: configuration?.minRepro,
     storySeed: configuration?.storySeed,
     ...(limits ? { limits } : {}),
@@ -119,11 +123,26 @@ function executionSummary(value: unknown) {
   const execution = record(value);
   if (!execution) return undefined;
   const resources = record(execution.resources);
+  const activation = record(execution.activation);
   return {
     mode: execution.mode,
     requestedConcurrency: execution.requestedConcurrency,
     effectiveConcurrency: execution.effectiveConcurrency,
     ...(execution.fallbackReason === undefined ? {} : { fallbackReason: execution.fallbackReason }),
+    ...(activation ? {
+      activation: {
+        policyVersion: activation.policyVersion,
+        decision: activation.decision,
+        reason: activation.reason,
+        pilotBudget: activation.pilotBudget,
+        pilotStatesExplored: activation.pilotStatesExplored,
+        pilotExhaustive: activation.pilotExhaustive,
+        pilotPass: activation.pilotPass,
+        duplicateStateEvaluations: activation.duplicateStateEvaluations,
+        uncertainty: activation.uncertainty,
+        productionEligible: activation.productionEligible,
+      },
+    } : {}),
     ...(resources ? {
       resources: {
         stateBudget: resources.stateBudget,

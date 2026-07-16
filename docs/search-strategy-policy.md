@@ -4,7 +4,7 @@ Inkcheck's default search must be robust for an unknown story shape, not merely 
 
 ## Current default
 
-The adaptive portfolio remains the default. Its independent DFS, diversity-beam, and seeded-random passes have different failure modes and adapt surplus budget from observed findings. Research policy replay has an auditable cumulative integer floor, but production allocation remains unchanged until the promotion gate passes. Experimental policy replay, `shared`, and `shared-variable` modes must not change portfolio weights or behavior indirectly.
+The adaptive portfolio remains the default. Its independent DFS, diversity-beam, and seeded-random passes have different failure modes and adapt surplus budget from observed findings. Workload-aware concurrency may execute those same deterministic grants in parallel after a live pilot; it does not change allocation, evidence, or proof. Research policy replay has an auditable cumulative integer floor, but production allocation remains unchanged until the promotion gate passes. Experimental policy replay, `shared`, and `shared-variable` modes must not change portfolio weights or behavior indirectly.
 
 Default allocation is frozen until an alternative passes the promotion gate below. A compelling result on one story, one budget, or one metric is insufficient.
 

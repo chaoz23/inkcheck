@@ -10,7 +10,7 @@
     "duplicateStateEvaluations": 0,
     "uncertainty": "high",
     "productionEligible": true,
-    "reason": "The no-replay executor clears its implementation gates; automatic production activation remains a separate promotion decision."
+    "reason": "The no-replay executor cleared its implementation gates and is integrated through workload-aware local CLI and one-shot MCP defaults."
   },
   "synthetic100k": {
     "pairs": 80,
@@ -78,10 +78,32 @@
       "duplicateStateEvaluations": 0
     }
   ],
+  "productIntegration": {
+    "case": "early-choice-grid",
+    "budget": 100000,
+    "maxDepth": 100,
+    "localCli": {
+      "fixedSingleElapsedMs": 7840,
+      "autoElapsedMs": 4160,
+      "autoEffectiveConcurrency": 3,
+      "states": [100000, 100000],
+      "exactTerminals": [45, 45],
+      "visitedKnots": [22, 22],
+      "canonicalEvidenceProofTelemetryAndScheduleMatch": true,
+      "activationReason": "pilot_open_frontier",
+      "duplicateStateEvaluations": 0
+    },
+    "oneShotMcp": {
+      "standardDetailElapsedMs": 4009,
+      "activationReason": "pilot_open_frontier",
+      "duplicateStateEvaluations": 0,
+      "compactActivationVisible": true
+    }
+  },
   "interpretation": [
     "The live pilot can classify the workload without spending states outside the user's ceiling.",
     "Completing the original first-round grants before adapting preserves rejected-run evidence and schedule.",
     "Open-frontier activation retained exact authored evidence while left-shifting meaningful evidence and completion.",
-    "The executor remains promotion-harness-only until the separate automatic-default decision is made."
+    "Direct CLI and one-shot MCP checks confirm the qualified executor is now reached through the default product surfaces."
   ]
 }

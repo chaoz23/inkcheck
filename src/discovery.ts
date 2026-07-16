@@ -26,6 +26,10 @@ import {
   REGRESSION_ARTIFACT_SCHEMA_VERSION,
 } from "./regression-contract";
 import { CAMPAIGN_POLICY_SCHEMA_VERSION } from "./campaign-policy";
+import {
+  DEFAULT_AUTO_CONCURRENCY_CEILING,
+  MAX_PORTFOLIO_CONCURRENCY,
+} from "./concurrency-policy";
 
 export const CAPABILITIES_SCHEMA_VERSION = 1;
 export const PROJECT_INSPECTION_SCHEMA_VERSION = 2;
@@ -57,6 +61,8 @@ export interface InkcheckCapabilities {
     defaultMaxStates: number;
     defaultGoalMaxStates: number;
     defaultConcurrency: number;
+    defaultConcurrencyMode: "auto";
+    defaultAutoConcurrencyCeiling: number;
     maxConcurrency: number;
     maxStorySeed: number;
     defaultStorySeed: number;
@@ -126,8 +132,10 @@ export function capabilities(): InkcheckCapabilities {
       defaultMaxDepth: 100,
       defaultMaxStates: 10_000_000,
       defaultGoalMaxStates: 0,
-      defaultConcurrency: 1,
-      maxConcurrency: 16,
+      defaultConcurrency: DEFAULT_AUTO_CONCURRENCY_CEILING,
+      defaultConcurrencyMode: "auto",
+      defaultAutoConcurrencyCeiling: DEFAULT_AUTO_CONCURRENCY_CEILING,
+      maxConcurrency: MAX_PORTFOLIO_CONCURRENCY,
       maxStorySeed: 2_147_483_646,
       defaultStorySeed: 1,
       maxCheckpointBytes: DEFAULT_MAX_CHECKPOINT_BYTES,

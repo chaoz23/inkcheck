@@ -253,7 +253,9 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.features.stagedGoals, true);
   assert.strictEqual(value.features.bundledAgentSkill, true);
   assert.strictEqual(value.features.concurrentPortfolio, true);
-  assert.strictEqual(value.limits.defaultConcurrency, 1);
+  assert.strictEqual(value.limits.defaultConcurrency, 4);
+  assert.strictEqual(value.limits.defaultConcurrencyMode, "auto");
+  assert.strictEqual(value.limits.defaultAutoConcurrencyCeiling, 4);
   assert.strictEqual(value.limits.maxConcurrency, 16);
   assert.strictEqual(value.features.localReportArtifacts, true);
   assert.strictEqual(value.features.savedFindingLookup, true);
@@ -317,6 +319,15 @@ test("config rejects unknown keys, unsafe entrypoints, and invalid bounds", () =
     () => parseProjectConfig("schemaVersion: 1\nentrypoint: story.ink\nci:\n  search: shared\n  concurrency: 2\n"),
     /ci\.concurrency greater than 1 requires search: portfolio/
   );
+  assert.throws(
+    () => parseProjectConfig("schemaVersion: 1\nentrypoint: story.ink\nci:\n  concurrency: sometimes\n"),
+    /ci\.concurrency: expected auto or an integer from 1 to 16/
+  );
+});
+
+test("config accepts workload-aware auto concurrency without forcing portfolio search", () => {
+  const parsed = parseProjectConfig("schemaVersion: 1\nentrypoint: story.ink\nci:\n  search: shared\n  concurrency: auto\n");
+  assert.deepStrictEqual(parsed.ci, { search: "shared", concurrency: "auto" });
 });
 
 test("assertion grammar supports typed comparisons and all/any/not without expressions", () => {

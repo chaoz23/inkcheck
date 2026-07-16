@@ -137,8 +137,12 @@ export function bindingLimit(explore: ExploreResult): string | null {
 
 export interface EffectiveReportConfiguration {
   search: "portfolio" | "shared" | "shared-variable";
-  /** Requested portfolio worker ceiling; one preserves legacy sequential execution. */
+  /** Resolved portfolio worker ceiling; one preserves sequential execution. */
   concurrency?: number;
+  /** Whether the ceiling was selected automatically or explicitly fixed. */
+  concurrencyMode?: "auto" | "fixed";
+  /** Why automatic concurrency was constrained before workload classification. */
+  concurrencyFallbackReason?: "search_mode" | "additive_goals";
   /** Present only for a root-started additive specialist report, never a base run. */
   executionScope?: "goal-probe" | "assertion-probe";
   minRepro: boolean;
