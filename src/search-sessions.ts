@@ -43,6 +43,7 @@ import {
 } from "./inklecate";
 import { buildReportEnvelope, type EffectiveReportConfiguration } from "./report-contract";
 import { createResourceGuards } from "./resource-guards";
+import { runtimeFindingIdentity } from "./runtime-identity";
 import {
   allocateDirectedCampaignRun,
   campaignLedgerDigest,
@@ -1242,7 +1243,7 @@ async function marginalCampaignYield(
 function directedEvidence(result: ExploreResult): { critical: Set<string>; goals: Set<string> } {
   const critical = new Set<string>();
   for (const error of result.runtimeErrors) {
-    critical.add(`runtime:${createHash("sha256").update(JSON.stringify({ message: error.message, choiceIndices: error.choiceIndices })).digest("hex")}`);
+    critical.add(`runtime:${createHash("sha256").update(JSON.stringify(runtimeFindingIdentity(error))).digest("hex")}`);
   }
   for (const assertion of result.assertionResults) {
     for (const violation of assertion.violations) {

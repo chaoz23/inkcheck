@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "synthetic-early-gate-control",
+      "story": "../test/fixtures/search/long-tail-early-gate.ink",
+      "source": {
+        "name": "Repository-owned long-tail early-gate control",
+        "license": "MIT",
+        "commit": "repository fixture",
+        "licenseFile": null
+      },
+      "baseStates": 5000,
+      "additionalStates": 5000,
+      "maxDepth": 100,
+      "seed": 7,
+      "storySeed": 1,
+      "maxElapsedSeconds": 7200,
+      "maxMemoryMb": 4096,
+      "maxDiskMb": 2048
+    },
+    {
+      "id": "the-intercept-5m",
+      "story": "authored/the-intercept/TheIntercept.ink",
+      "source": {
+        "name": "The Intercept",
+        "license": "MIT",
+        "commit": "2a816b56e61ce4bf02bec1c638074645bdd871e3",
+        "licenseFile": "authored/the-intercept/LICENSE-AND-PROVENANCE.md"
+      },
+      "baseStates": 500000,
+      "additionalStates": 4500000,
+      "maxDepth": 100,
+      "seed": 7,
+      "storySeed": 1,
+      "maxElapsedSeconds": 7200,
+      "maxMemoryMb": 4096,
+      "maxDiskMb": 2048
+    }
+  ]
+}
