@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.6.0 — 2026-07-16
+
+This stable release ships Inkcheck's anytime QA foundation without claiming that bounded search can cover every large story or that an experimental allocator has become universally better. The established deterministic portfolio remains the search default. Workload-aware concurrency, durable result windows, campaigns, exact replay, and human/agent controls make long checks more useful and inspectable; dynamic long-tail expansion, rotation, and stopping remain shadow-only after the three-family promotion gate did not establish broad author-facing value.
+
+- Run the local CLI and one-shot MCP portfolio with workload-aware automatic concurrency. A reusable 1,024-state live pilot activates workers only for sustained eligible workloads; small, exhaustive, depth-bound, saturated, constrained, shared-search, and additive-goal work stays sequential. Fixed concurrency and a hard single-worker opt-out remain available.
+- Add durable, source-bound local reports, compact checkpoints, saved-finding lookup, exact witness replay, regression pins, and resumable MCP search sessions. Partial evidence survives cancellation and declared resource boundaries, while stale or incompatible capabilities fail closed.
+- Add deterministic campaign budgets and immutable result windows for agents and humans. Named Quick, Balanced, Deep, Overnight, Campaign, and Fixed modes enforce aggregate ceilings, protected regression/long-tail reserves, source invalidation, bounded forecasts, and attributable allocation/stop reasons.
+- Add explicit assertion and approved-goal campaign children without mutating or reducing the exact base frontier. Campaign-new evidence is identity-deduplicated while complete child provenance remains available in separate reports.
+- Add independent protected long-tail portfolio children plus observed-versus-campaign-new yield, rediscovery, and discovery-spacing evidence. The checked three-family gate found resource and terminal-diversity gains on *The Intercept* but no new runtime error, assertion violation, approved goal, authored knot, or visible outcome; Dog Ink Adventure and Heresy II reached a time or memory bound before long-tail allocation. Live allocation therefore remains unpromoted.
+- Add privacy-minimal MCP defaults, a packaged Inkcheck agent skill, ten golden QA exercises, and an executable no-hidden-hints readiness scorer. Full story content and witnesses remain explicit drill-down boundaries; Inkcheck itself remains deterministic and non-AI.
+- Add trustworthy human, NDJSON, MCP, and hosted progress that distinguishes work-budget use, discoveries, binding limits, cancellation, and final outcome. Hosted jobs retain privacy-safe progress across restart without retaining uploaded story source.
+- Preserve the stable product boundary in documentation and the product/engineering scorecard: anytime value is currently 7/10 and demonstrated generalization 4/10. Adaptive first-window sizing, compact large checkpoints, provider-attributed cost, broader agent evaluation, and bounded specialist explorers remain future roadmap work.
+
 ## 0.6.0-beta.3 — 2026-07-16
 
 This prerelease turns the qualified workload classifier into the local CLI and one-shot MCP portfolio default, while retaining explicit sequential/fixed controls and the hosted deployment ceiling. It also packages the post-beta.2 agent-readiness, compact-output, checkpoint, campaign-specialist, and progress-trust work. Automatic concurrency changes execution timing, not search allocation or bounded-coverage meaning. It is published under npm's `next` tag; stable `latest` remains 0.5.1.
