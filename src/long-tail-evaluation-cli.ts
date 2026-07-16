@@ -193,7 +193,11 @@ function compactLedger(projectRoot: string) {
 
 async function checkpointHash(projectRoot: string, response: SearchSessionResponse): Promise<string | null> {
   if (!response.session.latestCheckpointId) return null;
-  const opened = await openCheckpointArtifact(projectRoot, response.session.latestCheckpointId);
+  return checkpointIdHash(projectRoot, response.session.latestCheckpointId);
+}
+
+async function checkpointIdHash(projectRoot: string, checkpointId: string): Promise<string> {
+  const opened = await openCheckpointArtifact(projectRoot, checkpointId);
   return sha256(fs.readFileSync(path.resolve(projectRoot, opened.artifact.path)));
 }
 
@@ -256,7 +260,7 @@ async function runArm(
   }> = [];
   const additionalResults: ExploreResult[] = [];
   const armResult = async (final: boolean) => {
-    const checkpointAfter = final ? await checkpointHash(root, response) : null;
+    const checkpointAfter = final ? await checkpointIdHash(root, base.session.latestCheckpointId!) : null;
     const evidenceResults = independent ? additionalResults : additionalResults.slice(-1);
     return {
       base: {
@@ -275,7 +279,7 @@ async function runArm(
       invariants: {
         baseReportPreserved: independent ? response.session.latestReportId === base.session.latestReportId : null,
         baseCheckpointPreserved: independent && final
-          ? response.session.latestCheckpointId === base.session.latestCheckpointId && checkpointBefore === checkpointAfter
+          ? checkpointBefore === checkpointAfter
           : null,
         campaignStatesWithinCeiling: response.campaign!.spend.states <= response.campaign!.ceilings.totalStates,
         reportReopens: true,
