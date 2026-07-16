@@ -173,6 +173,81 @@ test("campaign result-window continuation equals one uninterrupted shared run", 
   }
 });
 
+test("protected long-tail work runs an independent portfolio and preserves the exact base frontier", async () => {
+  const { root, file } = project();
+  try {
+    const started = await startCampaign({
+      file,
+      intent: "balanced",
+      totalStates: 1_000,
+      windowStates: 73,
+      maxElapsedSeconds: 60,
+      maxDiskMb: 100,
+      maxDepth: 100,
+      seed: 7,
+      longTailShare: 0.2,
+      minLongTailProbes: 1,
+      regressionReserveStates: 0,
+    });
+    const baseReportId = started.session.latestReportId;
+    const baseCheckpointId = started.session.latestCheckpointId;
+    const baseStates = started.session.statesExplored;
+    const continued = await continueCampaign({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: started.session.revision,
+    });
+
+    assert.strictEqual(continued.session.status, "paused");
+    assert.strictEqual(continued.session.recoverable, true);
+    assert.strictEqual(continued.session.latestReportId, baseReportId);
+    assert.strictEqual(continued.session.latestCheckpointId, baseCheckpointId);
+    assert.strictEqual(continued.session.statesExplored, baseStates);
+    assert.strictEqual(continued.campaign.latestWindow.purpose, "long_tail");
+    assert.notStrictEqual(continued.campaign.latestWindow.reportId, baseReportId);
+    assert.deepStrictEqual(continued.campaign.latestWindow.partition, {
+      strategy: "portfolio",
+      seed: continued.campaign.latestWindow.partition.seed,
+      frontier: "root",
+      maxDepth: 200,
+    });
+    assert.ok(continued.campaign.latestWindow.partition.seed > 0);
+    assert.deepStrictEqual(Object.keys(continued.campaign.latestWindow.yield).sort(), [
+      "authoredCoverage", "critical", "intent", "terminalVariants",
+    ]);
+    assert.ok(continued.campaign.spend.states > baseStates);
+
+    const child = await openSessionReport({
+      file,
+      sessionCapability: started.sessionCapability,
+      reportId: continued.campaign.latestWindow.reportId,
+    });
+    assert.strictEqual(child.report.effectiveConfiguration.executionScope, "long-tail-probe");
+    assert.strictEqual(child.report.effectiveConfiguration.search, "portfolio");
+    assert.strictEqual(child.report.effectiveConfiguration.concurrencyMode, "auto");
+    assert.strictEqual(child.report.explore.limits.seed, continued.campaign.latestWindow.partition.seed);
+
+    const metadata = JSON.parse(fs.readFileSync(
+      path.join(root, ".inkcheck", "sessions", fs.readdirSync(path.join(root, ".inkcheck", "sessions"))[0]),
+      "utf8"
+    ));
+    assert.strictEqual(metadata.latestCheckpointId, baseCheckpointId);
+    assert.strictEqual(metadata.campaign.ledger.allocations.at(-1).provenance.checkpointId, undefined);
+
+    const resumedBase = await continueCampaign({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: continued.session.revision,
+    });
+    assert.strictEqual(resumedBase.campaign.latestWindow.purpose, "typical");
+    assert.ok(resumedBase.session.statesExplored > baseStates);
+    assert.notStrictEqual(resumedBase.session.latestReportId, baseReportId);
+    assert.strictEqual(resumedBase.session.recoverable, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("named campaign controls return compact attributable decision evidence", async () => {
   const { root, file } = project();
   try {

@@ -29,6 +29,7 @@ import {
   type ExploreResult,
   type SharedSearchCheckpoint,
 } from "./explore";
+import { explorePortfolioPilotHandoffConcurrent } from "./concurrent-portfolio";
 import { parseAssertionDefinitions, type AssertionDefinition, type AssertionResult } from "./assertions";
 import { parseGoalDefinitions, type GoalDefinition, type GoalResult } from "./goals";
 import {
@@ -48,6 +49,7 @@ import {
   commitCampaignRun,
   createCampaignLedger,
   createCampaignPolicy,
+  deriveIndependentLongTailPartition,
   finishCampaignLedger,
   planCampaignRun,
   type CampaignIntent,
@@ -211,6 +213,8 @@ export interface SearchSessionResponse {
       reportId: string;
       checkpointId?: string;
       stopReason: string;
+      partition: CampaignLedger["allocations"][number]["partition"];
+      yield: NonNullable<CampaignLedger["allocations"][number]["yield"]>;
     };
   };
   savedFindings: FindingPage;
@@ -730,7 +734,10 @@ function campaignDiskBytes(
   if (checkpointId) checkpoints.add(checkpointId);
   const files = [
     ...[...reports].map((id) => path.join(projectRoot, ".inkcheck", "reports", `${id}.json`)),
-    ...[...checkpoints].map((id) => path.join(projectRoot, ".inkcheck", "checkpoints", `${id}.json`)),
+    ...[...checkpoints].flatMap((id) => [
+      path.join(projectRoot, ".inkcheck", "checkpoints", `${id}.json`),
+      path.join(projectRoot, ".inkcheck", "checkpoints", `${id}.json.gz`),
+    ]),
   ];
   return files.reduce((total, file) => total + (fs.existsSync(file) ? fs.statSync(file).size : 0), 0);
 }
@@ -756,6 +763,8 @@ function campaignSummary(record: SearchSessionRecord): SearchSessionResponse["ca
         reportId: latest.provenance.reportId,
         ...(latest.provenance.checkpointId ? { checkpointId: latest.provenance.checkpointId } : {}),
         stopReason: latest.stopReason ?? "window_complete",
+        partition: latest.partition,
+        yield: latest.yield ?? { critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: 0 },
       },
     } : {}),
   };
@@ -892,6 +901,99 @@ async function runWindow(
     peakMemoryBytes,
     artifactBytes,
     diskLimited,
+  };
+}
+
+async function runIndependentLongTailWindow(
+  projectRoot: string,
+  file: string,
+  grantedStates: number,
+  partition: CampaignLedger["allocations"][number]["partition"],
+  bindings: WindowBindings
+): Promise<{
+  result: ExploreResult;
+  reportId: string;
+  bindingLimit: string | null;
+  elapsedMs: number;
+  peakMemoryBytes: number;
+  artifactBytes: number;
+}> {
+  const startedAtMs = Date.now();
+  const compiled = await compile(file);
+  if (!compiled.success || !compiled.storyJson) {
+    throw new Error(`Compilation failed; run compile_story and fix ${compiled.issues.length} issue(s) before starting search`);
+  }
+  const { storyJson, ...compileReport } = compiled;
+  const knots = scanKnots(file);
+  const externals = scanExternals(file);
+  const semantics = scanStorySemantics(file);
+  const guards = createResourceGuards({
+    maxMemoryMb: bindings.maxMemoryMb,
+    maxTimeMs: bindings.maxTimeMs,
+    startedAtMs,
+  });
+  const result = explorePortfolioPilotHandoffConcurrent(storyJson, knots, externals, {
+    maxDepth: partition.maxDepth ?? bindings.maxDepth ?? DEFAULT_MAX_DEPTH,
+    maxStates: grantedStates,
+    seed: partition.seed ?? bindings.seed ?? 1,
+    storySeed: bindings.storySeed ?? DEFAULT_STORY_SEED,
+    concurrency: 4,
+    memoryCapBytes: guards.memoryCapBytes,
+    deadlineMs: guards.deadlineMs,
+    memoryGuard: guards.memoryGuard,
+    timeGuard: guards.timeGuard,
+    preserveTurnState: semantics.usesTurns,
+    preserveRandomState: semantics.usesRandomness,
+    randomnessDetected: semantics.usesRandomness,
+    sharedMaxPendingStates: bindings.maxFrontierStates,
+    sharedMaxPendingBytes: bindings.maxFrontierMb === undefined ? undefined : bindings.maxFrontierMb * 1024 * 1024,
+  });
+  classifyUnvisitedKnots(result, scanInboundDiverts(file));
+  const configuration: EffectiveReportConfiguration = {
+    search: "portfolio",
+    concurrency: 4,
+    concurrencyMode: "auto",
+    executionScope: "long-tail-probe",
+    minRepro: false,
+    strict: false,
+    maxMemoryMb: bindings.maxMemoryMb ?? null,
+    maxTimeSec: bindings.maxTimeMs === undefined ? null : bindings.maxTimeMs / 1_000,
+    maxFrontierStates: bindings.maxFrontierStates ?? null,
+    maxFrontierMb: bindings.maxFrontierMb ?? null,
+    goalMaxStates: 0,
+    storySeed: bindings.storySeed ?? DEFAULT_STORY_SEED,
+  };
+  const report = buildReportEnvelope({
+    compile: compileReport,
+    explore: result,
+    nextRun: recommendNextRun(result, scanShapeProfile(file)),
+    storyJson,
+    configuration,
+  });
+  const estimatedArtifactBytes = Buffer.byteLength(JSON.stringify({
+    artifactSchemaVersion: 1,
+    artifactType: "report",
+    id: "report-000000000000000000000000",
+    createdAt: new Date().toISOString(),
+    inkcheckVersion: VERSION,
+    reportSchemaVersion: report.schemaVersion,
+    source: { entrypoint: relativeEntrypoint(projectRoot, file) },
+    storyFingerprint: report.storyFingerprint,
+    effectiveConfiguration: report.effectiveConfiguration,
+    report,
+  }, null, 2) + "\n", "utf8");
+  if (bindings.maxArtifactBytes !== undefined && estimatedArtifactBytes > bindings.maxArtifactBytes) {
+    throw new Error("campaign disk ceiling cannot retain the independent long-tail report; raise maxDiskMb before starting more work");
+  }
+  const reportReference = saveReportArtifact(projectRoot, file, report);
+  const artifactBytes = fs.statSync(path.resolve(projectRoot, reportReference.path)).size;
+  return {
+    result,
+    reportId: reportReference.id,
+    bindingLimit: result.truncatedBy.memory ? "maxMemory" : report.bindingLimit,
+    elapsedMs: Date.now() - startedAtMs,
+    peakMemoryBytes: guards.peakMemoryBytes(),
+    artifactBytes,
   };
 }
 
@@ -1079,6 +1181,61 @@ function campaignYield(
       ? Math.max(0, prior.unvisitedKnots - result.unvisitedKnots.length)
       : result.visitedKnots.length + new Set(result.endingsFound.map((ending) => ending.finalText)).size,
     terminalVariants: Math.max(0, result.endingsFound.length - (prior?.endings ?? 0)),
+  };
+}
+
+interface CampaignEvidence {
+  critical: Set<string>;
+  goals: Set<string>;
+  authoredCoverage: Set<string>;
+  terminalVariants: Set<string>;
+}
+
+function campaignEvidence(result: ExploreResult): CampaignEvidence {
+  const directed = directedEvidence(result);
+  const authoredCoverage = new Set(result.visitedKnots.map((name) => `knot:${name}`));
+  for (const ending of result.endingsFound) {
+    authoredCoverage.add(`outcome:${ending.finalText.trim().replace(/\s+/g, " ")}`);
+  }
+  return {
+    critical: directed.critical,
+    goals: directed.goals,
+    authoredCoverage,
+    terminalVariants: new Set(result.endingsFound.map((ending) => `ending:${createHash("sha256")
+      .update(JSON.stringify({ finalText: ending.finalText, variables: ending.variables }))
+      .digest("hex")}`)),
+  };
+}
+
+async function marginalCampaignYield(
+  projectRoot: string,
+  ledger: CampaignLedger,
+  result: ExploreResult
+): Promise<NonNullable<Parameters<typeof commitCampaignRun>[1]["yield"]>> {
+  const prior: CampaignEvidence = {
+    critical: new Set(),
+    goals: new Set(),
+    authoredCoverage: new Set(),
+    terminalVariants: new Set(),
+  };
+  for (const allocation of ledger.allocations) {
+    const reportId = allocation.provenance?.reportId;
+    if (!reportId) continue;
+    const artifact = await openReportArtifact(projectRoot, reportId);
+    const explore = (artifact.report as { explore?: ExploreResult }).explore;
+    if (!explore) continue;
+    const evidence = campaignEvidence(explore);
+    evidence.critical.forEach((value) => prior.critical.add(value));
+    evidence.goals.forEach((value) => prior.goals.add(value));
+    evidence.authoredCoverage.forEach((value) => prior.authoredCoverage.add(value));
+    evidence.terminalVariants.forEach((value) => prior.terminalVariants.add(value));
+  }
+  const current = campaignEvidence(result);
+  return {
+    critical: [...current.critical].filter((value) => !prior.critical.has(value)).length,
+    intent: [...current.goals].filter((value) => !prior.goals.has(value)).length,
+    authoredCoverage: [...current.authoredCoverage].filter((value) => !prior.authoredCoverage.has(value)).length,
+    terminalVariants: [...current.terminalVariants].filter((value) => !prior.terminalVariants.has(value)).length,
   };
 }
 
@@ -1403,20 +1560,73 @@ export async function continueCampaign(input: ContinueCampaignInput): Promise<Se
     bindingFingerprint: ledger.bindingFingerprint,
     recommendation: campaignRecommendation(ledger),
     partition: { strategy: "shared" },
+    longTailPartition: deriveIndependentLongTailPartition(
+      ledger,
+      (currentReport.report.effectiveConfiguration as { limits?: { maxDepth?: number } }).limits?.maxDepth ?? DEFAULT_MAX_DEPTH
+    ),
   });
   if (plan.action === "stop") {
     const updated = stopCampaignRecord(projectRoot, record, plan.ledger);
     return sessionResponse(projectRoot, updated, input);
   }
   if (plan.action === "wait") throw new Error("campaign concurrency ceiling is occupied; inspect the active window before retrying");
+  const resumed = await loadCheckpointForResume(projectRoot, record.latestCheckpointId);
+  const saved = resumed.checkpoint.configuration;
+  const remainingMs = Math.max(1, ledger.policy.ceilings.maxElapsedMs - plan.ledger.spend.elapsedMs);
+  if (plan.allocation.purpose === "long_tail") {
+    const run = await runIndependentLongTailWindow(
+      projectRoot,
+      input.file,
+      plan.allocation.grantedStates,
+      plan.allocation.partition,
+      {
+        maxDepth: plan.allocation.partition.maxDepth ?? saved.maxDepth,
+        seed: plan.allocation.partition.seed ?? saved.seed,
+        storySeed: saved.storySeed,
+        ...(saved.maxPendingStates === null ? {} : { maxFrontierStates: saved.maxPendingStates }),
+        ...(saved.maxPendingBytes === null ? {} : { maxFrontierMb: saved.maxPendingBytes / (1024 * 1024) }),
+        maxMemoryMb: campaignRunMemoryMb(ledger.policy.ceilings.maxMemoryBytes),
+        maxTimeMs: Math.max(1, remainingMs - 100),
+        maxArtifactBytes: Math.max(0, ledger.policy.ceilings.maxDiskBytes - ledger.spend.currentDiskBytes),
+      }
+    );
+    const completedAt = new Date().toISOString();
+    const diskBytes = campaignDiskBytes(projectRoot, plan.ledger, run.reportId);
+    const completedLedger = commitCampaignRun(plan.ledger, {
+      now: completedAt,
+      bindingFingerprint: ledger.bindingFingerprint,
+      allocationId: plan.allocation.id,
+      consumedStates: run.result.statesExplored,
+      peakMemoryBytes: run.peakMemoryBytes,
+      currentDiskBytes: diskBytes,
+      stopReason: run.bindingLimit ?? (run.result.exhaustive ? "exhaustive" : "window_complete"),
+      yield: await marginalCampaignYield(projectRoot, ledger, run.result),
+      reportId: run.reportId,
+      windowElapsedMs: run.elapsedMs,
+    });
+    const updated: SearchSessionRecord = {
+      ...record,
+      updatedAt: completedAt,
+      revision: record.revision + 1,
+      status: "paused",
+      recoverable: true,
+      campaign: persistedCampaign(completedLedger),
+    };
+    appendEvent(updated, {
+      type: "continued",
+      revision: updated.revision,
+      totalGranted: updated.totalGranted,
+      statesExplored: updated.statesExplored,
+      reportId: run.reportId,
+    });
+    writeRecord(projectRoot, updated, record.revision);
+    return sessionResponse(projectRoot, updated, input);
+  }
   const nextGrant = record.totalGranted + plan.allocation.grantedStates;
   validateGrant(nextGrant, record.totalGranted);
   if (nextGrant + record.directedGranted > MAX_MCP_SESSION_TOTAL_STATES) {
     throw new RangeError(`base plus directed grants must not exceed ${MAX_MCP_SESSION_TOTAL_STATES} states`);
   }
-  const resumed = await loadCheckpointForResume(projectRoot, record.latestCheckpointId);
-  const saved = resumed.checkpoint.configuration;
-  const remainingMs = Math.max(1, ledger.policy.ceilings.maxElapsedMs - plan.ledger.spend.elapsedMs);
   const run = await runWindow(projectRoot, input.file, nextGrant, {
     maxDepth: saved.maxDepth,
     seed: saved.seed,

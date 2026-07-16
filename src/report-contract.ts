@@ -143,8 +143,8 @@ export interface EffectiveReportConfiguration {
   concurrencyMode?: "auto" | "fixed";
   /** Why automatic concurrency was constrained before workload classification. */
   concurrencyFallbackReason?: "search_mode" | "additive_goals";
-  /** Present only for a root-started additive specialist report, never a base run. */
-  executionScope?: "goal-probe" | "assertion-probe";
+  /** Present only for a root-started child report, never an exact base run. */
+  executionScope?: "goal-probe" | "assertion-probe" | "long-tail-probe";
   minRepro: boolean;
   strict: boolean;
   maxMemoryMb: number | null;
