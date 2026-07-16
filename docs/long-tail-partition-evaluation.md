@@ -44,6 +44,8 @@ At approximately the baseline's 107-second additional wall clock, the first two 
 
 The decreasing but nonzero sequence is direct evidence that Inkcheck can instrument a long-tail yield curve. It supports a future marginal-stop or reallocation policy; it does not establish an asymptote, because a later independent seed could still find another peak.
 
+The first #180 shadow policy replays this sequence as rotate recommendations while authorization remains, then stops when the protected reserve is exhausted. Under a runtime/assertion preference, the same terminal-only windows become dry preferred-value evidence; scarce/balanced/abundant postures require three/four/five dry independent probes before a shadow stop. This replay remains observational and is not included in the measured execution comparison above.
+
 ## Interpretation
 
 This slice solves a real resource trap. A monolithic retained frontier can bind on memory long before its state authorization, while independent bounded children keep memory roughly flat and continue producing diverse terminal states. It also fixes duplicate critical accounting discovered by the control: the same runtime defect reached through another path now uses Inkcheck's canonical runtime identity and earns zero new critical credit.

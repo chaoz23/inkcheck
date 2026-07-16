@@ -13,6 +13,8 @@ import {
 export const CAMPAIGN_CONTROL_SCHEMA_VERSION = 1;
 export const CAMPAIGN_FORECAST_VERSION = 1;
 export const CAMPAIGN_KNEE_DRY_WINDOWS = 3;
+export const LONG_TAIL_SHADOW_POLICY_VERSION = 1;
+export const LONG_TAIL_SHADOW_LOOKBACK_WINDOWS = 3;
 
 interface ModeDefaults {
   totalStates: number;
@@ -112,9 +114,46 @@ export interface CampaignDecisionExplanation {
     reason: string;
   };
   forecast: CampaignForecast;
+  longTailShadow?: LongTailShadowRecommendation;
   bindingConstraint: string | null;
   permitsMoreWork: string[];
   drilldown: { reportId?: string; findingsTool: "get_finding"; curvesTool: "open_report" };
+}
+
+export interface LongTailShadowRecommendation {
+  schemaVersion: 1;
+  policyVersion: 1;
+  liveEffect: false;
+  action: "expand_same_family" | "rotate_partition" | "stop_after_floor";
+  reason:
+    | "protected_floor_outstanding"
+    | "independent_evidence_insufficient"
+    | "preferred_yield_dry"
+    | "critical_or_intent_progress"
+    | "preferred_yield_rising_or_stable"
+    | "preferred_yield_declining_rotate"
+    | "preferred_yield_mixed_rotate"
+    | "long_tail_authorization_exhausted";
+  preference: CampaignValuePreference;
+  resourcePreference: CampaignIntent;
+  uncertainty: "high" | "medium";
+  completedProbes: number;
+  minimumProbes: number;
+  minimumProbesRemaining: number;
+  evidenceThreshold: number;
+  remainingAuthorizedStates: number;
+  recent: {
+    windows: number;
+    states: number;
+    elapsedMs: number;
+    meaningfulDiscoveries: number;
+    perMillionStates: number | null;
+    perSecond: number | null;
+    trend: "insufficient_evidence" | "dry" | "rising" | "flat" | "declining" | "mixed";
+    yield: NonNullable<CampaignAllocation["yield"]>;
+  };
+  unavailableSignals: Array<"duplicate_rate" | "discovery_spacing">;
+  disclosure: string;
 }
 
 function requiredInteger(value: number | undefined, name: string): number {
@@ -188,6 +227,115 @@ function meaningful(allocation: CampaignAllocation, preference: CampaignValuePre
 
 function completed(ledger: CampaignLedger): CampaignAllocation[] {
   return ledger.allocations.filter((allocation) => allocation.status === "completed");
+}
+
+function evidenceThreshold(resourcePreference: CampaignIntent): number {
+  return resourcePreference === "scarce" ? 3 : resourcePreference === "balanced" ? 4 : 5;
+}
+
+function yieldTotals(windows: CampaignAllocation[]): NonNullable<CampaignAllocation["yield"]> {
+  return windows.reduce((total, window) => ({
+    critical: total.critical + (window.yield?.critical ?? 0),
+    intent: total.intent + (window.yield?.intent ?? 0),
+    authoredCoverage: total.authoredCoverage + (window.yield?.authoredCoverage ?? 0),
+    terminalVariants: total.terminalVariants + (window.yield?.terminalVariants ?? 0),
+  }), { critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: 0 });
+}
+
+function yieldTrend(windows: CampaignAllocation[], preference: CampaignValuePreference): LongTailShadowRecommendation["recent"]["trend"] {
+  if (windows.length < LONG_TAIL_SHADOW_LOOKBACK_WINDOWS) return "insufficient_evidence";
+  const rates = windows.map((window) => {
+    const states = window.consumedStates ?? 0;
+    return states > 0 ? meaningful(window, preference) / states : 0;
+  });
+  if (rates.every((value) => value === 0)) return "dry";
+  if (rates.every((value) => value === rates[0])) return "flat";
+  const declining = rates.slice(1).every((value, index) => value <= rates[index]);
+  const rising = rates.slice(1).every((value, index) => value >= rates[index]);
+  if (declining) return "declining";
+  if (rising) return "rising";
+  return "mixed";
+}
+
+/** Observational only: this never changes campaignRecommendation or live allocation. */
+export function recommendLongTailShadow(ledger: CampaignLedger): LongTailShadowRecommendation {
+  const control = ledger.policy.policyVersion >= 2 ? ledger.policy.control : {
+    resourcePreference: ledger.policy.intent,
+    valuePreference: "broad_qa" as const,
+  };
+  const probes = completed(ledger).filter((allocation) => allocation.purpose === "long_tail");
+  const minimumProbes = ledger.policy.longTail.minProbes;
+  const minimumProbesRemaining = Math.max(0, minimumProbes - probes.length);
+  const threshold = evidenceThreshold(control.resourcePreference);
+  const consumedStates = probes.reduce((sum, probe) => sum + (probe.consumedStates ?? 0), 0);
+  const activeStates = ledger.allocations.reduce((sum, allocation) => sum
+    + (allocation.purpose === "long_tail" && allocation.status === "allocated" ? allocation.grantedStates : 0), 0);
+  const remainingAuthorizedStates = Math.max(0, ledger.policy.longTail.reservedStates - consumedStates - activeStates);
+  const recent = probes.slice(-LONG_TAIL_SHADOW_LOOKBACK_WINDOWS);
+  const recentStates = recent.reduce((sum, probe) => sum + (probe.consumedStates ?? 0), 0);
+  const recentElapsedMs = recent.reduce((sum, probe) => sum + (probe.provenance?.elapsedMs ?? 0), 0);
+  const recentDiscoveries = recent.reduce((sum, probe) => sum + meaningful(probe, control.valuePreference), 0);
+  const totals = yieldTotals(recent);
+  const trend = yieldTrend(recent, control.valuePreference);
+  const dryEvidence = probes.length >= threshold
+    && probes.slice(-threshold).every((probe) => meaningful(probe, control.valuePreference) === 0);
+  const latest = probes.at(-1);
+
+  let action: LongTailShadowRecommendation["action"] = "rotate_partition";
+  let reason: LongTailShadowRecommendation["reason"] = "independent_evidence_insufficient";
+  if (minimumProbesRemaining > 0) {
+    action = "expand_same_family";
+    reason = "protected_floor_outstanding";
+  } else if (remainingAuthorizedStates === 0) {
+    action = "stop_after_floor";
+    reason = "long_tail_authorization_exhausted";
+  } else if ((latest?.yield?.critical ?? 0) > 0 || (latest?.yield?.intent ?? 0) > 0) {
+    action = "expand_same_family";
+    reason = "critical_or_intent_progress";
+  } else if (probes.length < threshold) {
+    action = "rotate_partition";
+    reason = "independent_evidence_insufficient";
+  } else if (dryEvidence) {
+    action = "stop_after_floor";
+    reason = "preferred_yield_dry";
+  } else if (trend === "rising" || trend === "flat") {
+    action = "expand_same_family";
+    reason = "preferred_yield_rising_or_stable";
+  } else if (trend === "declining") {
+    action = "rotate_partition";
+    reason = "preferred_yield_declining_rotate";
+  } else {
+    action = "rotate_partition";
+    reason = "preferred_yield_mixed_rotate";
+  }
+
+  return {
+    schemaVersion: CAMPAIGN_CONTROL_SCHEMA_VERSION,
+    policyVersion: LONG_TAIL_SHADOW_POLICY_VERSION,
+    liveEffect: false,
+    action,
+    reason,
+    preference: control.valuePreference,
+    resourcePreference: control.resourcePreference,
+    uncertainty: probes.length < 5 ? "high" : "medium",
+    completedProbes: probes.length,
+    minimumProbes,
+    minimumProbesRemaining,
+    evidenceThreshold: threshold,
+    remainingAuthorizedStates,
+    recent: {
+      windows: recent.length,
+      states: recentStates,
+      elapsedMs: recentElapsedMs,
+      meaningfulDiscoveries: recentDiscoveries,
+      perMillionStates: recentStates > 0 ? Number((recentDiscoveries * 1_000_000 / recentStates).toFixed(3)) : null,
+      perSecond: recentElapsedMs > 0 ? Number((recentDiscoveries * 1_000 / recentElapsedMs).toFixed(3)) : null,
+      trend,
+      yield: totals,
+    },
+    unavailableSignals: ["duplicate_rate", "discovery_spacing"],
+    disclosure: "Shadow only. This recommendation uses campaign-new bounded evidence, does not alter allocation, and is not an asymptote or coverage claim.",
+  };
 }
 
 export function forecastCampaign(ledger: CampaignLedger): CampaignForecast {
@@ -314,6 +462,7 @@ export function explainCampaignDecision(ledger: CampaignLedger): CampaignDecisio
       },
     } : {}),
     forecast: forecastCampaign(ledger),
+    ...(ledger.policy.longTail.reservedStates > 0 ? { longTailShadow: recommendLongTailShadow(ledger) } : {}),
     bindingConstraint: ledger.stopReason ?? null,
     permitsMoreWork: moreWork(ledger),
     drilldown: {

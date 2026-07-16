@@ -5,6 +5,7 @@ const {
   campaignRecommendation,
   explainCampaignDecision,
   forecastCampaign,
+  recommendLongTailShadow,
   resolveCampaignControl,
 } = require("../dist/campaign-controls");
 const {
@@ -126,4 +127,135 @@ test("decision explanations are compact, attributable, and link report drill-dow
   assert.strictEqual(decision.drilldown.curvesTool, "open_report");
   assert.match(decision.drilldown.reportId, /^report-/);
   assert.strictEqual(campaignRecommendation(ledger), "continue");
+});
+
+function longTailSequence({
+  resourcePreference = "balanced",
+  valuePreference = "outcomes",
+  yields,
+}) {
+  const windowStates = 100;
+  const policy = createCampaignPolicy({
+    intent: resourcePreference,
+    mode: "fixed",
+    valuePreference,
+    stopPolicy: "ceilings",
+    totalStates: windowStates * (yields.length + 1),
+    maxElapsedMs: 1_000_000,
+    maxMemoryBytes: 10_000_000,
+    maxDiskBytes: 10_000_000,
+    maxConcurrency: 1,
+    typicalWindowStates: windowStates,
+    longTailShare: yields.length / (yields.length + 1),
+    minLongTailProbes: 1,
+    regressionReserveStates: 0,
+  });
+  let ledger = createCampaignLedger(policy, fingerprint, start);
+  const commit = (plan, yieldValue, index) => commitCampaignRun(plan.ledger, {
+    now: new Date(Date.parse(start) + (index * 2 + 1) * 1_000).toISOString(),
+    bindingFingerprint: fingerprint,
+    allocationId: plan.allocation.id,
+    consumedStates: plan.allocation.grantedStates,
+    peakMemoryBytes: 1_000,
+    currentDiskBytes: 2_000,
+    stopReason: "window_complete",
+    windowElapsedMs: 1_000,
+    reportId: `report-${String(index + 100).padStart(24, "0")}`,
+    yield: yieldValue,
+  });
+  const base = planCampaignRun(ledger, { now: start, bindingFingerprint: fingerprint, recommendation: "continue" });
+  assert.strictEqual(base.action, "allocate");
+  assert.strictEqual(base.allocation.purpose, "typical");
+  ledger = commit(base, { critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: 0 }, 0);
+  const shadows = [];
+  yields.forEach((yieldValue, index) => {
+    const now = new Date(Date.parse(start) + (index * 2 + 2) * 1_000).toISOString();
+    const plan = planCampaignRun(ledger, {
+      now,
+      bindingFingerprint: fingerprint,
+      recommendation: "continue",
+      longTailPartition: { strategy: "portfolio", seed: index + 1, frontier: "root", maxDepth: 200 },
+    });
+    assert.strictEqual(plan.action, "allocate");
+    assert.strictEqual(plan.allocation.purpose, "long_tail");
+    ledger = commit(plan, yieldValue, index + 1);
+    shadows.push(recommendLongTailShadow(ledger));
+  });
+  return { ledger, shadows };
+}
+
+test("long-tail shadow replays the Intercept curve without changing live allocation", () => {
+  const terminalVariants = [1030, 508, 400, 340, 300, 293, 239, 229, 219];
+  const { ledger, shadows } = longTailSequence({
+    yields: terminalVariants.map((value) => ({ critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: value })),
+  });
+  assert.deepStrictEqual(shadows.map((shadow) => shadow.action), [
+    "rotate_partition", "rotate_partition", "rotate_partition", "rotate_partition", "rotate_partition",
+    "rotate_partition", "rotate_partition", "rotate_partition",
+    "stop_after_floor",
+  ]);
+  assert.strictEqual(shadows[3].reason, "preferred_yield_declining_rotate");
+  assert.strictEqual(shadows[3].recent.trend, "declining");
+  assert.strictEqual(shadows[3].recent.meaningfulDiscoveries, 1_248);
+  assert.strictEqual(shadows[3].recent.perMillionStates, 4_160_000);
+  assert.strictEqual(shadows[3].recent.perSecond, 416);
+  assert.strictEqual(shadows.at(-1).reason, "long_tail_authorization_exhausted");
+  assert.strictEqual(shadows.at(-1).remainingAuthorizedStates, 0);
+  assert.strictEqual(shadows.at(-1).liveEffect, false);
+  assert.deepStrictEqual(shadows.at(-1).unavailableSignals, ["duplicate_rate", "discovery_spacing"]);
+  assert.strictEqual(campaignRecommendation(ledger), "continue");
+  assert.deepStrictEqual(explainCampaignDecision(ledger).longTailShadow, shadows.at(-1));
+});
+
+test("long-tail shadow protects recovery and separates dry value preferences", () => {
+  const zero = { critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: 100 };
+  const recovered = longTailSequence({
+    valuePreference: "runtime_assertions",
+    yields: [zero, zero, { ...zero, critical: 1 }, zero, zero],
+  }).shadows;
+  assert.strictEqual(recovered[1].action, "rotate_partition");
+  assert.strictEqual(recovered[2].action, "expand_same_family");
+  assert.strictEqual(recovered[2].reason, "critical_or_intent_progress");
+
+  const dry = longTailSequence({
+    valuePreference: "runtime_assertions",
+    yields: [zero, zero, zero, zero, zero],
+  }).shadows;
+  assert.strictEqual(dry[2].action, "rotate_partition");
+  assert.strictEqual(dry[3].action, "stop_after_floor");
+  assert.strictEqual(dry[3].reason, "preferred_yield_dry");
+  assert.strictEqual(dry[3].recent.yield.terminalVariants, 300);
+  assert.strictEqual(dry[3].recent.meaningfulDiscoveries, 0);
+});
+
+test("resource postures require progressively more dry probes before a shadow stop", () => {
+  const zero = { critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: 0 };
+  const firstStop = (resourcePreference) => longTailSequence({
+    resourcePreference,
+    valuePreference: "outcomes",
+    yields: [zero, zero, zero, zero, zero, zero],
+  }).shadows.findIndex((shadow) => shadow.reason === "preferred_yield_dry") + 1;
+  assert.deepStrictEqual({ scarce: firstStop("scarce"), balanced: firstStop("balanced"), abundant: firstStop("abundant") }, {
+    scarce: 3,
+    balanced: 4,
+    abundant: 5,
+  });
+});
+
+test("nonzero late recovery is rotated or expanded, never mistaken for an asymptote", () => {
+  const value = (terminalVariants) => ({ critical: 0, intent: 0, authoredCoverage: 0, terminalVariants });
+  const recovered = longTailSequence({
+    valuePreference: "outcomes",
+    yields: [value(100), value(50), value(25), value(200), value(100)],
+  }).shadows;
+  assert.strictEqual(recovered.slice(0, 4).some((shadow) => shadow.action === "stop_after_floor"), false);
+  assert.strictEqual(recovered[3].action, "rotate_partition");
+  assert.strictEqual(recovered[3].recent.trend, "mixed");
+
+  const stable = longTailSequence({
+    valuePreference: "outcomes",
+    yields: [value(100), value(100), value(100), value(100), value(100)],
+  }).shadows;
+  assert.strictEqual(stable[3].action, "expand_same_family");
+  assert.strictEqual(stable[3].reason, "preferred_yield_rising_or_stable");
 });
