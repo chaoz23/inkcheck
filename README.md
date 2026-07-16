@@ -32,11 +32,17 @@ The same bargain applies to hardware. Local CLI and one-shot MCP portfolio check
 | Honest bounded evidence | **8/10** | Facts, estimates, limits, uncertainty, and proof always separated |
 | Robust unknown-shape exploration | **6/10** | Broad cross-family value without traversal or fixture overfitting |
 | Structured specialist advantage | **4/10** | Gates, loops, boundaries, and hubs tested by bounded expert probes |
-| Anytime value per wall clock | **8/10** | Early result windows, dynamic allocation, deadlines, and long-tail work |
+| Anytime value per wall clock | **7/10** | Early result windows and deadlines exist; first-window sizing is still fixed |
 | Author and agent intent | **8/10** | Safe invariants, goals, resource posture, and compact explanations |
 | Demonstrated generalization | **4/10** | Predeclared multi-project corpus, including genuinely medium/large work |
 
 These are separate scores, not an average. A high trust score cannot offset a lost runtime error. The detailed [product and engineering truths scorecard](docs/product-engineering-scorecard.md) defines every 10/10 target, current evidence, engineering constraints, and the reassessment protocol used at each epic or release. The first complete [policy v2 promotion evaluation](docs/promotion-policy-v2-evaluation.md) keeps dynamic allocation experimental rather than turning mixed evidence into a launch claim.
+
+### Inkcheck 0.6 scope
+
+Inkcheck 0.6 ships the anytime QA foundation without claiming a universally better dynamic search policy. The established bounded portfolio remains the search default. Workload-aware concurrency may left-shift results when a live pilot shows enough sustained work; durable campaigns can return, resume, and inspect source-bound result windows; humans and agents can choose named time/resource postures; and every automatic decision remains attributable. Long-tail expansion, rotation, and stopping stay shadow-only because the three-family promotion gate did not establish author-facing value broadly enough to make them live.
+
+This is a completed release contract, not a claim that the larger research problem is solved. Dynamic first-window sizing, compact large checkpoints, provider-attributed cost, broader agent evaluation, and bounded specialist explorers remain separately tracked roadmap work. A future release may replace the fixed portfolio only after checked evidence clears the same critical-retention, replay, resource, and honesty gates.
 
 ### Agent campaign policies
 
