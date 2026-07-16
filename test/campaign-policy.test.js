@@ -4,6 +4,7 @@ const {
   allocateDirectedCampaignRun,
   createCampaignLedger,
   createCampaignPolicy,
+  deriveIndependentLongTailPartition,
   planCampaignRun,
   commitCampaignRun,
 } = require("../dist/campaign-policy");
@@ -63,6 +64,16 @@ test("identical inputs produce identical campaign IDs, allocations, and reasons"
   const original = planCampaignRun(left, input);
   assert.strictEqual(original.action, "allocate");
   assert.strictEqual(reordered.allocation.id, original.allocation.id);
+  assert.deepStrictEqual(
+    deriveIndependentLongTailPartition(left, 100),
+    deriveIndependentLongTailPartition(right, 100)
+  );
+  assert.deepStrictEqual(deriveIndependentLongTailPartition(left, 100), {
+    strategy: "portfolio",
+    seed: deriveIndependentLongTailPartition(left, 100).seed,
+    frontier: "root",
+    maxDepth: 200,
+  });
 });
 
 test("ordinary windows cannot consume regression or long-tail reserves", () => {
@@ -186,9 +197,21 @@ test("protected long-tail work continues past a knee, then stops with unused bud
   const ordinary = planCampaignRun(ledger, { now: start, bindingFingerprint: fingerprint, recommendation: "continue" });
   assert.strictEqual(ordinary.action, "allocate");
   ledger = complete(ordinary.ledger, ordinary.allocation);
-  const tail = planCampaignRun(ledger, { now: "2026-07-14T12:00:02.000Z", bindingFingerprint: fingerprint, recommendation: "stop_at_knee" });
+  const tail = planCampaignRun(ledger, {
+    now: "2026-07-14T12:00:02.000Z",
+    bindingFingerprint: fingerprint,
+    recommendation: "stop_at_knee",
+    partition: { strategy: "shared", seed: 1 },
+    longTailPartition: { strategy: "portfolio", seed: 99, frontier: "root", maxDepth: 200 },
+  });
   assert.strictEqual(tail.action, "allocate");
   assert.strictEqual(tail.allocation.purpose, "long_tail");
+  assert.deepStrictEqual(tail.allocation.partition, {
+    strategy: "portfolio",
+    seed: 99,
+    frontier: "root",
+    maxDepth: 200,
+  });
   assert.match(tail.allocation.reason, /continues beyond/);
   ledger = complete(tail.ledger, tail.allocation, 3_000);
   const secondTail = planCampaignRun(ledger, { now: "2026-07-14T12:00:04.000Z", bindingFingerprint: fingerprint, recommendation: "stop_at_knee" });

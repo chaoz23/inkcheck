@@ -256,7 +256,7 @@ export function explorePortfolioPilotHandoffConcurrent(
       mode: "sequential",
       requestedConcurrency: options.concurrency,
       effectiveConcurrency: 1,
-      fallbackReason: reason === "pilot_open_frontier" ? undefined : reason,
+      ...(reason === "pilot_open_frontier" ? {} : { fallbackReason: reason }),
       workers: [{
         pass: engine.label,
         granted: pilotBudget,
@@ -285,7 +285,7 @@ export function explorePortfolioPilotHandoffConcurrent(
       mode: "sequential",
       requestedConcurrency: options.concurrency,
       effectiveConcurrency: 1,
-      fallbackReason: reason === "pilot_open_frontier" ? undefined : reason,
+      ...(reason === "pilot_open_frontier" ? {} : { fallbackReason: reason }),
       workers: (result.passes ?? []).map((pass) => ({
         pass: pass.pass,
         granted: pass.granted,

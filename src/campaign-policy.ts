@@ -143,6 +143,8 @@ export interface PlanCampaignInput {
   recommendation: CampaignRecommendation;
   exhaustive?: boolean;
   partition?: CampaignPartition;
+  /** Independent root-started trajectory used only for protected long-tail work. */
+  longTailPartition?: CampaignPartition;
   pendingRegressionReplays?: number;
 }
 
@@ -212,6 +214,23 @@ function stableHash(value: unknown): string {
 
 export function campaignLedgerDigest(ledger: CampaignLedger): string {
   return stableHash(ledger);
+}
+
+export function deriveIndependentLongTailPartition(
+  ledger: CampaignLedger,
+  baseDepth: number
+): CampaignPartition {
+  integer(baseDepth, "baseDepth", 1);
+  const sequence = ledger.allocations.length + 1;
+  const digest = createHash("sha256")
+    .update(`${ledger.campaignId}\0long-tail\0${sequence}`)
+    .digest();
+  return validatePartition({
+    strategy: "portfolio",
+    seed: digest.readUInt32BE(0) || 1,
+    frontier: "root",
+    maxDepth: Math.min(1_000, Math.max(100, baseDepth * 2)),
+  });
 }
 
 function validatePartition(partition: CampaignPartition): CampaignPartition {
@@ -457,7 +476,9 @@ export function planCampaignRun(ledger: CampaignLedger, input: PlanCampaignInput
   const next = clone(ledger);
   next.spend.elapsedMs = elapsedMs;
   const sequence = next.allocations.length + 1;
-  const partition = validatePartition(input.partition ?? {});
+  const partition = validatePartition(purpose === "long_tail"
+    ? input.longTailPartition ?? input.partition ?? {}
+    : input.partition ?? {});
   const allocation: CampaignAllocation = {
     sequence,
     id: `run-${stableHash({ campaignId: next.campaignId, sequence, purpose, grantedStates, partition }).slice(0, 24)}`,
