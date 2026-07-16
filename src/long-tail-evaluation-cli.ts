@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "crypto";
-import { spawn, spawnSync } from "child_process";
+import { spawn } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -322,19 +322,21 @@ function writeResult(outputFile: string, value: unknown): void {
   fs.renameSync(temporary, outputFile);
 }
 
-async function runIsolatedArm(
+export async function runIsolatedArm(
   manifestFile: string,
   caseId: string,
   arm: "same-frontier" | "independent",
-  workerTimeoutMs?: number
+  workerTimeoutMs?: number,
+  workerEntrypoint = __filename
 ): Promise<unknown> {
   const output = path.join(os.tmpdir(), `inkcheck-long-tail-${caseId}-${arm}-${process.pid}-${Date.now()}.json`);
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), `inkcheck-long-tail-worker-${caseId}-${arm}-`));
+  const hardTerminationScope = process.platform === "win32" ? "coordinator_process" : "process_group";
   try {
     const worker = await new Promise<{ timedOut: boolean; code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
       const child = spawn(process.execPath, [
         ...process.execArgv,
-        __filename,
+        workerEntrypoint,
         manifestFile,
         "--output", output,
         "--case", caseId,
@@ -349,7 +351,7 @@ async function runIsolatedArm(
       const killTree = (force: boolean) => {
         if (!child.pid) return;
         if (process.platform === "win32") {
-          spawnSync("taskkill", ["/pid", String(child.pid), "/t", ...(force ? ["/f"] : [])], { stdio: "ignore" });
+          child.kill(force ? "SIGKILL" : "SIGTERM");
           return;
         }
         try {
@@ -377,6 +379,7 @@ async function runIsolatedArm(
         unavailable: true,
         reason: "worker_timeout_before_snapshot",
         timeoutMs: workerTimeoutMs,
+        hardTerminationScope,
       };
       throw new Error(`${caseId} ${arm} worker exited with ${worker.signal ?? worker.code} before writing evidence`);
     }
@@ -390,7 +393,7 @@ async function runIsolatedArm(
     return {
       ...recovered.armResult,
       worker: worker.timedOut
-        ? { status: "hard_timeout_snapshot", timeoutMs: workerTimeoutMs }
+        ? { status: "hard_timeout_snapshot", timeoutMs: workerTimeoutMs, hardTerminationScope }
         : { status: "completed" },
     };
   } finally {
@@ -492,7 +495,9 @@ async function main(): Promise<void> {
   process.stdout.write(`${outputFile}\n`);
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}
