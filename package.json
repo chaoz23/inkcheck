@@ -51,6 +51,7 @@
     "benchmarks/results/concurrency-activation-pilot-v2.json",
     "benchmarks/results/concurrency-activation-handoff-v3.json",
     "benchmarks/long-tail-partition-evaluation-v1.json",
+    "benchmarks/long-tail-promotion-v2.json",
     "benchmarks/results/long-tail-partition-intercept-5m-v1.json",
     "benchmarks/results/long-tail-partition-synthetic-control-v1.json",
     "skills/inkcheck",

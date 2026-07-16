@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 2,
+  "workerTimeoutMs": 900000,
+  "cases": [
+    {
+      "id": "dog-ink-adventure-5m",
+      "story": "authored/dog-ink-adventure/root.ink",
+      "source": {
+        "name": "Dog Ink Adventure",
+        "license": "MIT",
+        "commit": "402b47c004c40c599877ae9dc75cc0aad7db887c",
+        "licenseFile": "authored/dog-ink-adventure/LICENSE"
+      },
+      "baseStates": 500000,
+      "additionalStates": 4500000,
+      "maxDepth": 100,
+      "seed": 7,
+      "storySeed": 1,
+      "maxElapsedSeconds": 840,
+      "maxMemoryMb": 4096,
+      "maxDiskMb": 2048
+    },
+    {
+      "id": "the-intercept-5m",
+      "story": "authored/the-intercept/TheIntercept.ink",
+      "source": {
+        "name": "The Intercept",
+        "license": "MIT",
+        "commit": "2a816b56e61ce4bf02bec1c638074645bdd871e3",
+        "licenseFile": "authored/the-intercept/LICENSE-AND-PROVENANCE.md"
+      },
+      "baseStates": 500000,
+      "additionalStates": 4500000,
+      "maxDepth": 100,
+      "seed": 7,
+      "storySeed": 1,
+      "maxElapsedSeconds": 840,
+      "maxMemoryMb": 4096,
+      "maxDiskMb": 2048
+    },
+    {
+      "id": "heresy2-5m",
+      "story": "authored/heresy2/heresy2.ink",
+      "source": {
+        "name": "Heresy II",
+        "license": "CC-BY-4.0",
+        "commit": "37b8a7804217bb40a9f69f6fd9c173f2017d550e",
+        "licenseFile": "authored/heresy2/LICENSE"
+      },
+      "baseStates": 500000,
+      "additionalStates": 4500000,
+      "maxDepth": 100,
+      "seed": 7,
+      "storySeed": 1,
+      "maxElapsedSeconds": 840,
+      "maxMemoryMb": 4096,
+      "maxDiskMb": 2048
+    }
+  ]
+}

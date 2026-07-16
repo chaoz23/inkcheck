@@ -1,8 +1,10 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
+const { spawnSync } = require("node:child_process");
 const { recommendLongTailShadow } = require("../dist/campaign-controls");
 const { createCampaignLedger, createCampaignPolicy } = require("../dist/campaign-policy");
 
@@ -98,4 +100,105 @@ test("long-tail evaluation pins a finite control and a matched 5M authored campa
     "rotate_partition", "rotate_partition", "rotate_partition", "rotate_partition", "rotate_partition",
     "rotate_partition", "rotate_partition", "rotate_partition", "stop_after_floor",
   ]);
+});
+
+test("long-tail promotion manifest predeclares three guarded authored 5M families", () => {
+  const manifest = json("benchmarks/long-tail-promotion-v2.json");
+  assert.strictEqual(manifest.schemaVersion, 2);
+  assert.strictEqual(manifest.workerTimeoutMs, 900_000);
+  assert.deepStrictEqual(manifest.cases.map((entry) => entry.id), [
+    "dog-ink-adventure-5m",
+    "the-intercept-5m",
+    "heresy2-5m",
+  ]);
+  for (const entry of manifest.cases) {
+    assert.strictEqual(entry.baseStates + entry.additionalStates, 5_000_000);
+    assert.strictEqual(entry.maxDepth, 100);
+    assert.ok(entry.maxElapsedSeconds * 1_000 < manifest.workerTimeoutMs);
+    assert.ok(fs.existsSync(path.join(ROOT, "benchmarks", entry.story)));
+    assert.ok(fs.existsSync(path.join(ROOT, "benchmarks", entry.source.licenseFile)));
+  }
+});
+
+test("long-tail evaluator records pre-snapshot hard timeouts instead of losing the matrix", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-long-tail-timeout-test-"));
+  try {
+    const manifestFile = path.join(root, "manifest.json");
+    const outputFile = path.join(root, "result.json");
+    fs.writeFileSync(manifestFile, JSON.stringify({
+      schemaVersion: 1,
+      cases: [{
+        id: "forced-timeout",
+        story: path.join(ROOT, "test", "fixtures", "search", "long-tail-early-gate.ink"),
+        source: { name: "timeout fixture", license: "MIT", commit: "test", licenseFile: null },
+        baseStates: 100,
+        additionalStates: 100,
+        maxDepth: 100,
+        seed: 7,
+        storySeed: 1,
+        maxElapsedSeconds: 60,
+        maxMemoryMb: 512,
+        maxDiskMb: 64,
+      }],
+    }));
+    const run = spawnSync(process.execPath, [
+      path.join(ROOT, "dist", "long-tail-evaluation-cli.js"),
+      manifestFile,
+      "--output", outputFile,
+      "--worker-timeout-ms", "1",
+    ], { encoding: "utf8", timeout: 30_000 });
+    assert.strictEqual(run.status, 0, run.stderr);
+    const result = JSON.parse(fs.readFileSync(outputFile, "utf8"));
+    assert.strictEqual(result.cases.length, 1);
+    for (const arm of [result.cases[0].sameFrontier, result.cases[0].independent]) {
+      assert.strictEqual(arm.unavailable, true);
+      assert.strictEqual(arm.reason, "worker_timeout_before_snapshot");
+      assert.strictEqual(arm.timeoutMs, 1);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("long-tail evaluator recovers atomic partial evidence after a hard timeout", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-long-tail-snapshot-test-"));
+  try {
+    const manifestFile = path.join(root, "manifest.json");
+    const outputFile = path.join(root, "result.json");
+    fs.writeFileSync(manifestFile, JSON.stringify({
+      schemaVersion: 1,
+      cases: [{
+        id: "forced-partial",
+        story: path.join(ROOT, "benchmarks", "authored", "the-intercept", "TheIntercept.ink"),
+        source: { name: "The Intercept", license: "MIT", commit: "test", licenseFile: null },
+        baseStates: 1_000,
+        additionalStates: 9_000,
+        maxDepth: 100,
+        seed: 7,
+        storySeed: 1,
+        maxElapsedSeconds: 60,
+        maxMemoryMb: 512,
+        maxDiskMb: 64,
+      }],
+    }));
+    const run = spawnSync(process.execPath, [
+      path.join(ROOT, "dist", "long-tail-evaluation-cli.js"),
+      manifestFile,
+      "--output", outputFile,
+      "--worker-timeout-ms", "4000",
+    ], { encoding: "utf8", timeout: 30_000 });
+    assert.strictEqual(run.status, 0, run.stderr);
+    const result = JSON.parse(fs.readFileSync(outputFile, "utf8"));
+    const arms = [result.cases[0].sameFrontier, result.cases[0].independent];
+    assert.ok(arms.some((arm) => arm.worker.status === "hard_timeout_snapshot"));
+    for (const arm of arms) {
+      assert.ok(["completed", "hard_timeout_snapshot"].includes(arm.worker.status));
+      if (arm.worker.status === "hard_timeout_snapshot") assert.strictEqual(arm.worker.timeoutMs, 4_000);
+      assert.strictEqual(arm.base.result.statesExplored, 1_000);
+      assert.ok(Array.isArray(arm.additional.windows));
+      assert.strictEqual(arm.invariants.campaignStatesWithinCeiling, true);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

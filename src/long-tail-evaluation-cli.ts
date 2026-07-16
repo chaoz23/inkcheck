@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "crypto";
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -26,7 +26,11 @@ interface EvaluationCase {
   maxDiskMb: number;
 }
 
-interface EvaluationManifest { schemaVersion: 1; cases: EvaluationCase[] }
+interface EvaluationManifest {
+  schemaVersion: 1 | 2;
+  workerTimeoutMs?: number;
+  cases: EvaluationCase[];
+}
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -39,8 +43,13 @@ function integer(value: unknown, label: string, min: number, max: number): asser
 }
 
 function validateManifest(value: unknown): asserts value is EvaluationManifest {
-  if (!object(value) || value.schemaVersion !== 1 || !Array.isArray(value.cases) || value.cases.length === 0) {
-    throw new Error("long-tail manifest requires schemaVersion 1 and a non-empty cases list");
+  if (!object(value) || ![1, 2].includes(Number(value.schemaVersion)) || !Array.isArray(value.cases) || value.cases.length === 0) {
+    throw new Error("long-tail manifest requires schemaVersion 1 or 2 and a non-empty cases list");
+  }
+  const manifestWorkerTimeoutMs = value.workerTimeoutMs;
+  if (manifestWorkerTimeoutMs !== undefined) integer(manifestWorkerTimeoutMs, "workerTimeoutMs", 1, 604_800_000);
+  if (value.schemaVersion === 2 && manifestWorkerTimeoutMs === undefined) {
+    throw new Error("long-tail manifest schemaVersion 2 requires workerTimeoutMs");
   }
   const ids = new Set<string>();
   value.cases.forEach((raw, index) => {
@@ -58,10 +67,17 @@ function validateManifest(value: unknown): asserts value is EvaluationManifest {
     integer(entry.baseStates, `${entry.id}.baseStates`, 1, 100_000_000);
     integer(entry.additionalStates, `${entry.id}.additionalStates`, 1, 5_000_000);
     if (entry.baseStates + entry.additionalStates > 100_000_000) throw new Error(`${entry.id} exceeds the 100M campaign ceiling`);
+    if (entry.additionalStates > entry.baseStates * 9) throw new Error(`${entry.id} long-tail share exceeds 0.9`);
+    if (Math.ceil((entry.baseStates + entry.additionalStates) / entry.baseStates) > 1_024) {
+      throw new Error(`${entry.id} may require more than 1024 durable windows`);
+    }
     integer(entry.maxDepth, `${entry.id}.maxDepth`, 1, 1_000);
     integer(entry.seed, `${entry.id}.seed`, 1, 0xffffffff);
     integer(entry.storySeed, `${entry.id}.storySeed`, 1, 2_147_483_646);
     integer(entry.maxElapsedSeconds, `${entry.id}.maxElapsedSeconds`, 1, 604_800);
+    if (manifestWorkerTimeoutMs !== undefined && entry.maxElapsedSeconds * 1_000 >= manifestWorkerTimeoutMs) {
+      throw new Error(`${entry.id}.maxElapsedSeconds requires headroom below workerTimeoutMs`);
+    }
     integer(entry.maxMemoryMb, `${entry.id}.maxMemoryMb`, 1, 1_000_000);
     integer(entry.maxDiskMb, `${entry.id}.maxDiskMb`, 1, 1_000_000);
   });
@@ -206,7 +222,13 @@ function copyStory(source: string, root: string): string {
   return target;
 }
 
-async function runArm(source: string, entry: EvaluationCase, root: string, independent: boolean) {
+async function runArm(
+  source: string,
+  entry: EvaluationCase,
+  root: string,
+  independent: boolean,
+  onSnapshot: (value: unknown) => void = () => {}
+) {
   const label = independent ? "independent" : "same-frontier";
   const file = copyStory(source, root);
   const baseStarted = Date.now();
@@ -233,6 +255,34 @@ async function runArm(source: string, entry: EvaluationCase, root: string, indep
     newEvidence: ReturnType<typeof delta>;
   }> = [];
   const additionalResults: ExploreResult[] = [];
+  const armResult = async (final: boolean) => {
+    const checkpointAfter = final ? await checkpointHash(root, response) : null;
+    const evidenceResults = independent ? additionalResults : additionalResults.slice(-1);
+    return {
+      base: {
+        elapsedMs: baseElapsedMs,
+        reportId: base.session.latestReportId,
+        checkpointId: base.session.latestCheckpointId,
+        result: compactResult(baseResult),
+      },
+      additional: {
+        elapsedMs: Date.now() - continuationStarted,
+        windows: additionalWindows,
+        combinedEvidence: combinedEvidence(evidenceResults),
+        newEvidence: combinedDelta(baseResult, evidenceResults),
+        ledger: compactLedger(root),
+      },
+      invariants: {
+        baseReportPreserved: independent ? response.session.latestReportId === base.session.latestReportId : null,
+        baseCheckpointPreserved: independent && final
+          ? response.session.latestCheckpointId === base.session.latestCheckpointId && checkpointBefore === checkpointAfter
+          : null,
+        campaignStatesWithinCeiling: response.campaign!.spend.states <= response.campaign!.ceilings.totalStates,
+        reportReopens: true,
+      },
+    };
+  };
+  onSnapshot(await armResult(false));
   while (response.campaign!.spend.states < response.campaign!.ceilings.totalStates && response.session.recoverable) {
     const previousSpend = response.campaign!.spend.states;
     const windowStarted = Date.now();
@@ -260,33 +310,9 @@ async function runArm(source: string, entry: EvaluationCase, root: string, indep
     });
     process.stderr.write(`${entry.id} ${label} window ${additionalWindows.length}: campaign=${response.campaign!.spend.states} report=${windowResult.statesExplored} states\n`);
     if (response.campaign!.spend.states <= previousSpend) throw new Error(`${entry.id} ${label} campaign made no accounting progress`);
+    onSnapshot(await armResult(false));
   }
-  const continuationElapsedMs = Date.now() - continuationStarted;
-  const checkpointAfter = await checkpointHash(root, response);
-  const evidenceResults = independent ? additionalResults : additionalResults.slice(-1);
-  return {
-    base: {
-      elapsedMs: baseElapsedMs,
-      reportId: base.session.latestReportId,
-      checkpointId: base.session.latestCheckpointId,
-      result: compactResult(baseResult),
-    },
-    additional: {
-      elapsedMs: continuationElapsedMs,
-      windows: additionalWindows,
-      combinedEvidence: combinedEvidence(evidenceResults),
-      newEvidence: combinedDelta(baseResult, evidenceResults),
-      ledger: compactLedger(root),
-    },
-    invariants: {
-      baseReportPreserved: independent ? response.session.latestReportId === base.session.latestReportId : null,
-      baseCheckpointPreserved: independent
-        ? response.session.latestCheckpointId === base.session.latestCheckpointId && checkpointBefore === checkpointAfter
-        : null,
-      campaignStatesWithinCeiling: response.campaign!.spend.states <= response.campaign!.ceilings.totalStates,
-      reportReopens: true,
-    },
-  };
+  return armResult(true);
 }
 
 function writeResult(outputFile: string, value: unknown): void {
@@ -299,11 +325,13 @@ function writeResult(outputFile: string, value: unknown): void {
 async function runIsolatedArm(
   manifestFile: string,
   caseId: string,
-  arm: "same-frontier" | "independent"
+  arm: "same-frontier" | "independent",
+  workerTimeoutMs?: number
 ): Promise<unknown> {
   const output = path.join(os.tmpdir(), `inkcheck-long-tail-${caseId}-${arm}-${process.pid}-${Date.now()}.json`);
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), `inkcheck-long-tail-worker-${caseId}-${arm}-`));
   try {
-    await new Promise<void>((resolve, reject) => {
+    const worker = await new Promise<{ timedOut: boolean; code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
       const child = spawn(process.execPath, [
         ...process.execArgv,
         __filename,
@@ -311,15 +339,63 @@ async function runIsolatedArm(
         "--output", output,
         "--case", caseId,
         "--arm", arm,
-      ], { stdio: ["ignore", "inherit", "inherit"] });
+      ], {
+        stdio: ["ignore", "inherit", "inherit"],
+        detached: process.platform !== "win32",
+        env: { ...process.env, INKCHECK_LONG_TAIL_PROJECT_ROOT: projectRoot },
+      });
+      let timedOut = false;
+      let hardKill: NodeJS.Timeout | undefined;
+      const killTree = (force: boolean) => {
+        if (!child.pid) return;
+        if (process.platform === "win32") {
+          spawnSync("taskkill", ["/pid", String(child.pid), "/t", ...(force ? ["/f"] : [])], { stdio: "ignore" });
+          return;
+        }
+        try {
+          process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      };
+      const timeout = workerTimeoutMs === undefined ? undefined : setTimeout(() => {
+        timedOut = true;
+        killTree(false);
+        hardKill = setTimeout(() => killTree(true), 5_000);
+        hardKill.unref();
+      }, workerTimeoutMs);
+      timeout?.unref();
       child.once("error", reject);
-      child.once("exit", (code, signal) => code === 0
-        ? resolve()
-        : reject(new Error(`${caseId} ${arm} worker exited with ${signal ?? code}`)));
+      child.once("exit", (code, signal) => {
+        if (timeout) clearTimeout(timeout);
+        if (hardKill) clearTimeout(hardKill);
+        resolve({ timedOut, code, signal });
+      });
     });
-    return (JSON.parse(fs.readFileSync(output, "utf8")) as { armResult: unknown }).armResult;
+    if (!fs.existsSync(output)) {
+      if (worker.timedOut) return {
+        unavailable: true,
+        reason: "worker_timeout_before_snapshot",
+        timeoutMs: workerTimeoutMs,
+      };
+      throw new Error(`${caseId} ${arm} worker exited with ${worker.signal ?? worker.code} before writing evidence`);
+    }
+    const recovered = JSON.parse(fs.readFileSync(output, "utf8")) as { armResult: Record<string, unknown>; complete?: boolean };
+    if (!worker.timedOut && worker.code !== 0) {
+      return {
+        ...recovered.armResult,
+        worker: { status: "error_snapshot", exit: worker.signal ?? worker.code },
+      };
+    }
+    return {
+      ...recovered.armResult,
+      worker: worker.timedOut
+        ? { status: "hard_timeout_snapshot", timeoutMs: workerTimeoutMs }
+        : { status: "completed" },
+    };
   } finally {
     fs.rmSync(output, { force: true });
+    fs.rmSync(projectRoot, { recursive: true, force: true });
   }
 }
 
@@ -328,18 +404,23 @@ async function main(): Promise<void> {
   const outputIndex = args.indexOf("--output");
   const caseIndex = args.indexOf("--case");
   const armIndex = args.indexOf("--arm");
-  const expectedLength = 3 + (caseIndex === -1 ? 0 : 2) + (armIndex === -1 ? 0 : 2);
+  const timeoutIndex = args.indexOf("--worker-timeout-ms");
+  const expectedLength = 3 + (caseIndex === -1 ? 0 : 2) + (armIndex === -1 ? 0 : 2) + (timeoutIndex === -1 ? 0 : 2);
   if (args.length !== expectedLength || outputIndex !== 1 || (caseIndex !== -1 && !args[caseIndex + 1])
-    || (armIndex !== -1 && !["same-frontier", "independent"].includes(args[armIndex + 1]))) {
-    throw new Error("usage: inkcheck-long-tail-eval manifest.json --output result.json [--case ID] [--arm same-frontier|independent]");
+    || (armIndex !== -1 && !["same-frontier", "independent"].includes(args[armIndex + 1]))
+    || (timeoutIndex !== -1 && !args[timeoutIndex + 1])) {
+    throw new Error("usage: inkcheck-long-tail-eval manifest.json --output result.json [--case ID] [--arm same-frontier|independent] [--worker-timeout-ms MS]");
   }
   const manifestFile = path.resolve(args[0]);
   const outputFile = path.resolve(args[2]);
   const selectedCase = caseIndex === -1 ? undefined : args[caseIndex + 1];
   const arm = armIndex === -1 ? undefined : args[armIndex + 1] as "same-frontier" | "independent";
+  const timeoutOverride = timeoutIndex === -1 ? undefined : Number(args[timeoutIndex + 1]);
+  if (timeoutOverride !== undefined) integer(timeoutOverride, "--worker-timeout-ms", 1, 604_800_000);
   const manifestRaw = fs.readFileSync(manifestFile);
   const manifest = JSON.parse(manifestRaw.toString("utf8")) as unknown;
   validateManifest(manifest);
+  const workerTimeoutMs = timeoutOverride ?? manifest.workerTimeoutMs;
   const selected = selectedCase ? manifest.cases.filter((entry) => entry.id === selectedCase) : manifest.cases;
   if (selected.length === 0) throw new Error(`unknown long-tail evaluation case: ${selectedCase}`);
   if (arm) {
@@ -347,16 +428,30 @@ async function main(): Promise<void> {
     const entry = selected[0];
     const source = path.resolve(path.dirname(manifestFile), entry.story);
     if (!fs.existsSync(source)) throw new Error(`${entry.id}: story not found: ${source}`);
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), `inkcheck-long-tail-${arm}-${entry.id}-`));
+    const configuredRoot = process.env.INKCHECK_LONG_TAIL_PROJECT_ROOT;
+    if (configuredRoot) {
+      const resolved = path.resolve(configuredRoot);
+      const relative = path.relative(path.resolve(os.tmpdir()), resolved);
+      if (!path.basename(resolved).startsWith("inkcheck-long-tail-worker-")
+        || relative.startsWith("..") || path.isAbsolute(relative)) {
+        throw new Error("isolated long-tail project root must be a dedicated temporary directory");
+      }
+    }
+    const root = configuredRoot
+      ? path.resolve(configuredRoot)
+      : fs.mkdtempSync(path.join(os.tmpdir(), `inkcheck-long-tail-${arm}-${entry.id}-`));
+    if (configuredRoot) fs.mkdirSync(root, { recursive: true });
     try {
-      writeResult(outputFile, { armResult: await runArm(source, entry, root, arm === "independent") });
+      const persistSnapshot = (armResult: unknown) => writeResult(outputFile, { complete: false, armResult });
+      const armResult = await runArm(source, entry, root, arm === "independent", persistSnapshot);
+      writeResult(outputFile, { complete: true, armResult });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
     return;
   }
   const result = {
-    schemaVersion: 1,
+    schemaVersion: manifest.schemaVersion,
     inkcheckVersion: VERSION,
     manifestSha256: sha256(JSON.stringify(manifest)),
     environment: {
@@ -365,15 +460,14 @@ async function main(): Promise<void> {
       node: process.version,
       cpuCount: os.cpus().length,
       totalMemoryBytes: os.totalmem(),
+      workerTimeoutMs: workerTimeoutMs ?? null,
     },
     cases: [] as unknown[],
   };
   for (const entry of selected) {
     const source = path.resolve(path.dirname(manifestFile), entry.story);
     if (!fs.existsSync(source)) throw new Error(`${entry.id}: story not found: ${source}`);
-    const sameFrontier = await runIsolatedArm(manifestFile, entry.id, "same-frontier");
-    const independent = await runIsolatedArm(manifestFile, entry.id, "independent");
-    result.cases.push({
+    const caseResult: Record<string, unknown> = {
       id: entry.id,
       source: entry.source,
       sourceSha256: sha256(fs.readFileSync(source)),
@@ -383,11 +477,16 @@ async function main(): Promise<void> {
         maxDepth: entry.maxDepth,
         seed: entry.seed,
         storySeed: entry.storySeed,
+        maxElapsedSeconds: entry.maxElapsedSeconds,
         maxMemoryMb: entry.maxMemoryMb,
+        maxDiskMb: entry.maxDiskMb,
       },
-      sameFrontier,
-      independent,
-    });
+    };
+    result.cases.push(caseResult);
+    writeResult(outputFile, result);
+    caseResult.sameFrontier = await runIsolatedArm(manifestFile, entry.id, "same-frontier", workerTimeoutMs);
+    writeResult(outputFile, result);
+    caseResult.independent = await runIsolatedArm(manifestFile, entry.id, "independent", workerTimeoutMs);
     writeResult(outputFile, result);
   }
   process.stdout.write(`${outputFile}\n`);
