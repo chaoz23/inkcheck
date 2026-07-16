@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "evaluation": "concurrency-activation-handoff-v3",
+  "date": "2026-07-16",
+  "candidate": {
+    "policyVersion": "single-pass-frontier-v3",
+    "pilotPass": "dfs:inside-out",
+    "pilotStates": 1024,
+    "concurrency": 4,
+    "duplicateStateEvaluations": 0,
+    "uncertainty": "high",
+    "productionEligible": true,
+    "reason": "The no-replay executor clears its implementation gates; automatic production activation remains a separate promotion decision."
+  },
+  "synthetic100k": {
+    "pairs": 80,
+    "pilotExhaustive": 62,
+    "pilotDepthBound": 14,
+    "pilotAuthoredFrontierSaturated": 2,
+    "activatedOpenFrontier": 2,
+    "evidenceOrProofRegressions": 0,
+    "budgetOverruns": 0,
+    "duplicateStateEvaluations": 0,
+    "scheduleRegressions": 0,
+    "medianBaselineElapsedMs": 141,
+    "medianCandidateElapsedMs": 124,
+    "medianBaselinePeakRssMiB": 57.0,
+    "medianCandidatePeakRssMiB": 55.5,
+    "medianBaselineTimeToMeaningfulMs": [15.1, 23.6, 37.2],
+    "medianCandidateTimeToMeaningfulMs": [10.2, 18.1, 31.7],
+    "activatedCells": [
+      {
+        "case": "early-choice-grid",
+        "depth": 100,
+        "seed": 1
+      },
+      {
+        "case": "early-choice-grid",
+        "depth": 100,
+        "seed": 7
+      }
+    ]
+  },
+  "authored5m": [
+    {
+      "case": "the-intercept",
+      "maxDepth": 30,
+      "searchSeed": 7,
+      "decision": "stay_sequential",
+      "reason": "pilot_depth_bound",
+      "baselineElapsedMs": 514658,
+      "candidateElapsedMs": 533381,
+      "baselinePeakRssMiB": 497.6,
+      "candidatePeakRssMiB": 501.9,
+      "runtimeErrors": [0, 0],
+      "visitedKnots": [25, 25],
+      "exactTerminals": [831, 831],
+      "evidenceOrProofRegressions": 0,
+      "duplicateStateEvaluations": 0
+    },
+    {
+      "case": "the-intercept",
+      "maxDepth": 100,
+      "searchSeed": 7,
+      "decision": "activate_concurrent",
+      "reason": "pilot_open_frontier",
+      "baselineElapsedMs": 657682,
+      "candidateElapsedMs": 488989,
+      "elapsedImprovementPercent": 25.6,
+      "baselineTimeToFirstMeaningfulMs": 88947,
+      "candidateTimeToFirstMeaningfulMs": 401,
+      "baselinePeakRssMiB": 508.9,
+      "candidatePeakRssMiB": 772.6,
+      "runtimeErrors": [0, 0],
+      "visitedKnots": [29, 29],
+      "exactTerminals": [4456, 4456],
+      "evidenceOrProofRegressions": 0,
+      "duplicateStateEvaluations": 0
+    }
+  ],
+  "interpretation": [
+    "The live pilot can classify the workload without spending states outside the user's ceiling.",
+    "Completing the original first-round grants before adapting preserves rejected-run evidence and schedule.",
+    "Open-frontier activation retained exact authored evidence while left-shifting meaningful evidence and completion.",
+    "The executor remains promotion-harness-only until the separate automatic-default decision is made."
+  ]
+}

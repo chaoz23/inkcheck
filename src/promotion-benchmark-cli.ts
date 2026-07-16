@@ -9,6 +9,7 @@ import {
   CONCURRENCY_ACTIVATION_PILOT_STATES,
   explorePortfolioConcurrent,
   explorePortfolioPilotActivatedConcurrent,
+  explorePortfolioPilotHandoffConcurrent,
 } from "./concurrent-portfolio";
 import {
   comparePromotionPair,
@@ -31,7 +32,7 @@ import {
 import type { AssertionDefinition } from "./assertions";
 import { createResourceGuards } from "./resource-guards";
 
-type WorkerStrategy = "fixed-portfolio" | "policy-v2-replay" | "shared-checkpoint" | "concurrent-portfolio" | "pilot-concurrent-portfolio";
+type WorkerStrategy = "fixed-portfolio" | "policy-v2-replay" | "shared-checkpoint" | "concurrent-portfolio" | "pilot-concurrent-portfolio" | "handoff-concurrent-portfolio";
 type CandidateStrategy = Exclude<WorkerStrategy, "fixed-portfolio">;
 
 interface WorkerRequest {
@@ -144,6 +145,14 @@ async function worker(requestFile: string): Promise<void> {
         deadlineMs: guards.deadlineMs,
       });
     }
+    if (strategy === "handoff-concurrent-portfolio") {
+      return explorePortfolioPilotHandoffConcurrent(compiled.storyJson!, knots, externals, {
+        ...snapshotOptions,
+        concurrency: request.concurrency ?? 4,
+        memoryCapBytes: guards.memoryCapBytes,
+        deadlineMs: guards.deadlineMs,
+      });
+    }
     return explorePortfolio(compiled.storyJson!, knots, externals, snapshotOptions);
   };
   const measured = runSearchBenchmark(strategy, run);
@@ -236,19 +245,20 @@ async function main(): Promise<void> {
   if (workerMaxMemoryMb !== undefined && (!Number.isSafeInteger(workerMaxMemoryMb) || workerMaxMemoryMb < 1 || workerMaxMemoryMb > 1_000_000)) {
     throw new Error("--worker-max-memory-mb requires an integer from 1 to 1000000");
   }
-  if (!["policy-v2-replay", "shared-checkpoint", "concurrent-portfolio", "pilot-concurrent-portfolio"].includes(candidateStrategy)) {
-    throw new Error("--candidate-strategy requires policy-v2-replay, shared-checkpoint, concurrent-portfolio, or pilot-concurrent-portfolio");
+  const concurrentCandidates = ["concurrent-portfolio", "pilot-concurrent-portfolio", "handoff-concurrent-portfolio"];
+  if (!["policy-v2-replay", "shared-checkpoint", ...concurrentCandidates].includes(candidateStrategy)) {
+    throw new Error("--candidate-strategy requires policy-v2-replay, shared-checkpoint, concurrent-portfolio, pilot-concurrent-portfolio, or handoff-concurrent-portfolio");
   }
   if (!Number.isSafeInteger(candidateConcurrency) || candidateConcurrency < 2 || candidateConcurrency > 16) {
     throw new Error("--candidate-concurrency requires an integer from 2 to 16");
   }
-  if (candidateConcurrencyText !== undefined && !["concurrent-portfolio", "pilot-concurrent-portfolio"].includes(candidateStrategy)) {
+  if (candidateConcurrencyText !== undefined && !concurrentCandidates.includes(candidateStrategy)) {
     throw new Error("--candidate-concurrency requires a concurrent portfolio candidate");
   }
   if (markdown && deterministic) throw new Error("--markdown and --deterministic are mutually exclusive");
   const optionValues = new Set([selectedCase, selectedBudgetText, workerTimeoutText, workerMemoryText, candidateStrategyText, candidateConcurrencyText].filter((value): value is string => value !== undefined));
   const positional = args.filter((arg) => !["--markdown", "--ci", "--deterministic", "--case", "--budget", "--worker-timeout-ms", "--worker-max-memory-mb", "--candidate-strategy", "--candidate-concurrency"].includes(arg) && !optionValues.has(arg));
-  if (positional.length !== 1) throw new Error("usage: inkcheck-promotion manifest.json [--ci] [--case ID] [--budget STATES] [--candidate-strategy policy-v2-replay|shared-checkpoint|concurrent-portfolio|pilot-concurrent-portfolio] [--candidate-concurrency N] [--worker-timeout-ms MS] [--worker-max-memory-mb MB] [--markdown|--deterministic]");
+  if (positional.length !== 1) throw new Error("usage: inkcheck-promotion manifest.json [--ci] [--case ID] [--budget STATES] [--candidate-strategy policy-v2-replay|shared-checkpoint|concurrent-portfolio|pilot-concurrent-portfolio|handoff-concurrent-portfolio] [--candidate-concurrency N] [--worker-timeout-ms MS] [--worker-max-memory-mb MB] [--markdown|--deterministic]");
   const manifestFile = path.resolve(positional[0]);
   const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8")) as PromotionManifest;
   validatePromotionManifest(manifest);
@@ -288,7 +298,7 @@ async function main(): Promise<void> {
           candidate = runWorker({
             ...request,
             strategy: candidateStrategy,
-            ...(["concurrent-portfolio", "pilot-concurrent-portfolio"].includes(candidateStrategy) ? { concurrency: candidateConcurrency } : {}),
+            ...(concurrentCandidates.includes(candidateStrategy) ? { concurrency: candidateConcurrency } : {}),
           }, scratch, sequence++, workerLimits);
         } catch (error) {
           if (!(error instanceof WorkerTimeoutError) || !workerTimeoutMs) throw error;
@@ -310,7 +320,7 @@ async function main(): Promise<void> {
             candidateRepeat = runWorker({
               ...request,
               strategy: candidateStrategy,
-              ...(["concurrent-portfolio", "pilot-concurrent-portfolio"].includes(candidateStrategy) ? { concurrency: candidateConcurrency } : {}),
+              ...(concurrentCandidates.includes(candidateStrategy) ? { concurrency: candidateConcurrency } : {}),
             }, scratch, sequence++, workerLimits);
           } catch (error) {
             if (!(error instanceof WorkerTimeoutError) || !workerTimeoutMs) throw error;
@@ -347,10 +357,10 @@ async function main(): Promise<void> {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     candidate: candidateStrategy,
-    ...(["concurrent-portfolio", "pilot-concurrent-portfolio"].includes(candidateStrategy)
+    ...(concurrentCandidates.includes(candidateStrategy)
       ? { candidateConfiguration: {
           concurrency: candidateConcurrency,
-          ...(candidateStrategy === "pilot-concurrent-portfolio" ? { pilotStates: CONCURRENCY_ACTIVATION_PILOT_STATES } : {}),
+          ...(["pilot-concurrent-portfolio", "handoff-concurrent-portfolio"].includes(candidateStrategy) ? { pilotStates: CONCURRENCY_ACTIVATION_PILOT_STATES } : {}),
         } }
       : {}),
     baseline: "fixed-portfolio",

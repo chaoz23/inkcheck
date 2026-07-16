@@ -340,6 +340,31 @@ test("promotion harness records the research-only concurrency activation pilot",
   }
 });
 
+test("promotion harness measures exact-budget live pilot handoff", () => {
+  const proc = spawnSync(process.execPath, [
+    PROMOTION_CLI,
+    path.join(__dirname, "..", "benchmarks", "promotion-manifest.json"),
+    "--ci",
+    "--case", "early-choice-grid",
+    "--budget", "100",
+    "--candidate-strategy", "handoff-concurrent-portfolio",
+    "--candidate-concurrency", "2",
+    "--worker-max-memory-mb", "512",
+    "--worker-timeout-ms", "30000",
+  ], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  assert.strictEqual(proc.status, 0, proc.stderr);
+  const report = JSON.parse(proc.stdout);
+  assert.strictEqual(report.candidate, "handoff-concurrent-portfolio");
+  assert.deepStrictEqual(report.candidateConfiguration, { concurrency: 2, pilotStates: 1_024 });
+  for (const pair of report.pairs) {
+    assert.strictEqual(pair.candidate.summary.activation.productionEligible, true);
+    assert.strictEqual(pair.candidate.summary.activation.reason, "budget_below_pilot");
+    assert.strictEqual(pair.candidate.summary.activation.duplicateStateEvaluations, 0);
+    assert.strictEqual(pair.candidate.summary.statesExplored, pair.baseline.summary.statesExplored);
+    assert.strictEqual(pair.comparison.regressionRisk, "none");
+  }
+});
+
 test("promotion workers return guarded partial comparisons instead of crashing", () => {
   const proc = spawnSync(process.execPath, [
     PROMOTION_CLI,

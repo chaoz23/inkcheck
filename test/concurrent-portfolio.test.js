@@ -7,8 +7,13 @@ const {
   CONCURRENCY_ACTIVATION_PILOT_STATES,
   explorePortfolioConcurrent,
   explorePortfolioPilotActivatedConcurrent,
+  explorePortfolioPilotHandoffConcurrent,
 } = require("../dist/concurrent-portfolio");
-const { explorePortfolio } = require("../dist/explore");
+const {
+  createPortfolioPassEngine,
+  explorePortfolio,
+  explorePortfolioFromPilot,
+} = require("../dist/explore");
 const { bindingLimit } = require("../dist/report-contract");
 const { compile, scanKnots } = require("../dist/inklecate");
 
@@ -19,6 +24,7 @@ const PLATEAU = path.join(ROOT, "deceptive-plateau.ink");
 const LOW_DEDUP = path.join(ROOT, "low-dedup-wide.ink");
 const CLI = path.join(__dirname, "..", "dist", "cli.js");
 const ONE_GIB = 1024 * 1024 * 1024;
+const TEST_HANDOFF_PILOT = 32;
 
 async function story(file) {
   const compiled = await compile(file);
@@ -248,4 +254,151 @@ test("activation pilot rejects a saturated authored frontier", async () => {
   assert.strictEqual(result.execution.mode, "sequential");
   assert.strictEqual(result.execution.activation.reason, "pilot_authored_frontier_saturated");
   assert.strictEqual(result.execution.activation.duplicateStateEvaluations, 1_024);
+});
+
+test("a live pilot continues inside the sequential adaptive ceiling", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  const options = { maxStates: 2_000, maxDepth: 100, seed: 7, storySeed: 1 };
+  const engine = createPortfolioPassEngine(
+    "dfs:inside-out",
+    compiled.storyJson,
+    compiled.knots,
+    [],
+    options
+  );
+  const consumed = engine.run(TEST_HANDOFF_PILOT);
+  const result = explorePortfolioFromPilot(compiled.storyJson, compiled.knots, [], options, {
+    pass: "dfs:inside-out",
+    engine,
+    granted: TEST_HANDOFF_PILOT,
+    consumed,
+  });
+  const scheduled = result.schedule.flatMap((round) => round.entries)
+    .reduce((total, entry) => total + entry.consumed, 0);
+  assert.strictEqual(consumed, TEST_HANDOFF_PILOT);
+  assert.strictEqual(result.statesExplored, 2_000);
+  assert.strictEqual(scheduled, 2_000);
+  assert.deepStrictEqual(result.schedule[0].entries.map((entry) => entry.pass), [
+    "dfs:last", "dfs:first", "dfs:inside-out", "beam:w=64", "random:seed=7",
+  ]);
+  assert.ok(result.schedule[0].entries.find((entry) => entry.pass === "dfs:inside-out").consumed >= TEST_HANDOFF_PILOT);
+  assert.ok(result.passes.find((pass) => pass.pass === "dfs:inside-out").statesExplored >= TEST_HANDOFF_PILOT);
+});
+
+test("single-pass handoff activates without duplicate work or budget drift", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  const progress = [];
+  const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
+    maxStates: 2_000,
+    maxDepth: 100,
+    seed: 7,
+    storySeed: 1,
+    concurrency: 4,
+    memoryCapBytes: ONE_GIB,
+    activationPilotStatesForTest: TEST_HANDOFF_PILOT,
+    onProgress: (event) => progress.push(event),
+  });
+  const scheduled = result.schedule.flatMap((round) => round.entries)
+    .reduce((total, entry) => total + entry.consumed, 0);
+  assert.strictEqual(result.execution.mode, "concurrent");
+  assert.strictEqual(result.execution.activation.policyVersion, "single-pass-frontier-v3");
+  assert.strictEqual(result.execution.activation.productionEligible, true);
+  assert.strictEqual(result.execution.activation.decision, "activate_concurrent");
+  assert.strictEqual(result.execution.activation.pilotPass, "dfs:inside-out");
+  assert.strictEqual(result.execution.activation.duplicateStateEvaluations, 0);
+  assert.strictEqual(result.statesExplored, 2_000);
+  assert.strictEqual(scheduled, 2_000);
+  assert.ok(result.schedule[0].entries.find((entry) => entry.pass === "dfs:inside-out").consumed >= TEST_HANDOFF_PILOT);
+  assert.strictEqual(result.execution.workers.find((worker) => worker.location === "parent").pass, "dfs:inside-out");
+  assert.strictEqual(
+    result.execution.resources.parentReserveBytes + result.execution.resources.totalWorkerHeapLimitBytes,
+    result.execution.resources.heapEnvelopeBytes
+  );
+  assert.ok(progress.length > 1);
+  assert.strictEqual(progress[0].statesExplored, TEST_HANDOFF_PILOT);
+  assert.ok(progress.every((event, index) => index === 0 || event.statesExplored >= progress[index - 1].statesExplored));
+  assert.strictEqual(progress.at(-1).statesExplored, 2_000);
+});
+
+test("single-pass handoff preserves the portfolio below the pilot threshold", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  const options = { maxStates: 100, maxDepth: 100, seed: 7, storySeed: 1 };
+  const baseline = explorePortfolio(compiled.storyJson, compiled.knots, [], options);
+  const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
+    ...options,
+    concurrency: 4,
+    memoryCapBytes: ONE_GIB,
+    activationPilotStatesForTest: TEST_HANDOFF_PILOT,
+  });
+  assert.deepStrictEqual(canonical(stableEvidence(result)), canonical(stableEvidence(baseline)));
+  assert.strictEqual(result.execution.mode, "sequential");
+  assert.strictEqual(result.execution.activation.reason, "budget_below_pilot");
+  assert.strictEqual(result.execution.activation.pilotStatesExplored, 0);
+});
+
+test("single-pass handoff rejects depth-bound work without restarting the pilot", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
+    maxStates: 2_000,
+    maxDepth: 5,
+    concurrency: 4,
+    memoryCapBytes: ONE_GIB,
+    activationPilotStatesForTest: TEST_HANDOFF_PILOT,
+  });
+  const scheduled = result.schedule.flatMap((round) => round.entries)
+    .reduce((total, entry) => total + entry.consumed, 0);
+  assert.strictEqual(result.execution.mode, "sequential");
+  assert.strictEqual(result.execution.activation.reason, "pilot_depth_bound");
+  assert.strictEqual(result.execution.activation.duplicateStateEvaluations, 0);
+  assert.strictEqual(result.statesExplored, 2_000);
+  assert.strictEqual(scheduled, 2_000);
+  assert.ok(result.schedule[0].entries.find((entry) => entry.pass === "dfs:inside-out").consumed >= result.execution.activation.pilotStatesExplored);
+  assert.strictEqual(result.execution.activation.pilotStatesExplored, TEST_HANDOFF_PILOT);
+});
+
+test("single-pass handoff retains pilot evidence when a worker fails", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
+    maxStates: 2_000,
+    maxDepth: 100,
+    concurrency: 4,
+    memoryCapBytes: ONE_GIB,
+    activationPilotStatesForTest: TEST_HANDOFF_PILOT,
+    failPassForTest: "random",
+  });
+  assert.strictEqual(result.execution.activation.decision, "activate_concurrent");
+  assert.strictEqual(result.execution.activation.duplicateStateEvaluations, 0);
+  assert.strictEqual(result.truncatedBy.worker, true);
+  assert.ok(result.statesExplored >= TEST_HANDOFF_PILOT);
+  assert.ok(result.visitedKnots.length > 0);
+  assert.strictEqual(result.execution.workers.find((worker) => worker.location === "parent").status, "completed");
+});
+
+test("single-pass handoff is deterministic across worker ceilings", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  const options = { maxStates: 2_000, maxDepth: 100, seed: 7, storySeed: 1, memoryCapBytes: ONE_GIB, activationPilotStatesForTest: TEST_HANDOFF_PILOT };
+  const two = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], { ...options, concurrency: 2 });
+  const four = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], { ...options, concurrency: 4 });
+  assert.deepStrictEqual(canonical(stableEvidence(two)), canonical(stableEvidence(four)));
+  assert.strictEqual(two.execution.activation.duplicateStateEvaluations, 0);
+  assert.strictEqual(four.execution.activation.duplicateStateEvaluations, 0);
+});
+
+test("single-pass handoff preserves its pilot under aggregate memory contention", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
+    maxStates: 100_000,
+    maxDepth: 100,
+    concurrency: 4,
+    memoryCapBytes: ONE_GIB,
+    aggregateMemoryUsedForTest: () => ONE_GIB,
+  });
+  assert.strictEqual(result.execution.activation.decision, "activate_concurrent");
+  assert.strictEqual(result.execution.activation.duplicateStateEvaluations, 0);
+  assert.strictEqual(result.execution.resources.aggregateMemoryStopped, true);
+  assert.strictEqual(result.truncatedBy.memory, true);
+  assert.strictEqual(result.truncatedBy.maxStates, false);
+  assert.ok(result.statesExplored >= result.execution.activation.pilotStatesExplored);
+  assert.ok(result.statesExplored < 100_000);
+  assert.ok(result.visitedKnots.length > 0);
 });

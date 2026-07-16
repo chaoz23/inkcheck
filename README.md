@@ -24,6 +24,8 @@ This is an open-source QA project because that boundary matters. If a report ove
 
 Inkcheck's future value is planned to come from a reproducible hybrid: broad seeded probes, systematic local inspection, bounded diversity search, and Ink-aware specialists for gates, loops, assertions, and storylet eligibility. Specialists must remain bounded and earn more work through portfolio-new evidence because they can become budget traps too.
 
+The same bargain applies to hardware. Inkcheck is evaluating a deterministic 1,024-state live pilot that can keep small or depth-bound jobs sequential and activate bounded portfolio workers only for an open sustained frontier. The current promotion harness reuses every pilot state under one global ceiling; it does not restart the search to make that decision. Matched evaluation shows exact evidence parity and a 25.6% wall-clock improvement on one 5M-state depth-100 *The Intercept* run, but automatic production activation remains under evaluation rather than implied by that one authored story. See the [concurrency evaluation](docs/concurrency-evaluation.md).
+
 | Dimension | Current | 10/10 direction |
 | --- | ---: | --- |
 | Actionable, repeatable QA | **8/10** | Stable findings and exact replay across edit/CI/agent campaigns |

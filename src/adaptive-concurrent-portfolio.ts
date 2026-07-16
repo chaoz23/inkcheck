@@ -8,8 +8,10 @@ import {
   type ExploreOptions,
   type ExploreProgress,
   type ExploreResult,
+  type PassEngine,
   type PassTelemetry,
   type PortfolioPassKind,
+  type PortfolioPilotState,
   type PortfolioWeights,
   type ScheduleRound,
   type ScheduleRoundEntry,
@@ -37,9 +39,10 @@ export interface AdaptiveConcurrentOptions extends ExploreOptions {
   deadlineMs?: number;
   failPassForTest?: PortfolioPassKind;
   aggregateMemoryUsedForTest?: () => number;
+  activationPilotStatesForTest?: number;
 }
 
-interface PassSpec {
+export interface PassSpec {
   index: number;
   pass: PortfolioPassKind;
   weight: number;
@@ -63,7 +66,7 @@ interface AggregateResourceTracker {
   aggregateMemoryStopped: boolean;
 }
 
-function splitBudget(total: number, weights: number[]): number[] {
+export function splitBudget(total: number, weights: number[]): number[] {
   const sum = weights.reduce((left, right) => left + right, 0);
   if (sum <= 0) return weights.map((_, index) => index === 0 ? total : 0);
   const shares = weights.map((weight) => total * weight / sum);
@@ -79,7 +82,7 @@ function splitBudget(total: number, weights: number[]): number[] {
   return grants;
 }
 
-function passSpecs(maxStates: number, weights: PortfolioWeights): PassSpec[] {
+export function portfolioPassSpecs(maxStates: number, weights: PortfolioWeights): PassSpec[] {
   const specs: Array<Omit<PassSpec, "index">> = [];
   if (weights.last > 0) specs.push({ pass: "dfs:last", weight: weights.last });
   if (weights.first > 0) specs.push({ pass: "dfs:first", weight: weights.first });
@@ -97,6 +100,7 @@ function sanitizedOptions(options: AdaptiveConcurrentOptions): ExploreOptions {
     deadlineMs: _deadlineMs,
     failPassForTest: _failPassForTest,
     aggregateMemoryUsedForTest: _aggregateMemoryUsedForTest,
+    activationPilotStatesForTest: _activationPilotStatesForTest,
     onProgress: _onProgress,
     onSnapshot: _onSnapshot,
     memoryGuard: _memoryGuard,
@@ -240,12 +244,21 @@ export function explorePortfolioAdaptiveConcurrent(
   options: AdaptiveConcurrentOptions,
   effectiveConcurrency: number,
   perWorkerMemory: number,
-  parentReserveBytes: number
+  parentReserveBytes: number,
+  initialPilot?: PortfolioPilotState
 ): ExploreResult {
   const maxStates = options.maxStates ?? 100_000;
-  const specs = passSpecs(maxStates, options.weights ?? DEFAULT_PORTFOLIO_WEIGHTS);
+  const specs = portfolioPassSpecs(maxStates, options.weights ?? DEFAULT_PORTFOLIO_WEIGHTS);
+  const pilotIndex = initialPilot
+    ? specs.find((spec) => spec.pass === initialPilot.pass)?.index ?? -1
+    : -1;
+  if (initialPilot && pilotIndex < 0) {
+    throw new Error(`pilot pass ${initialPilot.pass} is disabled by the effective portfolio weights`);
+  }
   const assignments = Array.from({ length: effectiveConcurrency }, () => [] as AdaptivePassAssignment[]);
-  for (const spec of specs) assignments[spec.index % effectiveConcurrency].push({ index: spec.index, pass: spec.pass });
+  for (const spec of specs) {
+    if (spec.index !== pilotIndex) assignments[spec.index % effectiveConcurrency].push({ index: spec.index, pass: spec.pass });
+  }
   const slots = assignments
     .filter((items) => items.length > 0)
     .map((items) => startSlot(items, storyJson, knots, externals, options, perWorkerMemory));
@@ -255,10 +268,31 @@ export function explorePortfolioAdaptiveConcurrent(
   };
   const latestSnapshots = new Map<number, ExploreResult>();
   const finalResults = new Map<number, AdaptiveFinalPassResult>();
+  if (initialPilot) latestSnapshots.set(pilotIndex, initialPilot.engine.snapshot());
+  const localProgress = (engine: PassEngine): ExploreProgress => {
+    const snapshot = engine.snapshot();
+    const goals = snapshot.goalResults ?? [];
+    return {
+      pass: engine.label,
+      statesExplored: snapshot.statesExplored,
+      endingsFound: snapshot.endingsFound.length,
+      runtimeErrorsFound: snapshot.runtimeErrors.length,
+      unvisitedKnots: snapshot.unvisitedKnots.length,
+      visibleOutcomes: new Set(snapshot.endingsFound.map((ending) => visibleOutcomeKey(ending.finalText))).size,
+      assertionViolations: snapshot.assertionResults.filter((assertion) => assertion.status === "violated").length,
+      goalsReached: goals.filter((goal) => goal.status === "reached").length,
+      stagesReached: goals.reduce((total, goal) => total + (goal.stages ?? []).filter((stage) => stage.status === "reached").length, 0),
+      discoveryEvents: snapshot.discoverySummary?.discoveryEvents ?? 0,
+      statesSinceLastDiscovery: snapshot.discoverySummary?.statesSinceLastDiscovery ?? null,
+    };
+  };
   let lastProgressStates = -1;
   const emitProgress = () => {
     if (!options.onProgress) return;
-    const progress = slots.flatMap((slot) => [...slot.progress.values()]);
+    const progress = [
+      ...slots.flatMap((slot) => [...slot.progress.values()]),
+      ...(initialPilot ? [localProgress(initialPilot.engine)] : []),
+    ];
     const statesExplored = progress.reduce((total, item) => total + item.statesExplored, 0);
     if (statesExplored <= lastProgressStates) return;
     lastProgressStates = statesExplored;
@@ -299,17 +333,133 @@ export function explorePortfolioAdaptiveConcurrent(
   const seenGoals = new Set<string>();
   const seenStages = new Set<string>();
   const portfolioCurve = new DiscoveryCurveRecorder();
-  let remaining = maxStates;
+  let remaining = maxStates - (initialPilot?.consumed ?? 0);
   let exhaustedEarly = false;
   let memoryStopped = false;
   let timeStopped = false;
   let workerStopped = false;
 
+  const recordResult = (index: number, result: AdaptiveRoundPassResult): { entry: ScheduleRoundEntry; score: number } => {
+    latestSnapshots.set(index, result.snapshot);
+    let newEndings = 0;
+    let newVisibleOutcomes = 0;
+    for (const ending of result.snapshot.endingsFound) {
+      const key = exactEndingKey(ending);
+      if (!seenEndings.has(key)) {
+        seenEndings.add(key);
+        newEndings++;
+      }
+      const visibleKey = visibleOutcomeKey(ending.finalText);
+      if (!seenVisibleOutcomes.has(visibleKey)) {
+        seenVisibleOutcomes.add(visibleKey);
+        newVisibleOutcomes++;
+      }
+    }
+    let newKnots = 0;
+    for (const knot of result.snapshot.visitedKnots) {
+      if (!seenKnots.has(knot)) {
+        seenKnots.add(knot);
+        newKnots++;
+      }
+    }
+    let newRuntimeErrors = 0;
+    for (const error of result.snapshot.runtimeErrors) {
+      if (!seenErrors.has(error.message)) {
+        seenErrors.add(error.message);
+        newRuntimeErrors++;
+      }
+    }
+    let newAssertions = 0;
+    for (const assertion of result.snapshot.assertionResults) {
+      for (const violation of assertion.violations) {
+        const key = assertionKey(assertion.id, violation);
+        if (!seenAssertions.has(key)) {
+          seenAssertions.add(key);
+          newAssertions++;
+        }
+      }
+    }
+    let newGoals = 0;
+    let newStages = 0;
+    for (const goal of result.snapshot.goalResults ?? []) {
+      if (goal.status === "reached" && !seenGoals.has(goal.id)) {
+        seenGoals.add(goal.id);
+        newGoals++;
+      }
+      for (const stage of goal.stages ?? []) {
+        const key = `${goal.id}/${stage.id}`;
+        if (stage.status === "reached" && !seenStages.has(key)) {
+          seenStages.add(key);
+          newStages++;
+        }
+      }
+    }
+    marginalTotals[index].endings += newEndings;
+    marginalTotals[index].knots += newKnots;
+    marginalTotals[index].errors += newRuntimeErrors;
+    marginalTotals[index].visible += newVisibleOutcomes;
+    marginalTotals[index].assertions += newAssertions;
+    marginalTotals[index].goals += newGoals;
+    marginalTotals[index].stages += newStages;
+    marginalCurves[index].observe(result.snapshot.statesExplored, {
+      endingsFound: marginalTotals[index].endings,
+      runtimeErrorsFound: marginalTotals[index].errors,
+      knotsVisited: marginalTotals[index].knots,
+      visibleOutcomes: marginalTotals[index].visible,
+      assertionViolations: marginalTotals[index].assertions,
+      goalsReached: marginalTotals[index].goals,
+      stagesReached: marginalTotals[index].stages,
+      uniqueStatesObserved: 0,
+    });
+    portfolioCurve.observe(maxStates - remaining, {
+      endingsFound: seenEndings.size,
+      runtimeErrorsFound: seenErrors.size,
+      knotsVisited: seenKnots.size,
+      visibleOutcomes: seenVisibleOutcomes.size,
+      assertionViolations: seenAssertions.size,
+      goalsReached: seenGoals.size,
+      stagesReached: seenStages.size,
+      uniqueStatesObserved: 0,
+    });
+    active[index] = !result.done;
+    memoryStopped ||= result.memoryStopped;
+    timeStopped ||= result.timeStopped;
+    exhaustedEarly ||= result.exhaustive;
+    return {
+      entry: {
+        pass: result.label,
+        granted: result.granted,
+        consumed: result.consumed,
+        newEndings,
+        newKnots,
+        newRuntimeErrors,
+      },
+      score: newRuntimeErrors * 5 + newEndings * 3 + newKnots * 2,
+    };
+  };
+
+  if (initialPilot) {
+    const snapshot = initialPilot.engine.snapshot();
+    emitProgress();
+    const pilotSnapshot = structuredClone(snapshot);
+    pilotSnapshot.limits.maxStates = maxStates;
+    pilotSnapshot.schedule = [];
+    options.onSnapshot?.(pilotSnapshot);
+  }
+
   while (remaining > 0 && !exhaustedEarly && !memoryStopped && !timeStopped && !workerStopped && active.some(Boolean)) {
-    const activeIndices = specs.map((_, index) => index).filter((index) => active[index]);
-    const roundBudget = Math.min(roundSize, remaining);
-    const grants = splitBudget(roundBudget, activeIndices.map((index) => currentWeights[index]));
+    const finishingPilotRound = Boolean(initialPilot && schedule.length === 0);
+    const activeIndices = specs.map((_, index) => index)
+      .filter((index) => active[index] || (finishingPilotRound && index === pilotIndex));
+    const roundBudget = Math.min(roundSize, remaining + (finishingPilotRound ? initialPilot!.consumed : 0));
+    const fullGrants = splitBudget(roundBudget, activeIndices.map((index) => currentWeights[index]));
+    const grants = fullGrants.map((grant, offset) =>
+      finishingPilotRound && activeIndices[offset] === pilotIndex
+        ? Math.max(0, grant - initialPilot!.consumed)
+        : grant
+    );
     const grantsByIndex = new Map(activeIndices.map((index, offset) => [index, grants[offset]]));
+    const fullGrantsByIndex = new Map(activeIndices.map((index, offset) => [index, fullGrants[offset]]));
     const roundNumber = schedule.length + 1;
     const commanded = slots.filter((slot) => slot.assignments.some((assignment) => (grantsByIndex.get(assignment.index) ?? 0) > 0));
     for (const slot of commanded) {
@@ -324,111 +474,39 @@ export function explorePortfolioAdaptiveConcurrent(
       };
       slot.worker.postMessage(command);
     }
+    let localRound: AdaptiveRoundPassResult | undefined;
+    if (initialPilot && active[pilotIndex]) {
+      const grant = grantsByIndex.get(pilotIndex) ?? 0;
+      const consumed = grant > 0 ? initialPilot.engine.run(grant) : 0;
+      localRound = {
+        index: pilotIndex,
+        label: initialPilot.engine.label,
+        granted: fullGrantsByIndex.get(pilotIndex) ?? grant,
+        consumed: consumed + (finishingPilotRound ? initialPilot.consumed : 0),
+        snapshot: initialPilot.engine.snapshot(),
+        done: initialPilot.engine.done(),
+        exhaustive: initialPilot.engine.exhaustive(),
+        memoryStopped: initialPilot.engine.stoppedForMemory(),
+        timeStopped: initialPilot.engine.stoppedForTime(),
+      };
+    }
     waitFor(commanded, (slot) => slot.round?.number === roundNumber, options, emitProgress, resources);
     workerStopped = commanded.some((slot) => Boolean(slot.failed));
     timeStopped = commanded.some((slot) => slot.timedOut);
-    const roundResults = commanded.flatMap((slot) => slot.round?.number === roundNumber ? slot.round.results : []);
+    const roundResults = [
+      ...commanded.flatMap((slot) => slot.round?.number === roundNumber ? slot.round.results : []),
+      ...(localRound ? [localRound] : []),
+    ];
     const resultByIndex = new Map(roundResults.map((result) => [result.index, result]));
     const entries: ScheduleRoundEntry[] = [];
     const scores = new Array<number>(specs.length).fill(0);
     for (const index of activeIndices) {
       const result = resultByIndex.get(index);
       if (!result) continue;
-      latestSnapshots.set(index, result.snapshot);
-      remaining -= result.consumed;
-      let newEndings = 0;
-      let newVisibleOutcomes = 0;
-      for (const ending of result.snapshot.endingsFound) {
-        const key = exactEndingKey(ending);
-        if (!seenEndings.has(key)) {
-          seenEndings.add(key);
-          newEndings++;
-        }
-        const visibleKey = visibleOutcomeKey(ending.finalText);
-        if (!seenVisibleOutcomes.has(visibleKey)) {
-          seenVisibleOutcomes.add(visibleKey);
-          newVisibleOutcomes++;
-        }
-      }
-      let newKnots = 0;
-      for (const knot of result.snapshot.visitedKnots) {
-        if (!seenKnots.has(knot)) {
-          seenKnots.add(knot);
-          newKnots++;
-        }
-      }
-      let newRuntimeErrors = 0;
-      for (const error of result.snapshot.runtimeErrors) {
-        if (!seenErrors.has(error.message)) {
-          seenErrors.add(error.message);
-          newRuntimeErrors++;
-        }
-      }
-      let newAssertions = 0;
-      for (const assertion of result.snapshot.assertionResults) {
-        for (const violation of assertion.violations) {
-          const key = assertionKey(assertion.id, violation);
-          if (!seenAssertions.has(key)) {
-            seenAssertions.add(key);
-            newAssertions++;
-          }
-        }
-      }
-      let newGoals = 0;
-      let newStages = 0;
-      for (const goal of result.snapshot.goalResults ?? []) {
-        if (goal.status === "reached" && !seenGoals.has(goal.id)) {
-          seenGoals.add(goal.id);
-          newGoals++;
-        }
-        for (const stage of goal.stages ?? []) {
-          const key = `${goal.id}/${stage.id}`;
-          if (stage.status === "reached" && !seenStages.has(key)) {
-            seenStages.add(key);
-            newStages++;
-          }
-        }
-      }
-      marginalTotals[index].endings += newEndings;
-      marginalTotals[index].knots += newKnots;
-      marginalTotals[index].errors += newRuntimeErrors;
-      marginalTotals[index].visible += newVisibleOutcomes;
-      marginalTotals[index].assertions += newAssertions;
-      marginalTotals[index].goals += newGoals;
-      marginalTotals[index].stages += newStages;
-      marginalCurves[index].observe(result.snapshot.statesExplored, {
-        endingsFound: marginalTotals[index].endings,
-        runtimeErrorsFound: marginalTotals[index].errors,
-        knotsVisited: marginalTotals[index].knots,
-        visibleOutcomes: marginalTotals[index].visible,
-        assertionViolations: marginalTotals[index].assertions,
-        goalsReached: marginalTotals[index].goals,
-        stagesReached: marginalTotals[index].stages,
-        uniqueStatesObserved: 0,
-      });
-      entries.push({
-        pass: result.label,
-        granted: result.granted,
-        consumed: result.consumed,
-        newEndings,
-        newKnots,
-        newRuntimeErrors,
-      });
-      scores[index] = newRuntimeErrors * 5 + newEndings * 3 + newKnots * 2;
-      portfolioCurve.observe(maxStates - remaining, {
-        endingsFound: seenEndings.size,
-        runtimeErrorsFound: seenErrors.size,
-        knotsVisited: seenKnots.size,
-        visibleOutcomes: seenVisibleOutcomes.size,
-        assertionViolations: seenAssertions.size,
-        goalsReached: seenGoals.size,
-        stagesReached: seenStages.size,
-        uniqueStatesObserved: 0,
-      });
-      active[index] = !result.done;
-      memoryStopped ||= result.memoryStopped;
-      timeStopped ||= result.timeStopped;
-      exhaustedEarly ||= result.exhaustive;
+      remaining -= result.consumed - (finishingPilotRound && index === pilotIndex ? initialPilot!.consumed : 0);
+      const recorded = recordResult(index, result);
+      entries.push(recorded.entry);
+      scores[index] = recorded.score;
     }
     schedule.push({ round: roundNumber, entries });
     if (options.onSnapshot && latestSnapshots.size > 0) {
@@ -460,6 +538,13 @@ export function explorePortfolioAdaptiveConcurrent(
   waitFor(surviving, (slot) => slot.final !== undefined, options, emitProgress, resources, false);
   for (const slot of surviving) {
     for (const result of slot.final ?? []) finalResults.set(result.index, result);
+  }
+  if (initialPilot) {
+    finalResults.set(pilotIndex, {
+      index: pilotIndex,
+      result: initialPilot.engine.finalize(),
+      telemetry: initialPilot.engine.telemetry(),
+    });
   }
   for (const [index, final] of finalResults) latestSnapshots.set(index, final.result);
   for (const slot of slots) stopSlot(slot);
@@ -513,26 +598,30 @@ export function explorePortfolioAdaptiveConcurrent(
   // read the immutable per-pass telemetry captured before the canonical merge.
   const consumed = specs.map((spec) => perPassStates.get(spec.index) ?? 0);
   const workerEvidence: ConcurrentWorkerEvidence[] = specs.map((spec) => {
-    const slot = slots[spec.index % effectiveConcurrency];
+    const slot = slots.find((candidate) => candidate.assignments.some((assignment) => assignment.index === spec.index));
     const passTelemetry = finalResults.get(spec.index)?.telemetry;
+    const local = spec.index === pilotIndex;
     return {
       pass: finalResults.get(spec.index)?.telemetry.pass ?? spec.pass,
       granted: granted[spec.index],
       consumed: consumed[spec.index],
-      status: slot.failed ? "failed" : slot.timedOut || passTelemetry?.truncatedBy.time ? "time" : passTelemetry?.truncatedBy.memory ? "memory" : "completed",
-      ...(slot.failed ? { error: slot.failed } : {}),
+      status: slot?.failed ? "failed" : slot?.timedOut || passTelemetry?.truncatedBy.time ? "time" : passTelemetry?.truncatedBy.memory ? "memory" : "completed",
+      ...(local ? { location: "parent" as const } : {}),
+      ...(slot?.failed ? { error: slot.failed } : {}),
     };
   });
+  const executionConcurrency = slots.length + (initialPilot ? 1 : 0);
+  const totalWorkerHeapLimitBytes = perWorkerMemory * slots.length;
   merged.execution = {
     mode: "concurrent",
     requestedConcurrency: options.concurrency,
-    effectiveConcurrency,
+    effectiveConcurrency: executionConcurrency,
     resources: {
       stateBudget: maxStates,
       heapEnvelopeBytes: options.memoryCapBytes,
-      parentReserveBytes,
+      parentReserveBytes: initialPilot ? options.memoryCapBytes - totalWorkerHeapLimitBytes : parentReserveBytes,
       perWorkerHeapLimitBytes: perWorkerMemory,
-      totalWorkerHeapLimitBytes: perWorkerMemory * effectiveConcurrency,
+      totalWorkerHeapLimitBytes,
       peakTrackedHeapBytes: resources.peakTrackedHeapBytes,
       aggregateMemoryStopped: resources.aggregateMemoryStopped,
       ...(options.deadlineMs === undefined ? {} : { deadlineMs: options.deadlineMs }),
