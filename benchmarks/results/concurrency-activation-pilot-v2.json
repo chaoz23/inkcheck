@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "evaluation": "concurrency-activation-pilot-v2",
+  "date": "2026-07-15",
+  "candidate": {
+    "policyVersion": "pilot-frontier-v2",
+    "pilotStates": 1024,
+    "concurrency": 4,
+    "uncertainty": "high",
+    "productionEligible": false,
+    "reason": "The research executor restarts the selected full run and reports 1,024 duplicate state evaluations."
+  },
+  "synthetic100k": {
+    "pairs": 80,
+    "policyV1": {
+      "pilotExhaustive": 62,
+      "activated": 18,
+      "activatedTimeWins": 2,
+      "falseActivations": 16,
+      "evidenceOrProofRegressions": 0
+    },
+    "policyV2": {
+      "pilotExhaustive": 62,
+      "pilotDepthBound": 14,
+      "pilotAuthoredFrontierSaturated": 2,
+      "activatedOpenFrontier": 2,
+      "activatedTimeWins": 2,
+      "falseActivations": 0,
+      "evidenceOrProofRegressions": 0,
+      "activatedCells": [
+        {
+          "case": "early-choice-grid",
+          "depth": 100,
+          "seed": 1,
+          "baselineElapsedMs": 6951,
+          "candidateElapsedMs": 3248
+        },
+        {
+          "case": "early-choice-grid",
+          "depth": 100,
+          "seed": 7,
+          "baselineElapsedMs": 6913,
+          "candidateElapsedMs": 3116
+        }
+      ]
+    }
+  },
+  "authored5m": [
+    {
+      "case": "the-intercept",
+      "maxDepth": 30,
+      "searchSeed": 1,
+      "decision": "stay_sequential",
+      "reason": "pilot_depth_bound",
+      "baselineElapsedMs": 497522,
+      "candidateElapsedMs": 507969,
+      "baselinePeakRssMiB": 498.3,
+      "candidatePeakRssMiB": 520.9,
+      "runtimeErrors": [0, 0],
+      "visitedKnots": [25, 25],
+      "visibleOutcomes": [1, 1],
+      "exactTerminals": [828, 828],
+      "evidenceOrProofRegressions": 0
+    },
+    {
+      "case": "the-intercept",
+      "maxDepth": 100,
+      "searchSeed": 7,
+      "decision": "activate_concurrent",
+      "reason": "pilot_open_frontier",
+      "baselineElapsedMs": 624091,
+      "candidateElapsedMs": 393042,
+      "elapsedImprovementPercent": 37,
+      "baselineTimeToFirstMeaningfulMs": 85916,
+      "candidateTimeToFirstMeaningfulMs": 46209,
+      "baselinePeakRssMiB": 570.3,
+      "candidatePeakRssMiB": 904.7,
+      "runtimeErrors": [0, 0],
+      "visitedKnots": [29, 29],
+      "visibleOutcomes": [12, 12],
+      "exactTerminals": [4456, 4456],
+      "evidenceOrProofRegressions": 0
+    }
+  ],
+  "interpretation": [
+    "Pilot non-exhaustion alone is not a sufficient activation signal.",
+    "Depth binding and authored-knot saturation removed every observed synthetic false activation in this matrix.",
+    "The authored depth-100 result retained the earlier concurrency gain with exact evidence parity.",
+    "The classifier is not promotable until pilot work continues without restart under the original global ceilings."
+  ]
+}

@@ -43,7 +43,7 @@ function sequential(
   knots: KnotInfo[],
   externals: string[],
   options: ConcurrentPortfolioOptions,
-  fallbackReason?: "single_core" | "memory_headroom" | "single_pass"
+  fallbackReason?: "single_core" | "memory_headroom" | "single_pass" | "pilot_depth_bound" | "pilot_authored_frontier_saturated"
 ): ExploreResult {
   const result = explorePortfolio(storyJson, knots, externals, options);
   result.execution = {
@@ -57,6 +57,91 @@ function sequential(
       consumed: pass.statesExplored,
       status: pass.truncatedBy.memory ? "memory" : pass.truncatedBy.time ? "time" : "completed",
     })),
+  };
+  return result;
+}
+
+export const CONCURRENCY_ACTIVATION_PILOT_STATES = 1_024;
+
+/**
+ * Research-only activation candidate for issue #169. A bounded sequential
+ * pilot rejects stories that exhaust cheaply, bind on depth, or saturate the
+ * authored knot frontier. Open-frontier stories then run the unchanged
+ * concurrent ceiling so evidence remains comparable. The restarted pilot
+ * work is explicit and therefore not production-eligible.
+ */
+export function explorePortfolioPilotActivatedConcurrent(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  options: ConcurrentPortfolioOptions
+): ExploreResult {
+  const maxStates = options.maxStates ?? 100_000;
+  if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 100_000_000) {
+    throw new RangeError("maxStates must be an integer from 1 to 100000000");
+  }
+  const pilotBudget = Math.min(CONCURRENCY_ACTIVATION_PILOT_STATES, maxStates);
+  const pilot = explorePortfolio(storyJson, knots, externals, {
+    ...options,
+    maxStates: pilotBudget,
+    onProgress: undefined,
+    onSnapshot: undefined,
+  });
+  const pilotConsumedBudget = pilotBudget === maxStates;
+  if (pilot.exhaustive || pilotConsumedBudget) {
+    const reason = pilot.exhaustive ? "pilot_exhaustive" : "pilot_consumed_budget";
+    pilot.execution = {
+      mode: "sequential",
+      requestedConcurrency: options.concurrency,
+      effectiveConcurrency: 1,
+      fallbackReason: reason,
+      activation: {
+        policyVersion: "pilot-frontier-v2",
+        decision: "stay_sequential",
+        reason,
+        pilotBudget,
+        pilotStatesExplored: pilot.statesExplored,
+        pilotExhaustive: pilot.exhaustive,
+        duplicateStateEvaluations: 0,
+        uncertainty: "high",
+        productionEligible: false,
+      },
+      workers: (pilot.passes ?? []).map((pass) => ({
+        pass: pass.pass,
+        granted: pass.granted,
+        consumed: pass.statesExplored,
+        status: pass.truncatedBy.memory ? "memory" : pass.truncatedBy.time ? "time" : "completed",
+      })),
+    };
+    options.onSnapshot?.(pilot);
+    return pilot;
+  }
+
+  const authoredKnots = knots.filter((knot) => !knot.isFunction).length;
+  const staySequentialReason = pilot.truncatedBy.maxDepth
+    ? "pilot_depth_bound"
+    : authoredKnots > 0 && pilot.visitedKnots.length >= authoredKnots
+      ? "pilot_authored_frontier_saturated"
+      : undefined;
+  const result = staySequentialReason
+    ? sequential(storyJson, knots, externals, options, staySequentialReason)
+    : explorePortfolioConcurrent(storyJson, knots, externals, options);
+  result.execution ??= {
+    mode: "sequential",
+    requestedConcurrency: options.concurrency,
+    effectiveConcurrency: 1,
+    workers: [],
+  };
+  result.execution.activation = {
+    policyVersion: "pilot-frontier-v2",
+    decision: staySequentialReason ? "stay_sequential" : "activate_concurrent",
+    reason: staySequentialReason ?? "pilot_open_frontier",
+    pilotBudget,
+    pilotStatesExplored: pilot.statesExplored,
+    pilotExhaustive: false,
+    duplicateStateEvaluations: pilot.statesExplored,
+    uncertainty: "high",
+    productionEligible: false,
   };
   return result;
 }

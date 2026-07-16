@@ -121,7 +121,7 @@ export interface PromotionBenchmarkReport {
   schemaVersion: 1;
   generatedAt: string;
   candidate: string;
-  candidateConfiguration?: { concurrency: number };
+  candidateConfiguration?: { concurrency: number; pilotStates?: number };
   baseline: string;
   caveat: string;
   pairs: PromotionPair[];
@@ -336,7 +336,12 @@ export function renderPromotionMarkdown(report: PromotionBenchmarkReport): strin
     "",
     `Baseline: \`${report.baseline}\`  `,
     `Candidate: \`${report.candidate}\``,
-    ...(report.candidateConfiguration ? [`Candidate concurrency: \`${report.candidateConfiguration.concurrency}\``] : []),
+    ...(report.candidateConfiguration ? [
+      `Candidate concurrency: \`${report.candidateConfiguration.concurrency}\``,
+      ...(report.candidateConfiguration.pilotStates === undefined ? [] : [
+        `Activation pilot: \`${report.candidateConfiguration.pilotStates.toLocaleString("en-US")} states\` (research-only; duplicate work is reported per cell)`,
+      ]),
+    ] : []),
     "",
   ];
   if (report.unavailable?.length) {

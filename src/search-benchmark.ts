@@ -99,6 +99,7 @@ export interface SearchBenchmarkSummary {
     truncatedBy: ExploreResult["truncatedBy"];
     randomnessDetected: boolean;
   };
+  activation?: NonNullable<ExploreResult["execution"]>["activation"];
   passes: Array<
     Pick<
       PassTelemetry,
@@ -246,6 +247,7 @@ export function summarizeSearchResult(
       truncatedBy: { ...report.truncatedBy },
       randomnessDetected: report.randomnessDetected,
     },
+    ...(report.execution?.activation ? { activation: report.execution.activation } : {}),
     passes: passes.map((pass) => ({
       pass: pass.pass,
       systematic: pass.systematic,
