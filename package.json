@@ -47,6 +47,7 @@
     "web",
     "benchmarks/agent-readiness-v1",
     "benchmarks/results/concurrency-intercept-5m-v1.json",
+    "benchmarks/results/concurrency-activation-pilot-v2.json",
     "skills/inkcheck",
     "docs/inkjam-qa-guide.md",
     "docs/hosted-checker.md",

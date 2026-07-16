@@ -3,13 +3,18 @@ const assert = require("node:assert");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const { explorePortfolioConcurrent } = require("../dist/concurrent-portfolio");
+const {
+  CONCURRENCY_ACTIVATION_PILOT_STATES,
+  explorePortfolioConcurrent,
+  explorePortfolioPilotActivatedConcurrent,
+} = require("../dist/concurrent-portfolio");
 const { explorePortfolio } = require("../dist/explore");
 const { bindingLimit } = require("../dist/report-contract");
 const { compile, scanKnots } = require("../dist/inklecate");
 
 const ROOT = path.join(__dirname, "fixtures", "search");
 const GRID = path.join(ROOT, "early-variable-grid.ink");
+const SUSTAINED_GRID = path.join(__dirname, "..", "examples", "early-choice-grid.ink");
 const PLATEAU = path.join(ROOT, "deceptive-plateau.ink");
 const LOW_DEDUP = path.join(ROOT, "low-dedup-wide.ink");
 const CLI = path.join(__dirname, "..", "dist", "cli.js");
@@ -172,4 +177,75 @@ test("CLI exposes explicit experimental concurrency and records the effective co
   assert.strictEqual(report.effectiveConfiguration.concurrency, 2);
   assert.strictEqual(report.explore.execution.mode, "concurrent");
   assert.strictEqual(report.explore.execution.requestedConcurrency, 2);
+});
+
+test("1,024-state activation pilot stays sequential at a consumed ceiling", async () => {
+  const compiled = await story(GRID);
+  const result = explorePortfolioPilotActivatedConcurrent(compiled.storyJson, compiled.knots, [], {
+    maxStates: 100,
+    concurrency: 4,
+    memoryCapBytes: ONE_GIB,
+  });
+  assert.strictEqual(CONCURRENCY_ACTIVATION_PILOT_STATES, 1_024);
+  assert.strictEqual(result.execution.mode, "sequential");
+  assert.deepStrictEqual(result.execution.activation, {
+    policyVersion: "pilot-frontier-v2",
+    decision: "stay_sequential",
+    reason: "pilot_consumed_budget",
+    pilotBudget: 100,
+    pilotStatesExplored: result.statesExplored,
+    pilotExhaustive: false,
+    duplicateStateEvaluations: 0,
+    uncertainty: "high",
+    productionEligible: false,
+  });
+});
+
+test("1,024-state activation pilot reports duplicate work before concurrency", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  const result = explorePortfolioPilotActivatedConcurrent(compiled.storyJson, compiled.knots, [], {
+    maxStates: 2_000,
+    concurrency: 2,
+    memoryCapBytes: ONE_GIB,
+  });
+  assert.strictEqual(result.execution.mode, "concurrent");
+  assert.deepStrictEqual(result.execution.activation, {
+    policyVersion: "pilot-frontier-v2",
+    decision: "activate_concurrent",
+    reason: "pilot_open_frontier",
+    pilotBudget: 1_024,
+    pilotStatesExplored: 1_024,
+    pilotExhaustive: false,
+    duplicateStateEvaluations: 1_024,
+    uncertainty: "high",
+    productionEligible: false,
+  });
+  assert.strictEqual(result.statesExplored, 2_000);
+});
+
+test("activation pilot rejects a depth-bound workload that concurrency cannot repair", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  const result = explorePortfolioPilotActivatedConcurrent(compiled.storyJson, compiled.knots, [], {
+    maxStates: 2_000,
+    maxDepth: 5,
+    concurrency: 2,
+    memoryCapBytes: ONE_GIB,
+  });
+  assert.strictEqual(result.execution.mode, "sequential");
+  assert.strictEqual(result.execution.activation.reason, "pilot_depth_bound");
+  assert.strictEqual(result.execution.activation.duplicateStateEvaluations, 1_024);
+  assert.strictEqual(result.execution.activation.productionEligible, false);
+});
+
+test("activation pilot rejects a saturated authored frontier", async () => {
+  const compiled = await story(path.join(ROOT, "storylet-machine.ink"));
+  const result = explorePortfolioPilotActivatedConcurrent(compiled.storyJson, compiled.knots, [], {
+    maxStates: 2_000,
+    maxDepth: 100,
+    concurrency: 2,
+    memoryCapBytes: ONE_GIB,
+  });
+  assert.strictEqual(result.execution.mode, "sequential");
+  assert.strictEqual(result.execution.activation.reason, "pilot_authored_frontier_saturated");
+  assert.strictEqual(result.execution.activation.duplicateStateEvaluations, 1_024);
 });

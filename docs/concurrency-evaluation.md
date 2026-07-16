@@ -75,3 +75,23 @@ The useful foundation remains opt-in:
 The fixed allocator is not a viable production scheduler and has been removed. The adaptive worker design passes this authored gate and remains opt-in. Hosted concurrency is independently capped, real hosted child cancellation cleans temporary uploads, and deterministic contention tests force an aggregate memory stop without losing the partial report. Before default promotion, #94 still requires matched time-to-finding evidence across the broader #56 corpus. Small exhaustive stories may spend a few redundant in-flight states within the final round before a systematic worker's proof is merged; they still remain under the global grant and return the same proof/findings.
 
 These timings are observations from one machine, not portable performance promises. The bounded results do not prove complete story coverage.
+
+## Workload-aware activation pilot
+
+Issue #169 tests whether Inkcheck can earn concurrent startup only after a deterministic 1,024-state sequential pilot. The first exhaustion-only rule was too weak: in the 80-cell 100K synthetic matrix it activated 18 cells, but only the two depth-100 early-choice cells became faster. Sixteen false activations paid worker startup and higher memory. No evidence or proof regressed because the research candidate reran the full unchanged ceiling after its pilot.
+
+Policy `pilot-frontier-v2` adds two product-aligned rejections:
+
+- stay sequential when the pilot binds on depth, because parallelism cannot repair the binding depth limit; and
+- stay sequential when every authored knot has already been visited, because the broad authored frontier is saturated even if exact terminal variants remain.
+
+At 100K, the revised policy classified 62/80 cells as pilot-exhaustive, 14 as depth-bound, two as authored-frontier-saturated, and only the two sustained depth-100 early-choice cells as open-frontier. Those two retained exact evidence and reduced total time from 6.95/6.91 seconds to 3.25/3.12 seconds. The other 78 stayed sequential. There were no runtime, assertion, knot, visible-outcome, exact-terminal, or proof regressions.
+
+Two matched 5M *The Intercept* cells establish the depth boundary:
+
+| Depth | Decision | Sequential | Pilot candidate | Exact terminals | Knots | Visible outcomes | Peak RSS B/C | Result |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 30 | stay sequential: depth-bound | 497.5s | 508.0s | 828/828 | 25/25 | 1/1 | 498/521 MiB | correct rejection; 2.1% pilot cost |
+| 100 | activate: open frontier | 624.1s | 393.0s | 4,456/4,456 | 29/29 | 12/12 | 570/905 MiB | 37.0% faster; T1 85.9s to 46.2s |
+
+This is credible activation evidence, not a production-ready executor. The pilot currently restarts the selected full run, so activated and non-exhaustive rejected cells perform 1,024 duplicate state evaluations outside the reported search ceiling. Every result marks `productionEligible: false`, reports the duplicate work, and keeps uncertainty high. A production implementation must migrate or reuse pilot pass state under the original global state/time/memory envelope, then rerun the broad and authored gates. The compact evidence is checked in at `benchmarks/results/concurrency-activation-pilot-v2.json`.

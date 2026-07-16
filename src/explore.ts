@@ -97,7 +97,18 @@ export interface PortfolioExecutionEvidence {
   mode: "sequential" | "concurrent";
   requestedConcurrency: number;
   effectiveConcurrency: number;
-  fallbackReason?: "single_core" | "memory_headroom" | "single_pass";
+  fallbackReason?: "single_core" | "memory_headroom" | "single_pass" | "pilot_exhaustive" | "pilot_consumed_budget" | "pilot_depth_bound" | "pilot_authored_frontier_saturated";
+  activation?: {
+    policyVersion: "pilot-frontier-v2";
+    decision: "stay_sequential" | "activate_concurrent";
+    reason: "pilot_exhaustive" | "pilot_consumed_budget" | "pilot_depth_bound" | "pilot_authored_frontier_saturated" | "pilot_open_frontier";
+    pilotBudget: number;
+    pilotStatesExplored: number;
+    pilotExhaustive: boolean;
+    duplicateStateEvaluations: number;
+    uncertainty: "high";
+    productionEligible: false;
+  };
   resources?: {
     stateBudget: number;
     heapEnvelopeBytes: number;
