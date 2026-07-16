@@ -20,7 +20,7 @@ The response is deterministic for an installed Inkcheck version and reports:
 - supported search modes
 - explicit feature flags, including `false` for features not yet available
 
-`concurrentPortfolio: true` advertises the explicit worker-backed portfolio surface plus `defaultConcurrency` and `maxConcurrency`. A default of one means concurrency is available but not promoted as the automatic policy. Agents should inspect `explore.execution` for effective concurrency, fallback, per-pass grants, and worker status; they must treat `truncatedBy.worker` as a partial execution failure rather than ordinary bounded coverage.
+`concurrentPortfolio: true` advertises the worker-backed portfolio surface. `defaultConcurrencyMode: "auto"` and `defaultAutoConcurrencyCeiling: 4` mean local CLI and one-shot MCP checks classify workload before starting workers; the ceiling is not a worker-count promise. Agents should inspect `effectiveConfiguration.concurrencyMode` plus `explore.execution.activation` for the versioned decision, reason, pilot spend, uncertainty, production eligibility, and duplicate-work count. `requestedConcurrency` and `effectiveConcurrency` then show the resource-bounded plan that actually ran. Explicit concurrency `1` is a hard opt-out. Treat `truncatedBy.worker` as a partial execution failure rather than ordinary bounded coverage.
 
 Agents should check a feature flag instead of inferring support from missing documentation. Schema version `0` means that contract is not yet available.
 

@@ -86,8 +86,8 @@
         "description": "Select portfolio (default), shared, or shared-variable. Variable-aware mode dedicates 12.5% of shared-frontier selections to uncommon observed variable states and transitions."
       },
       {
-        "flag": "--concurrency <n>",
-        "description": "Experimental portfolio worker ceiling from 1 to 16 (default 1). Values above 1 retain adaptive rounds across persistent worker slots with deterministic merge/provenance, bounded resources, and safe sequential fallback; not yet the promoted broad default."
+        "flag": "--concurrency <auto|n>",
+        "description": "Workload-aware auto activation is the local portfolio default with a four-lane ceiling. Explicit 1 opts out; 2-16 fixes the worker ceiling. Reports expose the deterministic pilot decision and actual resource-bounded concurrency."
       },
       {
         "flag": "--max-memory <mb>",

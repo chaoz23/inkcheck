@@ -3,6 +3,7 @@ import * as path from "path";
 import { parseDocument } from "yaml";
 import { AssertionDefinition, parseAssertionDefinitions } from "./assertions";
 import { GoalDefinition, parseGoalDefinitions } from "./goals";
+import type { PortfolioConcurrencySetting } from "./concurrency-policy";
 
 export const CONFIG_SCHEMA_VERSION = 1;
 export const DEFAULT_CONFIG_FILE = "inkcheck.yml";
@@ -13,8 +14,8 @@ export interface InkcheckCiConfig {
   seed?: number;
   storySeed?: number;
   search?: "portfolio" | "shared" | "shared-variable";
-  /** Experimental fixed-allocation portfolio worker ceiling. */
-  concurrency?: number;
+  /** Automatic workload-aware activation or an explicit portfolio worker ceiling. */
+  concurrency?: PortfolioConcurrencySetting;
   maxMemoryMb?: number;
   maxTimeSec?: number;
   /** Shared search only: explicit retained-checkpoint count envelope. */
@@ -74,6 +75,15 @@ function boundedInteger(
   return value as number;
 }
 
+function concurrencySetting(value: unknown, issues: string[]): PortfolioConcurrencySetting | undefined {
+  if (value === undefined || value === "auto") return value;
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 16) {
+    issues.push("ci.concurrency: expected auto or an integer from 1 to 16");
+    return undefined;
+  }
+  return value as number;
+}
+
 export function parseProjectConfig(source: string): InkcheckProjectConfig {
   const document = parseDocument(source, { prettyErrors: true, uniqueKeys: true });
   if (document.errors.length) {
@@ -115,7 +125,7 @@ export function parseProjectConfig(source: string): InkcheckProjectConfig {
         goalMaxStates: boundedInteger(value.ci.goalMaxStates, "ci.goalMaxStates", 0, 100_000_000, issues),
         seed: boundedInteger(value.ci.seed, "ci.seed", 1, 4_294_967_295, issues),
         storySeed: boundedInteger(value.ci.storySeed, "ci.storySeed", 1, 2_147_483_646, issues),
-        concurrency: boundedInteger(value.ci.concurrency, "ci.concurrency", 1, 16, issues),
+        concurrency: concurrencySetting(value.ci.concurrency, issues),
         maxMemoryMb: boundedInteger(value.ci.maxMemoryMb, "ci.maxMemoryMb", 1, 1_000_000, issues),
         maxTimeSec: boundedInteger(value.ci.maxTimeSec, "ci.maxTimeSec", 1, 86_400, issues),
         maxFrontierStates: boundedInteger(value.ci.maxFrontierStates, "ci.maxFrontierStates", 1, 100_000_000, issues),
@@ -137,7 +147,7 @@ export function parseProjectConfig(source: string): InkcheckProjectConfig {
       if ((ci.maxFrontierStates !== undefined || ci.maxFrontierMb !== undefined) && (ci.search ?? "portfolio") === "portfolio") {
         issues.push("ci.maxFrontierStates/ci.maxFrontierMb: require search: shared or shared-variable");
       }
-      if ((ci.concurrency ?? 1) > 1 && (ci.search ?? "portfolio") !== "portfolio") {
+      if (typeof ci.concurrency === "number" && ci.concurrency > 1 && (ci.search ?? "portfolio") !== "portfolio") {
         issues.push("ci.concurrency greater than 1 requires search: portfolio");
       }
     }

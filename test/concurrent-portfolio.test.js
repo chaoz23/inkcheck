@@ -15,11 +15,16 @@ const {
   explorePortfolioFromPilot,
 } = require("../dist/explore");
 const { bindingLimit } = require("../dist/report-contract");
+const {
+  DEFAULT_AUTO_CONCURRENCY_CEILING,
+  resolvePortfolioConcurrency,
+} = require("../dist/concurrency-policy");
 const { compile, scanKnots } = require("../dist/inklecate");
 
 const ROOT = path.join(__dirname, "fixtures", "search");
 const GRID = path.join(ROOT, "early-variable-grid.ink");
 const SUSTAINED_GRID = path.join(__dirname, "..", "examples", "early-choice-grid.ink");
+const CLEAN_BRANCH = path.join(__dirname, "..", "examples", "clean-branch.ink");
 const PLATEAU = path.join(ROOT, "deceptive-plateau.ink");
 const LOW_DEDUP = path.join(ROOT, "low-dedup-wide.ink");
 const CLI = path.join(__dirname, "..", "dist", "cli.js");
@@ -168,7 +173,48 @@ test("aggregate worker heap contention stops cooperatively with partial evidence
   assert.ok(result.statesExplored < 100_000);
 });
 
-test("CLI exposes explicit experimental concurrency and records the effective contract", () => {
+test("auto concurrency resolves only eligible portfolio work to the handoff executor", () => {
+  assert.deepStrictEqual(resolvePortfolioConcurrency(undefined, "portfolio", 0), {
+    mode: "auto",
+    ceiling: DEFAULT_AUTO_CONCURRENCY_CEILING,
+    executor: "auto-handoff",
+  });
+  assert.deepStrictEqual(resolvePortfolioConcurrency("auto", "shared", 0), {
+    mode: "auto",
+    ceiling: 1,
+    executor: "sequential",
+    fallbackReason: "search_mode",
+  });
+  assert.deepStrictEqual(resolvePortfolioConcurrency("auto", "portfolio", 100), {
+    mode: "auto",
+    ceiling: 1,
+    executor: "sequential",
+    fallbackReason: "additive_goals",
+  });
+  assert.throws(() => resolvePortfolioConcurrency(2, "shared", 0), /requires portfolio search/);
+  assert.throws(() => resolvePortfolioConcurrency(2, "portfolio", 100), /does not yet support additive goal states/);
+});
+
+test("CLI defaults to workload-aware auto concurrency with an explicit decision", () => {
+  const run = spawnSync(process.execPath, [
+    CLI,
+    path.join(__dirname, "..", "examples", "clean-branch.ink"),
+    "--max-states", "100",
+    "--no-min-repro",
+    "--json",
+    "--progress=off",
+  ], { encoding: "utf8" });
+  assert.strictEqual(run.status, 0, run.stderr);
+  const report = JSON.parse(run.stdout);
+  assert.strictEqual(report.effectiveConfiguration.concurrencyMode, "auto");
+  assert.strictEqual(report.effectiveConfiguration.concurrency, 4);
+  assert.strictEqual(report.explore.execution.mode, "sequential");
+  assert.strictEqual(report.explore.execution.activation.policyVersion, "single-pass-frontier-v3");
+  assert.strictEqual(report.explore.execution.activation.reason, "budget_below_pilot");
+  assert.strictEqual(report.explore.execution.activation.duplicateStateEvaluations, 0);
+});
+
+test("CLI preserves explicit fixed concurrency and the hard single-worker opt-out", () => {
   const run = spawnSync(process.execPath, [
     CLI,
     GRID,
@@ -181,8 +227,24 @@ test("CLI exposes explicit experimental concurrency and records the effective co
   assert.strictEqual(run.status, 0, run.stderr);
   const report = JSON.parse(run.stdout);
   assert.strictEqual(report.effectiveConfiguration.concurrency, 2);
+  assert.strictEqual(report.effectiveConfiguration.concurrencyMode, "fixed");
   assert.strictEqual(report.explore.execution.mode, "concurrent");
   assert.strictEqual(report.explore.execution.requestedConcurrency, 2);
+
+  const single = spawnSync(process.execPath, [
+    CLI,
+    GRID,
+    "--max-states", "100",
+    "--concurrency=1",
+    "--no-min-repro",
+    "--json",
+    "--progress=off",
+  ], { encoding: "utf8" });
+  assert.strictEqual(single.status, 0, single.stderr);
+  const singleReport = JSON.parse(single.stdout);
+  assert.strictEqual(singleReport.effectiveConfiguration.concurrencyMode, "fixed");
+  assert.strictEqual(singleReport.effectiveConfiguration.concurrency, 1);
+  assert.strictEqual(singleReport.explore.execution, undefined);
 });
 
 test("1,024-state activation pilot stays sequential at a consumed ceiling", async () => {
@@ -334,6 +396,22 @@ test("single-pass handoff preserves the portfolio below the pilot threshold", as
   assert.strictEqual(result.execution.mode, "sequential");
   assert.strictEqual(result.execution.activation.reason, "budget_below_pilot");
   assert.strictEqual(result.execution.activation.pilotStatesExplored, 0);
+});
+
+test("an exhaustive live pilot retains pass telemetry and its executed schedule", async () => {
+  const compiled = await story(CLEAN_BRANCH);
+  const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
+    maxStates: 100_000,
+    maxDepth: 100,
+    concurrency: 4,
+    memoryCapBytes: ONE_GIB,
+  });
+  assert.strictEqual(result.execution.activation.reason, "pilot_exhaustive");
+  assert.strictEqual(result.execution.activation.duplicateStateEvaluations, 0);
+  assert.deepStrictEqual(result.passes.map((pass) => pass.pass), ["dfs:inside-out"]);
+  assert.deepStrictEqual(result.schedule.map((round) => round.entries.map((entry) => entry.pass)), [["dfs:inside-out"]]);
+  assert.strictEqual(result.schedule[0].entries[0].consumed, result.statesExplored);
+  assert.strictEqual(result.exhaustive, true);
 });
 
 test("single-pass handoff rejects depth-bound work without restarting the pilot", async () => {

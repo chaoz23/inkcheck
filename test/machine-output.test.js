@@ -284,7 +284,29 @@ test("MCP explore_story defaults to compact standard detail and requires explici
     assert.strictEqual(compact.response.detail, "standard");
     assert.strictEqual(compact.explore.endingCount, 1);
     assert.strictEqual(compact.explore.endingsFound, undefined);
+    assert.strictEqual(compact.effectiveConfiguration.concurrencyMode, "auto");
+    assert.strictEqual(compact.effectiveConfiguration.concurrency, 4);
+    assert.strictEqual(compact.explore.execution.activation.policyVersion, "single-pass-frontier-v3");
+    assert.strictEqual(compact.explore.execution.activation.reason, "budget_below_pilot");
+    assert.strictEqual(compact.explore.execution.activation.duplicateStateEvaluations, 0);
     assert.ok(!JSON.stringify(compact).includes("Private ending"));
+
+    const sustainedCall = await client.callTool({
+      name: "explore_story",
+      arguments: {
+        file: path.join(__dirname, "..", "examples", "early-choice-grid.ink"),
+        maxStates: 100_000,
+        maxDepth: 100,
+        minRepro: false,
+      },
+    });
+    const sustained = JSON.parse(sustainedCall.content[0].text);
+    assert.strictEqual(sustained.effectiveConfiguration.concurrencyMode, "auto");
+    assert.strictEqual(sustained.explore.execution.activation.decision, "activate_concurrent");
+    assert.strictEqual(sustained.explore.execution.activation.reason, "pilot_open_frontier");
+    assert.strictEqual(sustained.explore.execution.activation.duplicateStateEvaluations, 0);
+    assert.ok(sustained.explore.execution.effectiveConcurrency >= 1);
+    assert.ok(sustained.explore.statesExplored <= 100_000);
 
     const fullCall = await client.callTool({
       name: "explore_story",

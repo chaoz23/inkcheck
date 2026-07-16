@@ -57,7 +57,14 @@ import {
 import { findDefaultProjectConfig, loadProjectConfig } from "./config";
 import { createAgentKit, initProject, renderScaffoldResult } from "./scaffold";
 import { createResourceGuards } from "./resource-guards";
-import { explorePortfolioConcurrent } from "./concurrent-portfolio";
+import {
+  explorePortfolioConcurrent,
+  explorePortfolioPilotHandoffConcurrent,
+} from "./concurrent-portfolio";
+import {
+  PortfolioConcurrencySetting,
+  resolvePortfolioConcurrency,
+} from "./concurrency-policy";
 import {
   artifactProjectRoot,
   deleteReportArtifact,
@@ -111,7 +118,7 @@ Options:
   --seed <n>         Seed for the random-sampling slice, 1–4294967295 (default 1)
   --story-seed <n>   Initial Ink runtime RNG seed, 1–2147483646 (default 1)
   --search <mode>    Search: portfolio (default), shared, or shared-variable
-  --concurrency <n>  Portfolio worker ceiling, 1-16 (default 1; experimental)
+  --concurrency <auto|n>  Workload-aware auto activation (default), or fixed ceiling 1-16
   --max-memory <mb>  Stop cleanly before heap use exceeds <mb> (default: 85% of the V8 heap limit)
   --max-time <s>     Stop cleanly after <s> seconds and return a partial report (default: no time limit)
   --max-frontier-states <n>  Shared search pending-checkpoint cap (default: none)
@@ -455,7 +462,7 @@ async function main() {
   let seed: number | undefined;
   let storySeed: number | undefined;
   let search: "portfolio" | "shared" | "shared-variable" = "portfolio";
-  let concurrency: number | undefined;
+  let concurrency: PortfolioConcurrencySetting | undefined;
   let strict = false;
   let asJson = false;
   let asMarkdown = false;
@@ -501,7 +508,10 @@ async function main() {
       search = mode;
     }
     else if (arg === "--max-memory") maxMemoryMb = boundedInt(arg, args[++i], 1_000_000);
-    else if (arg === "--concurrency") concurrency = boundedInt(arg, args[++i], 16);
+    else if (arg === "--concurrency" || arg.startsWith("--concurrency=")) {
+      const value = arg === "--concurrency" ? args[++i] : arg.slice("--concurrency=".length);
+      concurrency = value === "auto" ? "auto" : boundedInt("--concurrency", value, 16);
+    }
     else if (arg === "--max-time") maxTimeSec = boundedInt(arg, args[++i], 86_400);
     else if (arg === "--max-frontier-states") maxFrontierStates = boundedInt(arg, args[++i], 100_000_000);
     else if (arg === "--max-frontier-memory") maxFrontierMb = boundedInt(arg, args[++i], 1_000_000);
@@ -596,7 +606,6 @@ async function main() {
   storySeed ??= DEFAULT_STORY_SEED;
   maxMemoryMb ??= configDefaults?.maxMemoryMb;
   concurrency ??= configDefaults?.concurrency;
-  concurrency ??= 1;
   maxTimeSec ??= configDefaults?.maxTimeSec;
   maxFrontierStates ??= configDefaults?.maxFrontierStates;
   maxFrontierMb ??= configDefaults?.maxFrontierMb;
@@ -605,12 +614,6 @@ async function main() {
   if (!resumeCheckpointId && !minReproSpecified && configDefaults?.minRepro !== undefined) minRepro = configDefaults.minRepro;
   if ((maxFrontierStates !== undefined || maxFrontierMb !== undefined) && search === "portfolio") {
     usage("--max-frontier-states/--max-frontier-memory require --search shared or shared-variable");
-  }
-  if (concurrency > 1 && search !== "portfolio") {
-    usage("--concurrency greater than 1 currently requires --search portfolio");
-  }
-  if (concurrency > 1 && (goalMaxStates ?? 0) > 0) {
-    usage("--concurrency greater than 1 does not yet support additive --goal-states");
   }
   if (saveCheckpoint && (search !== "shared" || minRepro || auto || followNext || (goalMaxStates ?? 0) > 0 || saveReport)) {
     usage("checkpoint persistence requires --search=shared --no-min-repro and does not support --auto, --next, --goal-states, or --save-report");
@@ -644,9 +647,19 @@ async function main() {
     usage("--max-states + --goal-states must not exceed 100000000");
   }
   const totalMaxStates = baselineMaxStates + additionalGoalStates;
+  let resolvedConcurrency: ReturnType<typeof resolvePortfolioConcurrency>;
+  try {
+    resolvedConcurrency = resolvePortfolioConcurrency(concurrency, search, additionalGoalStates);
+  } catch (error) {
+    usage(error instanceof Error ? error.message : String(error));
+  }
   const reportConfiguration: EffectiveReportConfiguration = {
     search,
-    concurrency,
+    concurrency: resolvedConcurrency.ceiling,
+    concurrencyMode: resolvedConcurrency.mode,
+    ...(resolvedConcurrency.fallbackReason
+      ? { concurrencyFallbackReason: resolvedConcurrency.fallbackReason }
+      : {}),
     minRepro,
     strict,
     maxMemoryMb: maxMemoryMb ?? null,
@@ -913,13 +926,20 @@ async function main() {
         goals: configuredGoals,
         goalMaxStates: additionalGoalStates,
       };
-      checked = search === "portfolio" && concurrency > 1 && additionalGoalStates === 0
-        ? explorePortfolioConcurrent(compiled.storyJson!, knots, externals, {
+      checked = resolvedConcurrency.executor === "auto-handoff"
+        ? explorePortfolioPilotHandoffConcurrent(compiled.storyJson!, knots, externals, {
             ...configuredOptions,
-            concurrency,
+            concurrency: resolvedConcurrency.ceiling,
             memoryCapBytes,
             deadlineMs,
           })
+        : resolvedConcurrency.executor === "fixed-concurrent"
+          ? explorePortfolioConcurrent(compiled.storyJson!, knots, externals, {
+              ...configuredOptions,
+              concurrency: resolvedConcurrency.ceiling,
+              memoryCapBytes,
+              deadlineMs,
+            })
         : exploreWithGoals(compiled.storyJson!, knots, externals, configuredOptions, search);
     }
     statesExplored = saveCheckpoint ? checked.statesExplored : statesBase + checked.statesExplored;

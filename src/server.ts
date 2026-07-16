@@ -22,7 +22,11 @@ import {
 import { parseAssertionDefinitions } from "./assertions";
 import { parseGoalDefinitions } from "./goals";
 import { createResourceGuards } from "./resource-guards";
-import { explorePortfolioConcurrent } from "./concurrent-portfolio";
+import {
+  explorePortfolioConcurrent,
+  explorePortfolioPilotHandoffConcurrent,
+} from "./concurrent-portfolio";
+import { resolvePortfolioConcurrency } from "./concurrency-policy";
 import {
   DEFAULT_MACHINE_DETAIL,
   DEFAULT_MACHINE_FINDING_LIMIT,
@@ -291,8 +295,8 @@ server.registerTool(
         .describe("Reserve a small breadth-first slice to shorten repro paths (default true)"),
       search: z.enum(["portfolio", "shared", "shared-variable"]).optional()
         .describe("Search engine: portfolio (default), shared, or variable-aware shared"),
-      concurrency: z.number().int().min(1).max(16).optional()
-        .describe("Experimental portfolio worker ceiling (default 1); values above 1 require portfolio search and no additive goal budget"),
+      concurrency: z.union([z.literal("auto"), z.number().int().min(1).max(16)]).optional()
+        .describe("Portfolio concurrency: workload-aware auto activation (default), or a fixed worker ceiling from 1 to 16"),
       maxFrontierStates: z.number().int().min(1).max(100000000).optional()
         .describe("Shared search only: maximum pending checkpoints retained (default unlimited)"),
       maxFrontierMb: z.number().int().min(1).max(1000000).optional()
@@ -307,7 +311,7 @@ server.registerTool(
         .describe(`Maximum privacy-minimal finding summaries in standard detail (default ${DEFAULT_MACHINE_FINDING_LIMIT})`),
     },
   },
-  async ({ file, maxDepth, maxStates, goalMaxStates, seed, storySeed = DEFAULT_STORY_SEED, minRepro, search, concurrency = 1, maxFrontierStates, maxFrontierMb, assertions: assertionInput, goals: goalInput, detail = DEFAULT_MACHINE_DETAIL, findingLimit = DEFAULT_MACHINE_FINDING_LIMIT }) => {
+  async ({ file, maxDepth, maxStates, goalMaxStates, seed, storySeed = DEFAULT_STORY_SEED, minRepro, search, concurrency, maxFrontierStates, maxFrontierMb, assertions: assertionInput, goals: goalInput, detail = DEFAULT_MACHINE_DETAIL, findingLimit = DEFAULT_MACHINE_FINDING_LIMIT }) => {
     const assertionIssues: string[] = [];
     const assertions = parseAssertionDefinitions(assertionInput, "assertions", assertionIssues) ?? [];
     if (assertionIssues.length) return err(`Invalid assertions:\n${assertionIssues.map((issue) => `- ${issue}`).join("\n")}`);
@@ -316,8 +320,12 @@ server.registerTool(
     if (goalIssues.length) return err(`Invalid goals:\n${goalIssues.map((issue) => `- ${issue}`).join("\n")}`);
     const baselineMaxStates = maxStates ?? 10_000_000;
     const additionalGoalStates = goalMaxStates ?? 0;
-    if (concurrency > 1 && (search ?? "portfolio") !== "portfolio") return err("concurrency greater than 1 requires search=portfolio");
-    if (concurrency > 1 && additionalGoalStates > 0) return err("concurrency greater than 1 does not yet support additive goalMaxStates");
+    let resolvedConcurrency: ReturnType<typeof resolvePortfolioConcurrency>;
+    try {
+      resolvedConcurrency = resolvePortfolioConcurrency(concurrency, search ?? "portfolio", additionalGoalStates);
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
     if (additionalGoalStates > 0 && goals.length === 0) return err("goalMaxStates requires at least one goal");
     if (baselineMaxStates + additionalGoalStates > 100_000_000) {
       return err("maxStates + goalMaxStates must not exceed 100000000");
@@ -329,7 +337,11 @@ server.registerTool(
     const { storyJson: _compiledStoryJson, ...compileReport } = compiled;
     const configuration = {
       search: search ?? "portfolio" as const,
-      concurrency,
+      concurrency: resolvedConcurrency.ceiling,
+      concurrencyMode: resolvedConcurrency.mode,
+      ...(resolvedConcurrency.fallbackReason
+        ? { concurrencyFallbackReason: resolvedConcurrency.fallbackReason }
+        : {}),
       minRepro: minRepro !== false,
       strict: false,
       maxMemoryMb: null,
@@ -381,12 +393,18 @@ server.registerTool(
       goals,
       goalMaxStates: additionalGoalStates,
     };
-    let result = concurrency > 1
-      ? explorePortfolioConcurrent(compiled.storyJson, knots, externals, {
+    let result = resolvedConcurrency.executor === "auto-handoff"
+      ? explorePortfolioPilotHandoffConcurrent(compiled.storyJson, knots, externals, {
           ...options,
-          concurrency,
+          concurrency: resolvedConcurrency.ceiling,
           memoryCapBytes,
         })
+      : resolvedConcurrency.executor === "fixed-concurrent"
+        ? explorePortfolioConcurrent(compiled.storyJson, knots, externals, {
+            ...options,
+            concurrency: resolvedConcurrency.ceiling,
+            memoryCapBytes,
+          })
       : exploreWithGoals(compiled.storyJson, knots, externals, options, search ?? "portfolio");
     if (reproStates > 0) {
       const bfs = explore(compiled.storyJson, knots, externals, {

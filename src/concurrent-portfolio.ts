@@ -239,6 +239,19 @@ export function explorePortfolioPilotHandoffConcurrent(
 
   if (engine.exhaustive() || pilotConsumedBudget) {
     result = engine.finalize();
+    const telemetry = engine.telemetry();
+    result.passes = [telemetry];
+    result.schedule = [{
+      round: 1,
+      entries: [{
+        pass: telemetry.pass,
+        granted: pilotBudget,
+        consumed,
+        newEndings: telemetry.endingsFound,
+        newKnots: telemetry.knotsVisited,
+        newRuntimeErrors: telemetry.runtimeErrorsFound,
+      }],
+    }];
     result.execution = {
       mode: "sequential",
       requestedConcurrency: options.concurrency,
