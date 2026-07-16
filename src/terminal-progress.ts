@@ -1,4 +1,20 @@
 export type HumanProgressPhase = "compile" | "source_scan" | "explore" | "min_repro" | "report";
+export type ProgressStatus = "complete" | "cancelled" | "error";
+export type ProgressStopReason =
+  | "exhaustive"
+  | "state_budget"
+  | "depth_limit"
+  | "time_limit"
+  | "memory_limit"
+  | "frontier_limit"
+  | "beam_width"
+  | "worker_failure"
+  | "compile_error"
+  | "cancelled"
+  | "error"
+  | "service_restart"
+  | "completed";
+export type ProgressOutcome = "clean" | "issues_found" | "review_required" | "compile_error";
 
 export interface HumanProgressEvent {
   type: "run_start" | "phase_start" | "progress" | "discovery" | "phase_end" | "run_end";
@@ -21,6 +37,9 @@ export interface HumanProgressEvent {
     goalsReached: number;
     stagesReached: number;
   };
+  status?: ProgressStatus;
+  stopReason?: ProgressStopReason;
+  outcome?: ProgressOutcome;
   exhaustive?: boolean;
 }
 
@@ -60,6 +79,7 @@ export class HumanProgressRenderer {
   handle(event: HumanProgressEvent): void {
     if (event.type === "run_start") return;
     if (event.type === "run_end") {
+      if (event.stopReason) this.render(event);
       this.finish();
       return;
     }
@@ -87,7 +107,25 @@ export class HumanProgressRenderer {
     const width = Math.max(44, this.writer.columns ?? 100);
     const label = event.phase ? PHASE_LABEL[event.phase] : "Working";
     let line: string;
-    if (event.type === "discovery" && event.discoveries) {
+    if (event.type === "run_end" && event.stopReason) {
+      const reasons: Record<ProgressStopReason, string> = {
+        exhaustive: "reachable search exhausted",
+        state_budget: "state budget reached; results are partial",
+        depth_limit: "depth limit reached; results are partial",
+        time_limit: "time limit reached; results are partial",
+        memory_limit: "memory limit reached; results are partial",
+        frontier_limit: "frontier limit reached; results are partial",
+        beam_width: "beam width limited search; results are partial",
+        worker_failure: "an explorer worker failed; surviving results are partial",
+        compile_error: "compilation failed before exploration",
+        cancelled: "cancelled; progress shown is partial",
+        error: "stopped after an unexpected error",
+        service_restart: "stopped after a service restart",
+        completed: "run completed",
+      };
+      const findings = event.runtimeErrorsFound ? `  |  ${event.runtimeErrorsFound} runtime error${event.runtimeErrorsFound === 1 ? "" : "s"} found` : "";
+      line = `Finished: ${reasons[event.stopReason]}${findings}  |  ${duration(event.elapsedMs)} elapsed`;
+    } else if (event.type === "discovery" && event.discoveries) {
       const found = [
         event.discoveries.runtimeErrors ? `+${event.discoveries.runtimeErrors} error${event.discoveries.runtimeErrors === 1 ? "" : "s"}` : "",
         event.discoveries.assertionViolations ? `+${event.discoveries.assertionViolations} rule failure${event.discoveries.assertionViolations === 1 ? "" : "s"}` : "",

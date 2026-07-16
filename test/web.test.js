@@ -206,6 +206,7 @@ test("hosted cancellation retains a source-bound final progress window", async (
   assert.strictEqual(snapshot.job.resultWindow.trigger, "cancelled");
   assert.strictEqual(snapshot.job.resultWindow.work.statesExplored, 123);
   assert.strictEqual(snapshot.job.resultWindow.searchContinuing, false);
+  assert.strictEqual(snapshot.job.progress.stopReason, "cancelled");
   assert.deepStrictEqual(snapshot.job.resultWindow.stableFindingIds, []);
   assert.strictEqual(snapshot.job.resultWindow.omittedFindingCount, 4);
   assert.match(snapshot.job.resultWindow.sourceFingerprint.value, /^[0-9a-f]{64}$/);
@@ -280,6 +281,7 @@ test("hosted progress survives restart without persisting uploaded story content
     assert.strictEqual(snapshot.job.status, "failed");
     assert.match(snapshot.job.error, /service restarted/i);
     assert.strictEqual(snapshot.job.progress.type, "run_end");
+    assert.strictEqual(snapshot.job.progress.stopReason, "service_restart");
     assert.strictEqual(snapshot.job.progress.statesExplored, 321);
     const stream = await fetch(`${secondBase}${created.job.eventUrl}`);
     const streamText = await stream.text();
@@ -539,6 +541,7 @@ test("web API validates input and returns a no-retention report", async (t) => {
   assert.match(streamText, /"type":"discovery"/);
   assert.match(streamText, /"knotsVisited":4/);
   assert.doesNotMatch(streamText, /main\.ink|chapters\/one\.ink|Hello/);
+  assert.match(streamText, /"stopReason":"completed"/);
   assert.strictEqual(calls, 1);
   assert.deepStrictEqual(usageEvents, [
     { event: "page_view", details: undefined },

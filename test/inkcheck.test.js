@@ -3178,6 +3178,59 @@ test("CLI streams versioned progress to stderr without changing the final JSON r
   assert.strictEqual(final.endingsFound, report.explore.endingsFound.length);
   assert.strictEqual(final.runtimeErrorsFound, report.explore.runtimeErrors.length);
   assert.strictEqual(final.unvisitedKnots, report.explore.unvisitedKnots.length);
+  assert.strictEqual(final.status, "complete");
+  assert.strictEqual(final.stopReason, "exhaustive");
+  assert.strictEqual(final.outcome, "clean");
+});
+
+test("terminal progress separates binding limits from runtime findings", () => {
+  const run = (story, states) => spawnSync(
+    process.execPath,
+    [CLI, story, "--max-states", String(states), "--no-min-repro", "--json", "--progress=ndjson"],
+    { encoding: "utf8" }
+  );
+  const terminal = (proc) => proc.stderr.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+  const budgeted = terminal(run(path.join(__dirname, "..", "examples", "manor.ink"), 5));
+  assert.strictEqual(budgeted.status, "complete");
+  assert.strictEqual(budgeted.stopReason, "state_budget");
+  assert.strictEqual(budgeted.outcome, "issues_found");
+  const runtime = terminal(run(path.join(__dirname, "..", "examples", "content-exhaustion.ink"), 100));
+  assert.strictEqual(runtime.status, "complete");
+  assert.strictEqual(runtime.stopReason, "exhaustive");
+  assert.strictEqual(runtime.outcome, "issues_found");
+  assert.strictEqual(runtime.runtimeErrorsFound, 1);
+  const compileFailure = terminal(run(path.join(__dirname, "..", "examples", "broken.ink"), 100));
+  assert.strictEqual(compileFailure.status, "complete");
+  assert.strictEqual(compileFailure.stopReason, "compile_error");
+  assert.strictEqual(compileFailure.outcome, "compile_error");
+});
+
+test("unexpected CLI failures emit one best-effort terminal error event", { skip: process.platform === "win32" }, () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-progress-error-"));
+  const story = path.join(directory, "story.ink");
+  fs.copyFileSync(CLEAN_BRANCH, story);
+  fs.chmodSync(directory, 0o555);
+  let proc;
+  try {
+    proc = spawnSync(
+      process.execPath,
+      [CLI, story, "--max-states", "100", "--json", "--save-report", "--progress=ndjson"],
+      { encoding: "utf8" }
+    );
+  } finally {
+    fs.chmodSync(directory, 0o755);
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+  assert.notStrictEqual(proc.status, 0);
+  const events = proc.stderr.split("\n").flatMap((line) => {
+    try { return [JSON.parse(line)]; } catch { return []; }
+  });
+  const terminal = events.filter((event) => event.type === "run_end");
+  assert.strictEqual(terminal.length, 1);
+  assert.strictEqual(terminal[0].status, "error");
+  assert.strictEqual(terminal[0].stopReason, "error");
 });
 
 test("live discovery events report useful counters without story content", () => {
@@ -3260,11 +3313,22 @@ test("human progress uses work-budget language and stays readable without termin
       stagesReached: 0,
     },
   });
+  renderer.handle({
+    type: "run_end",
+    status: "complete",
+    stopReason: "state_budget",
+    outcome: "issues_found",
+    elapsedMs: 12_200,
+    statesExplored: 37_250,
+    stateBudget: 100_000,
+    runtimeErrorsFound: 1,
+  });
   renderer.finish();
   assert.match(output, /work states/);
   assert.doesNotMatch(output, /coverage/);
   assert.doesNotMatch(output, /\x1b\[/);
   assert.match(output, /Found \+1 error, \+1 ending, \+2 knots/);
+  assert.match(output, /Finished: state budget reached; results are partial/);
 });
 
 test("CLI rejects invalid numeric and unknown options as usage errors", () => {
