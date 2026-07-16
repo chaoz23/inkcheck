@@ -95,3 +95,18 @@ Two matched 5M *The Intercept* cells establish the depth boundary:
 | 100 | activate: open frontier | 624.1s | 393.0s | 4,456/4,456 | 29/29 | 12/12 | 570/905 MiB | 37.0% faster; T1 85.9s to 46.2s |
 
 This is credible activation evidence, not a production-ready executor. The pilot currently restarts the selected full run, so activated and non-exhaustive rejected cells perform 1,024 duplicate state evaluations outside the reported search ceiling. Every result marks `productionEligible: false`, reports the duplicate work, and keeps uncertainty high. A production implementation must migrate or reuse pilot pass state under the original global state/time/memory envelope, then rerun the broad and authored gates. The compact evidence is checked in at `benchmarks/results/concurrency-activation-pilot-v2.json`.
+
+## Live pilot handoff
+
+Issue #174 removes that replay cost. Policy `single-pass-frontier-v3` runs the inside-out DFS pilot as the beginning of the ordinary first adaptive round. If the classifier rejects concurrency, the same engine finishes its original grant inside the sequential scheduler. If it activates, that engine stays in the parent process while untouched portfolio passes run in persistent workers. The first round is completed before weights adapt, preserving the baseline schedule; all work remains inside one state ceiling and `duplicateStateEvaluations` is zero.
+
+The repeated 80-cell 100K screen produced the same classification as v2: 62 pilot-exhaustive, 14 depth-bound, two authored-frontier-saturated, and only both depth-100 `early-choice-grid` seeds open-frontier. All 80 cells retained exact runtime, assertion, knot, visible-outcome, terminal-identity, proof, and adaptive-schedule evidence. No cell exceeded its state budget or replayed the pilot. Median elapsed time moved from 141 to 124 ms, median RSS from 57.0 to 55.5 MiB, and median T1/T5/T10 from 15.1/23.6/37.2 to 10.2/18.1/31.7 ms. Two tiny cells had elapsed regressions above 25%, with the largest adding 174 ms; neither started workers or regressed evidence.
+
+The authored gates also retained exact evidence:
+
+| Depth | Decision | Sequential | Handoff candidate | Exact terminals | Knots | T1 B/C | Peak RSS B/C | Result |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 30 | stay sequential: depth-bound | 514.7s | 533.4s | 831/831 | 25/25 | not compared | 498/502 MiB | exact rejection; zero replay |
+| 100 | activate: open frontier | 657.7s | 489.0s | 4,456/4,456 | 29/29 | 88.9s/0.4s | 509/773 MiB | 25.6% faster; zero replay |
+
+These are single-machine observations, and the unusually early candidate T1 includes meaningful authored-knot evidence discovered by the live pilot. The executor now reports `productionEligible: true` because the implementation gates pass, but it remains promotion-harness-only: eligibility does not by itself choose or integrate an automatic production default. That product decision remains #169. The compact checked evidence is `benchmarks/results/concurrency-activation-handoff-v3.json`.

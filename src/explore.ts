@@ -90,6 +90,8 @@ export interface ConcurrentWorkerEvidence {
   granted: number;
   consumed: number;
   status: "completed" | "memory" | "time" | "failed";
+  /** The live activation-pilot pass remains in the parent isolate. */
+  location?: "parent";
   error?: string;
 }
 
@@ -97,17 +99,18 @@ export interface PortfolioExecutionEvidence {
   mode: "sequential" | "concurrent";
   requestedConcurrency: number;
   effectiveConcurrency: number;
-  fallbackReason?: "single_core" | "memory_headroom" | "single_pass" | "pilot_exhaustive" | "pilot_consumed_budget" | "pilot_depth_bound" | "pilot_authored_frontier_saturated";
+  fallbackReason?: "single_core" | "memory_headroom" | "single_pass" | "budget_below_pilot" | "pilot_exhaustive" | "pilot_consumed_budget" | "pilot_depth_bound" | "pilot_authored_frontier_saturated";
   activation?: {
-    policyVersion: "pilot-frontier-v2";
+    policyVersion: "pilot-frontier-v2" | "single-pass-frontier-v3";
     decision: "stay_sequential" | "activate_concurrent";
-    reason: "pilot_exhaustive" | "pilot_consumed_budget" | "pilot_depth_bound" | "pilot_authored_frontier_saturated" | "pilot_open_frontier";
+    reason: "budget_below_pilot" | "pilot_exhaustive" | "pilot_consumed_budget" | "pilot_depth_bound" | "pilot_authored_frontier_saturated" | "pilot_open_frontier";
     pilotBudget: number;
     pilotStatesExplored: number;
     pilotExhaustive: boolean;
+    pilotPass?: PortfolioPassKind;
     duplicateStateEvaluations: number;
     uncertainty: "high";
-    productionEligible: false;
+    productionEligible: boolean;
   };
   resources?: {
     stateBudget: number;
@@ -3394,6 +3397,13 @@ export function createPortfolioPassEngine(
   });
 }
 
+export interface PortfolioPilotState {
+  pass: PortfolioPassKind;
+  engine: PassEngine;
+  granted: number;
+  consumed: number;
+}
+
 /** Deterministic largest-remainder split of `total` units by weight. */
 function splitBudget(total: number, weights: number[]): number[] {
   const sum = weights.reduce((a, b) => a + b, 0);
@@ -3459,7 +3469,8 @@ function explorePortfolioInternal(
   knots: KnotInfo[],
   externals: string[] = [],
   opts: ExploreOptions = {},
-  replayShadowAllocation = false
+  replayShadowAllocation = false,
+  initialPilot?: PortfolioPilotState
 ): ExploreResult {
   const maxStates = opts.maxStates ?? 100_000;
   if (!Number.isSafeInteger(maxStates) || maxStates < 1 || maxStates > 100_000_000) {
@@ -3479,39 +3490,44 @@ function explorePortfolioInternal(
     engines.push(engine);
     engineWeights.push(weight);
   };
+  let pilotIndex = -1;
+  const addPass = (pass: PortfolioPassKind, weight: number) => {
+    const engine = initialPilot?.pass === pass
+      ? initialPilot.engine
+      : createPortfolioPassEngine(pass, storyJson, knots, externals, shared);
+    addEngine(engine, weight);
+    if (initialPilot?.pass === pass) pilotIndex = engines.length - 1;
+  };
   if (weights.last > 0) {
-    addEngine(
-      createSearchEngine(storyJson, knots, externals, { ...shared, strategy: "dfs", dfsChoicePriority: "last" }),
-      weights.last
-    );
+    addPass("dfs:last", weights.last);
   }
   if (weights.first > 0) {
-    addEngine(
-      createSearchEngine(storyJson, knots, externals, { ...shared, strategy: "dfs", dfsChoicePriority: "first" }),
-      weights.first
-    );
+    addPass("dfs:first", weights.first);
   }
   if (weights.insideOut > 0) {
-    addEngine(
-      createSearchEngine(storyJson, knots, externals, { ...shared, strategy: "dfs", dfsChoicePriority: "inside-out" }),
-      weights.insideOut
-    );
+    addPass("dfs:inside-out", weights.insideOut);
   }
   // Sampling/diversity passes earn a slice only when the budget can feed them.
   if (weights.beam > 0 && maxStates >= 10) {
-    addEngine(createBeamEngine(storyJson, knots, externals, shared), weights.beam);
+    addPass("beam:diversity", weights.beam);
   }
   if (weights.random > 0 && maxStates >= 5) {
-    addEngine(createRandomEngine(storyJson, knots, externals, shared), weights.random);
+    addPass("random", weights.random);
   }
   if (engines.length === 0) {
-    addEngine(
-      createSearchEngine(storyJson, knots, externals, { ...shared, strategy: "dfs", dfsChoicePriority: "last" }),
-      1
-    );
+    addPass("dfs:last", 1);
+  }
+  if (initialPilot && pilotIndex < 0) {
+    throw new Error(`pilot pass ${initialPilot.pass} is disabled by the effective portfolio weights`);
   }
 
   const roundSize = Math.max(1, Math.floor(maxStates / 10));
+  if (initialPilot) {
+    const firstRoundGrants = splitBudget(roundSize, engineWeights);
+    if (initialPilot.consumed > firstRoundGrants[pilotIndex]) {
+      throw new RangeError("pilot consumption must fit inside its ordinary first-round portfolio grant");
+    }
+  }
   const minShare = 0.08;
   const schedule: ScheduleRound[] = [];
   const policyReplay: PolicyReplayRound[] = [];
@@ -3545,7 +3561,7 @@ function explorePortfolioInternal(
   let currentWeights = [...engineWeights];
   let replayFloorAllocator: CumulativeFloorAllocator | undefined;
   let policyControlsCurrentRound = false;
-  let remaining = maxStates;
+  let remaining = maxStates - (initialPilot?.consumed ?? 0);
   let exhaustedEarly = false;
   let memoryStopped = false;
   let timeStopped = false;
@@ -3583,6 +3599,129 @@ function explorePortfolioInternal(
     return mergedSnapshot;
   };
 
+  const recordSnapshot = (
+    engine: PassEngine,
+    i: number,
+    granted: number,
+    consumed: number
+  ): { entry: ScheduleRoundEntry; score: number } => {
+    const snapshot = engine.snapshot();
+    const marginal = countMarginalFindings(snapshot, seenEndings, seenKnots, seenErrors);
+    let newPolicyErrors = 0;
+    for (const error of snapshot.runtimeErrors) {
+      const key = portfolioRuntimeErrorKey(error);
+      if (!seenPolicyErrors.has(key)) {
+        seenPolicyErrors.add(key);
+        newPolicyErrors++;
+      }
+    }
+    let newVisibleOutcomes = 0;
+    for (const ending of snapshot.endingsFound) {
+      const key = visibleOutcomeKey(ending.finalText);
+      if (!seenVisibleOutcomes.has(key)) {
+        seenVisibleOutcomes.add(key);
+        newVisibleOutcomes++;
+      }
+    }
+    let newAssertionViolations = 0;
+    for (const assertion of snapshot.assertionResults) {
+      for (const violation of assertion.violations) {
+        const key = assertionViolationKey(assertion.id, violation.observedValues, violation.choiceIndices);
+        if (!seenAssertionViolations.has(key)) {
+          seenAssertionViolations.add(key);
+          newAssertionViolations++;
+        }
+      }
+    }
+    let newGoals = 0;
+    let newStages = 0;
+    for (const goal of snapshot.goalResults ?? []) {
+      if (goal.status === "reached" && !seenGoals.has(goal.id)) {
+        seenGoals.add(goal.id);
+        newGoals++;
+      }
+      for (const stage of goal.stages ?? []) {
+        const key = `${goal.id}/${stage.id}`;
+        if (stage.status === "reached" && !seenStages.has(key)) {
+          seenStages.add(key);
+          newStages++;
+        }
+      }
+    }
+    portfolioCurve.observe(maxStates - remaining, {
+      endingsFound: seenEndings.size,
+      runtimeErrorsFound: seenErrors.size,
+      knotsVisited: seenKnots.size,
+      visibleOutcomes: seenVisibleOutcomes.size,
+      assertionViolations: seenAssertionViolations.size,
+      goalsReached: seenGoals.size,
+      stagesReached: seenStages.size,
+      uniqueStatesObserved: 0,
+    });
+    const portfolioSummary = portfolioCurve.summary(maxStates - remaining);
+    opts.onProgress?.({
+      pass: engine.label,
+      statesExplored: maxStates - remaining,
+      endingsFound: seenEndings.size,
+      runtimeErrorsFound: seenErrors.size,
+      unvisitedKnots: totalNonFunctionKnots - seenKnots.size,
+      visibleOutcomes: seenVisibleOutcomes.size,
+      assertionViolations: seenAssertionViolations.size,
+      goalsReached: seenGoals.size,
+      stagesReached: seenStages.size,
+      discoveryEvents: portfolioSummary.discoveryEvents,
+      statesSinceLastDiscovery: portfolioSummary.statesSinceLastDiscovery,
+    });
+    marginalTotals[i].endings += marginal.newEndings;
+    marginalTotals[i].knots += marginal.newKnots;
+    marginalTotals[i].errors += marginal.newRuntimeErrors;
+    marginalTotals[i].policyErrors += newPolicyErrors;
+    marginalTotals[i].visibleOutcomes += newVisibleOutcomes;
+    marginalTotals[i].assertions += newAssertionViolations;
+    marginalTotals[i].goals += newGoals;
+    marginalTotals[i].stages += newStages;
+    marginalCurves[i].observe(snapshot.statesExplored, {
+      endingsFound: marginalTotals[i].endings,
+      runtimeErrorsFound: marginalTotals[i].policyErrors,
+      knotsVisited: marginalTotals[i].knots,
+      visibleOutcomes: marginalTotals[i].visibleOutcomes,
+      assertionViolations: marginalTotals[i].assertions,
+      goalsReached: marginalTotals[i].goals,
+      stagesReached: marginalTotals[i].stages,
+      uniqueStatesObserved: 0,
+    });
+    return {
+      entry: { pass: engine.label, granted, consumed, ...marginal },
+      score: marginal.newRuntimeErrors * 5 + marginal.newEndings * 3 + marginal.newKnots * 2,
+    };
+  };
+
+  if (initialPilot) {
+    const pilotEngine = engines[pilotIndex];
+    const snapshot = pilotEngine.snapshot();
+    const goals = snapshot.goalResults ?? [];
+    opts.onProgress?.({
+      pass: pilotEngine.label,
+      statesExplored: initialPilot.consumed,
+      endingsFound: snapshot.endingsFound.length,
+      runtimeErrorsFound: snapshot.runtimeErrors.length,
+      unvisitedKnots: snapshot.unvisitedKnots.length,
+      visibleOutcomes: new Set(snapshot.endingsFound.map((ending) => visibleOutcomeKey(ending.finalText))).size,
+      assertionViolations: snapshot.assertionResults.filter((assertion) => assertion.status === "violated").length,
+      goalsReached: goals.filter((goal) => goal.status === "reached").length,
+      stagesReached: goals.reduce((total, goal) => total + (goal.stages ?? []).filter((stage) => stage.status === "reached").length, 0),
+      discoveryEvents: snapshot.discoverySummary?.discoveryEvents ?? 0,
+      statesSinceLastDiscovery: snapshot.discoverySummary?.statesSinceLastDiscovery ?? null,
+    });
+    memoryStopped = pilotEngine.stoppedForMemory();
+    timeStopped = pilotEngine.stoppedForTime();
+    exhaustedEarly = pilotEngine.done() && pilotEngine.exhaustive();
+    const pilotSnapshot = structuredClone(snapshot);
+    pilotSnapshot.limits.maxStates = maxStates;
+    pilotSnapshot.schedule = [];
+    opts.onSnapshot?.(pilotSnapshot);
+  }
+
   while (remaining > 0 && !exhaustedEarly && !memoryStopped && !timeStopped && engines.some((e) => !e.done())) {
     // Stop before a round begins if a guard has already tripped, so we do not
     // start allocating another round's worth of frontier/state hashes.
@@ -3594,121 +3733,35 @@ function explorePortfolioInternal(
       timeStopped = true;
       break;
     }
+    const finishingPilotRound = Boolean(initialPilot && schedule.length === 0);
     const active = engines
       .map((engine, i) => ({ engine, i }))
-      .filter(({ engine }) => !engine.done());
-    const roundBudget = Math.min(roundSize, remaining);
+      .filter(({ engine, i }) => !engine.done() || (finishingPilotRound && i === pilotIndex));
+    const roundBudget = Math.min(roundSize, remaining + (finishingPilotRound ? initialPilot!.consumed : 0));
     const floorService = replayShadowAllocation && policyControlsCurrentRound
       ? (replayFloorAllocator ??= new CumulativeFloorAllocator(
           engines.map((engine) => engine.label),
           minShare
         )).allocate(roundBudget, currentWeights, engines.map((engine) => !engine.done()))
       : undefined;
-    const grants = floorService
+    const fullGrants = floorService
       ? active.map(({ i }) => floorService.grants[i])
       : splitBudget(roundBudget, active.map(({ i }) => currentWeights[i]));
+    const grants = fullGrants.map((grant, index) =>
+      finishingPilotRound && active[index].i === pilotIndex
+        ? Math.max(0, grant - initialPilot!.consumed)
+        : grant
+    );
     const entries: ScheduleRoundEntry[] = [];
     const scores = new Array<number>(engines.length).fill(0);
     for (let a = 0; a < active.length; a++) {
       const { engine, i } = active[a];
       const consumed = grants[a] > 0 ? engine.run(grants[a]) : 0;
       remaining -= consumed;
-      const snapshot = engine.snapshot();
-      const marginal = countMarginalFindings(snapshot, seenEndings, seenKnots, seenErrors);
-      let newPolicyErrors = 0;
-      for (const error of snapshot.runtimeErrors) {
-        // Approximate fallback lines can vary by witness path (#84). For budget
-        // credit, conservatively collapse them by message/file rather than pay
-        // several passes for one semantic failure. Report identity is unchanged.
-        const key = portfolioRuntimeErrorKey(error);
-        if (!seenPolicyErrors.has(key)) {
-          seenPolicyErrors.add(key);
-          newPolicyErrors++;
-        }
-      }
-      let newVisibleOutcomes = 0;
-      for (const ending of snapshot.endingsFound) {
-        const key = visibleOutcomeKey(ending.finalText);
-        if (!seenVisibleOutcomes.has(key)) {
-          seenVisibleOutcomes.add(key);
-          newVisibleOutcomes++;
-        }
-      }
-      let newAssertionViolations = 0;
-      for (const assertion of snapshot.assertionResults) {
-        for (const violation of assertion.violations) {
-          const key = assertionViolationKey(assertion.id, violation.observedValues, violation.choiceIndices);
-          if (!seenAssertionViolations.has(key)) {
-            seenAssertionViolations.add(key);
-            newAssertionViolations++;
-          }
-        }
-      }
-      let newGoals = 0;
-      let newStages = 0;
-      for (const goal of snapshot.goalResults ?? []) {
-        if (goal.status === "reached" && !seenGoals.has(goal.id)) {
-          seenGoals.add(goal.id);
-          newGoals++;
-        }
-        for (const stage of goal.stages ?? []) {
-          const key = `${goal.id}/${stage.id}`;
-          if (stage.status === "reached" && !seenStages.has(key)) {
-            seenStages.add(key);
-            newStages++;
-          }
-        }
-      }
-      portfolioCurve.observe(maxStates - remaining, {
-        endingsFound: seenEndings.size,
-        runtimeErrorsFound: seenErrors.size,
-        knotsVisited: seenKnots.size,
-        visibleOutcomes: seenVisibleOutcomes.size,
-        assertionViolations: seenAssertionViolations.size,
-        goalsReached: seenGoals.size,
-        stagesReached: seenStages.size,
-        uniqueStatesObserved: 0,
-      });
-      const portfolioSummary = portfolioCurve.summary(maxStates - remaining);
-      opts.onProgress?.({
-        pass: engine.label,
-        statesExplored: maxStates - remaining,
-        endingsFound: seenEndings.size,
-        runtimeErrorsFound: seenErrors.size,
-        unvisitedKnots: totalNonFunctionKnots - seenKnots.size,
-        visibleOutcomes: seenVisibleOutcomes.size,
-        assertionViolations: seenAssertionViolations.size,
-        goalsReached: seenGoals.size,
-        stagesReached: seenStages.size,
-        discoveryEvents: portfolioSummary.discoveryEvents,
-        statesSinceLastDiscovery: portfolioSummary.statesSinceLastDiscovery,
-      });
-      marginalTotals[i].endings += marginal.newEndings;
-      marginalTotals[i].knots += marginal.newKnots;
-      marginalTotals[i].errors += marginal.newRuntimeErrors;
-      marginalTotals[i].policyErrors += newPolicyErrors;
-      marginalTotals[i].visibleOutcomes += newVisibleOutcomes;
-      marginalTotals[i].assertions += newAssertionViolations;
-      marginalTotals[i].goals += newGoals;
-      marginalTotals[i].stages += newStages;
-      marginalCurves[i].observe(snapshot.statesExplored, {
-        endingsFound: marginalTotals[i].endings,
-        runtimeErrorsFound: marginalTotals[i].policyErrors,
-        knotsVisited: marginalTotals[i].knots,
-        visibleOutcomes: marginalTotals[i].visibleOutcomes,
-        assertionViolations: marginalTotals[i].assertions,
-        goalsReached: marginalTotals[i].goals,
-        stagesReached: marginalTotals[i].stages,
-        uniqueStatesObserved: 0,
-      });
-      entries.push({
-        pass: engine.label,
-        granted: grants[a],
-        consumed,
-        ...marginal,
-      });
-      scores[i] =
-        marginal.newRuntimeErrors * 5 + marginal.newEndings * 3 + marginal.newKnots * 2;
+      const pilotConsumed = finishingPilotRound && i === pilotIndex ? initialPilot!.consumed : 0;
+      const recorded = recordSnapshot(engine, i, fullGrants[a], consumed + pilotConsumed);
+      entries.push(recorded.entry);
+      scores[i] = recorded.score;
       if (engine.stoppedForMemory()) {
         // A guard tripped mid-round; finish recording this round, then stop.
         memoryStopped = true;
@@ -3836,6 +3889,23 @@ export function explorePortfolio(
   opts: ExploreOptions = {}
 ): ExploreResult {
   return explorePortfolioInternal(storyJson, knots, externals, opts, false);
+}
+
+/** Continue one already-consumed live pass inside the adaptive portfolio. */
+export function explorePortfolioFromPilot(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {},
+  pilot: PortfolioPilotState
+): ExploreResult {
+  const maxStates = opts.maxStates ?? 100_000;
+  if (!Number.isSafeInteger(pilot.granted) || !Number.isSafeInteger(pilot.consumed)
+    || pilot.granted < 1 || pilot.consumed < 0 || pilot.consumed > pilot.granted
+    || pilot.consumed > maxStates || pilot.engine.label !== pilot.pass) {
+    throw new RangeError("pilot state must be live, pass-matched, and within the configured state ceiling");
+  }
+  return explorePortfolioInternal(storyJson, knots, externals, opts, false, pilot);
 }
 
 /** Research-only paired candidate for #103; applies reallocation actions but never policy stops. */
