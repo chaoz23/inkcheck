@@ -159,6 +159,47 @@ test("long-tail evaluator preserves multi-file authored project includes", () =>
   }
 });
 
+test("long-tail evaluator retains a time-bound base report without a checkpoint", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-long-tail-base-only-test-"));
+  try {
+    const manifestFile = path.join(root, "manifest.json");
+    const outputFile = path.join(root, "result.json");
+    fs.writeFileSync(manifestFile, JSON.stringify({
+      schemaVersion: 1,
+      cases: [{
+        id: "dog-base-only",
+        story: path.join(ROOT, "benchmarks", "authored", "dog-ink-adventure", "root.ink"),
+        source: { name: "Dog Ink Adventure", license: "MIT", commit: "test", licenseFile: null },
+        baseStates: 500_000,
+        additionalStates: 500_000,
+        maxDepth: 30,
+        seed: 7,
+        storySeed: 1,
+        maxElapsedSeconds: 1,
+        maxMemoryMb: 512,
+        maxDiskMb: 128,
+      }],
+    }));
+    const run = spawnSync(process.execPath, [
+      path.join(ROOT, "dist", "long-tail-evaluation-cli.js"),
+      manifestFile,
+      "--output", outputFile,
+      "--case", "dog-base-only",
+      "--arm", "independent",
+    ], { encoding: "utf8", timeout: 30_000 });
+    assert.strictEqual(run.status, 0, run.stderr);
+    const result = JSON.parse(fs.readFileSync(outputFile, "utf8")).armResult;
+    assert.strictEqual(result.availability, "base_only");
+    assert.strictEqual(result.reason, "base_time_ceiling");
+    assert.strictEqual(result.base.checkpointId, null);
+    assert.ok(result.base.result.statesExplored < 500_000);
+    assert.deepStrictEqual(result.additional.windows, []);
+    assert.strictEqual(result.invariants.reportReopens, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function timeoutWorker(root, name, snapshot) {
   const worker = path.join(root, `${name}.js`);
   fs.writeFileSync(worker, [

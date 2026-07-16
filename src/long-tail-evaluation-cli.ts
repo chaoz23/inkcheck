@@ -252,10 +252,36 @@ async function runArm(
   const baseStarted = Date.now();
   const base = await startCampaign(campaignInput(file, entry, independent));
   const baseElapsedMs = Date.now() - baseStarted;
-  if (!base.sessionCapability || !base.session.latestCheckpointId) {
-    throw new Error(`${entry.id} ${label} base did not retain a checkpoint: ${base.campaign?.stopReason ?? base.session.bindingLimit}`);
-  }
+  if (!base.sessionCapability) throw new Error(`${entry.id} ${label} base omitted its session capability`);
   const baseResult = await report(root, base.session.latestReportId);
+  if (!base.session.latestCheckpointId) {
+    const baseOnly = {
+      availability: "base_only",
+      reason: `base_${base.campaign?.stopReason ?? base.session.bindingLimit ?? "not_recoverable"}`,
+      base: {
+        elapsedMs: baseElapsedMs,
+        reportId: base.session.latestReportId,
+        checkpointId: null,
+        result: compactResult(baseResult),
+      },
+      additional: {
+        elapsedMs: 0,
+        windows: [],
+        combinedEvidence: combinedEvidence([]),
+        newEvidence: combinedDelta(baseResult, []),
+        ledger: compactLedger(root),
+      },
+      invariants: {
+        baseReportPreserved: null,
+        baseCheckpointPreserved: null,
+        campaignStatesWithinCeiling: base.campaign!.spend.states <= base.campaign!.ceilings.totalStates,
+        reportReopens: true,
+      },
+    };
+    onSnapshot(baseOnly);
+    process.stderr.write(`${entry.id} ${label} base-only: ${baseResult.statesExplored} states in ${baseElapsedMs} ms (${baseOnly.reason})\n`);
+    return baseOnly;
+  }
   const checkpointBefore = await checkpointHash(root, base);
   process.stderr.write(`${entry.id} ${label} base: ${baseResult.statesExplored} states in ${baseElapsedMs} ms\n`);
   const continuationStarted = Date.now();
