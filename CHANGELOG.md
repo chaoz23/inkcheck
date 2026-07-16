@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add explicit terminal progress status, binding stop reason, and result outcome across NDJSON, human terminal, and hosted jobs. Exhaustive completion, state/depth/time/memory/frontier/worker limits, compile failures, cancellation, service restart, and unexpected errors remain distinct from whether the report found runtime/assertion issues. Unexpected CLI failures now emit a best-effort terminal error event; responsive signal cancellation remains #37.
 - Persist hosted async-job status and privacy-safe progress events in an optional private TTL-backed file store. Production Compose enables it in the existing volume; restarts preserve counters and return an honest retry state without retaining uploaded source, filenames, findings, or reports, and expired or malformed records are purged.
 - Stream privacy-safe live discovery events for CLI, human-terminal, and hosted progress consumers. Events expose only monotonic numeric deltas and cumulative counts for endings, runtime errors, visited knots, assertion failures, goals, stages, and visible outcomes; final reports remain authoritative for identities and story content.
 - Extend the promotion harness with matched sequential-versus-concurrent portfolio runs, an explicit 2-16 candidate worker ceiling, and result-window time-to-1/5/10 meaningful-evidence milestones. Runtime errors, assertion violations, authored knots, and visible endings earn timing credit; raw terminal multiplicity and worker heartbeats do not.

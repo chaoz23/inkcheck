@@ -23,6 +23,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const SHA256 = /^[0-9a-f]{64}$/;
 const EVENT_TYPES = new Set(["queued", "run_start", "phase_start", "progress", "discovery", "phase_end", "run_end"]);
 const STATUSES = new Set<PersistedHostedJobStatus>(["queued", "running", "complete", "cancelled", "failed"]);
+const EVENT_STATUSES = new Set(["queued", "running", "complete", "cancelled", "failed", "error"]);
+const STOP_REASONS = new Set([
+  "exhaustive", "state_budget", "depth_limit", "time_limit", "memory_limit",
+  "frontier_limit", "beam_width", "worker_failure", "compile_error", "cancelled",
+  "error", "service_restart", "completed",
+]);
+const OUTCOMES = new Set(["clean", "issues_found", "review_required", "compile_error"]);
 const PHASES = new Set(["compile", "source_scan", "explore", "min_repro", "report"]);
 const SAFE_PASS = /^[a-z0-9:_=.-]{1,80}$/i;
 
@@ -96,7 +103,9 @@ function safeProgressEvent(value: unknown): HostedProgressEvent {
       : {}),
     ...(discoveries ? { discoveries } : {}),
     ...(forecast ? { forecast } : {}),
-    ...(typeof event.status === "string" && STATUSES.has(event.status) ? { status: event.status } : {}),
+    ...(typeof event.status === "string" && EVENT_STATUSES.has(event.status) ? { status: event.status as HostedProgressEvent["status"] } : {}),
+    ...(typeof event.stopReason === "string" && STOP_REASONS.has(event.stopReason) ? { stopReason: event.stopReason } : {}),
+    ...(typeof event.outcome === "string" && OUTCOMES.has(event.outcome) ? { outcome: event.outcome } : {}),
   };
 }
 

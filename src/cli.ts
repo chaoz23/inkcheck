@@ -36,7 +36,12 @@ import {
   truncationAdvice,
   unvisitedKnotHint,
 } from "./human-report";
-import { HumanProgressRenderer } from "./terminal-progress";
+import {
+  HumanProgressRenderer,
+  ProgressOutcome,
+  ProgressStatus,
+  ProgressStopReason,
+} from "./terminal-progress";
 import {
   buildCompileFailureEnvelope,
   buildReportEnvelope,
@@ -73,6 +78,8 @@ import {
 } from "./checkpoints";
 import { renderHumanResultWindow, runHumanCampaign } from "./human-campaign";
 import type { CampaignMode } from "./campaign-policy";
+
+let activeProgressFailure: (() => void) | undefined;
 
 function usage(message?: string): never {
   if (message) console.error(`inkcheck: ${message}\n`);
@@ -693,6 +700,9 @@ async function main() {
       statesSinceLastDiscovery?: number | null;
       knotsVisited?: number;
       discoveries?: DiscoveryChanges;
+      status?: ProgressStatus;
+      stopReason?: ProgressStopReason;
+      outcome?: ProgressOutcome;
     } = {}
   ) => {
     const event = {
@@ -710,6 +720,31 @@ async function main() {
     if (selectedProgressMode === "ndjson") process.stderr.write(JSON.stringify(event) + "\n");
     humanProgress?.handle(event);
   };
+
+  let terminalProgressEmitted = false;
+  const finishProgress = (
+    status: ProgressStatus,
+    stopReason: ProgressStopReason,
+    details: Parameters<typeof emitProgress>[1] = {}
+  ) => {
+    if (terminalProgressEmitted) return;
+    terminalProgressEmitted = true;
+    process.off("SIGINT", cancelOnSigint);
+    process.off("SIGTERM", cancelOnSigterm);
+    activeProgressFailure = undefined;
+    emitProgress("run_end", { ...details, status, stopReason });
+  };
+  const cancelOnSigint = () => {
+    finishProgress("cancelled", "cancelled");
+    process.exit(130);
+  };
+  const cancelOnSigterm = () => {
+    finishProgress("cancelled", "cancelled");
+    process.exit(143);
+  };
+  process.once("SIGINT", cancelOnSigint);
+  process.once("SIGTERM", cancelOnSigterm);
+  activeProgressFailure = () => finishProgress("error", "error");
 
   emitProgress("run_start");
   emitProgress("phase_start", { phase: "compile" });
@@ -749,7 +784,7 @@ async function main() {
       for (const i of compiled.issues) console.log(`  ${i.raw}`);
     }
     emitProgress("phase_end", { phase: "report" });
-    emitProgress("run_end");
+    finishProgress("complete", "compile_error", { outcome: "compile_error" });
     process.exitCode = 1;
     return;
   }
@@ -1119,12 +1154,23 @@ async function main() {
     }
   }
   emitProgress("phase_end", { phase: "report" });
-  emitProgress("run_end", {
-    endingsFound: report.endingsFound.length,
-    runtimeErrorsFound: report.runtimeErrors.length,
-    unvisitedKnots: report.unvisitedKnots.length,
-  });
-
+  const stopReason: ProgressStopReason = report.exhaustive
+    ? "exhaustive"
+    : report.truncatedBy.worker
+      ? "worker_failure"
+      : report.truncatedBy.memory
+        ? "memory_limit"
+        : report.truncatedBy.time
+          ? "time_limit"
+          : report.truncatedBy.frontier
+            ? "frontier_limit"
+            : report.truncatedBy.maxDepth
+              ? "depth_limit"
+              : report.truncatedBy.maxStates
+                ? "state_budget"
+                : report.truncatedBy.beamWidth
+                  ? "beam_width"
+                  : "completed";
   const assertionFail = report.assertionResults.some((result) => result.status === "violated");
   const hardFail = report.runtimeErrors.length > 0 || assertionFail;
   const softFail =
@@ -1134,6 +1180,12 @@ async function main() {
       report.runtimeWarnings.length > 0 ||
       report.truncated ||
       report.externalFunctionsStubbed.length > 0);
+  finishProgress("complete", stopReason, {
+    outcome: hardFail ? "issues_found" : softFail ? "review_required" : "clean",
+    endingsFound: report.endingsFound.length,
+    runtimeErrorsFound: report.runtimeErrors.length,
+    unvisitedKnots: report.unvisitedKnots.length,
+  });
   process.exitCode = hardFail || softFail ? 1 : 0;
 }
 
@@ -1275,6 +1327,7 @@ function renderMarkdown(
 }
 
 main().catch((e) => {
+  activeProgressFailure?.();
   console.error(e);
   process.exit(1);
 });

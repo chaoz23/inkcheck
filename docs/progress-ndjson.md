@@ -41,6 +41,9 @@ Optional fields:
 | `unvisitedKnots` | number | Knots not yet reached by any pass in this run. Non-increasing within a run. |
 | `knotsVisited` | number | Cumulative authored knots reached. Present on `discovery` events. |
 | `discoveries` | object | Numeric deltas first observed at this event: `endings`, `runtimeErrors`, `knotsVisited`, `visibleOutcomes`, `assertionViolations`, `goalsReached`, and `stagesReached`. Present only on `discovery` events. |
+| `status` | string | Terminal process status: `complete`, `cancelled`, or `error`. Hosted wrappers also use queue/job states. |
+| `stopReason` | string | Binding terminal reason such as `exhaustive`, `state_budget`, `depth_limit`, `time_limit`, `memory_limit`, `frontier_limit`, `worker_failure`, `compile_error`, `cancelled`, or `error`. |
+| `outcome` | string | Result classification separate from the stop cause: `clean`, `issues_found`, `review_required`, or `compile_error`. |
 
 Progress counts are cumulative over the run, not per-pass, so a consumer can render them as a live running total: endings and errors only rise, unvisited knots only fall. (`--next` starts a fresh exploration per escalation, so the counts rebuild at each escalation boundary; see Lifecycle.)
 
@@ -63,7 +66,9 @@ Compilation failures still produce progress events through the report phase, the
 
 `--next` may run multiple bounded checks inside one CLI process. Progress `sequence`, `elapsedMs`, and `statesExplored` continue across the whole process. The final stdout JSON may include a `runs` array describing the escalations.
 
-Issue #37 tracks a future improvement for best-effort terminal `run_end` events on SIGINT, SIGTERM, and unexpected top-level failures. Until that ships, consumers should treat a process exit without `run_end` as an interrupted or failed run and fall back to the process exit status.
+Unexpected top-level failures after progress initialization emit a best-effort `run_end` with `status: "error"`. Signal handlers also attempt `status: "cancelled"`, but the current synchronous compile/explore path can delay JavaScript signal delivery until work has already finished. Issue #37 remains open for responsive, deterministically tested SIGINT/SIGTERM cancellation. Consumers must still treat a process exit without `run_end` as interrupted and fall back to the process exit status.
+
+`stopReason` explains why work ended; `outcome` explains what it found. A run can truthfully be `stopReason: "exhaustive"` and `outcome: "issues_found"` when every modeled reachable state was explored and one of those states produced a runtime error. Runtime findings do not become a false stop cause merely because they make CI exit nonzero.
 
 ## Examples
 
@@ -82,7 +87,7 @@ Privacy-safe discovery event:
 Terminal event:
 
 ```json
-{"schemaVersion":1,"sequence":12,"type":"run_end","elapsedMs":1842,"statesExplored":9000,"stateBudget":100000,"budgetFraction":0.09,"endingsFound":7,"runtimeErrorsFound":1,"unvisitedKnots":2}
+{"schemaVersion":1,"sequence":12,"type":"run_end","elapsedMs":1842,"statesExplored":100000,"stateBudget":100000,"budgetFraction":1,"status":"complete","stopReason":"state_budget","outcome":"issues_found","endingsFound":7,"runtimeErrorsFound":1,"unvisitedKnots":2}
 ```
 
 CI parsing sketch:

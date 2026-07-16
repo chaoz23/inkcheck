@@ -9,6 +9,7 @@ import { VERSION } from "./version";
 import { BrowserUsageEvent, FileUsageStore, UsageRecorder } from "./usage";
 import { buildHumanFindings, HumanFinding } from "./human-report";
 import { FileHostedJobStore, PersistedHostedJob } from "./hosted-job-store";
+import type { ProgressOutcome, ProgressStopReason } from "./terminal-progress";
 import {
   HostedLimits,
   HostedSubmission,
@@ -99,7 +100,9 @@ export interface HostedProgressEvent {
     uncertainty: "high";
     disclosure: string;
   };
-  status?: "queued" | "running" | "complete" | "cancelled" | "failed";
+  status?: "queued" | "running" | "complete" | "cancelled" | "failed" | "error";
+  stopReason?: ProgressStopReason;
+  outcome?: ProgressOutcome;
 }
 
 export interface SubmissionRunOptions {
@@ -583,7 +586,7 @@ class HostedJobManager {
           ? "This check completed before the service restarted, but reports are never retained. Run the check again."
           : "The hosted service restarted before this check completed. Run the check again.";
         job.expiresAt = Date.now() + config.jobTtlMs;
-        this.emit(job, { type: "run_end", status: "failed" });
+        this.emit(job, { type: "run_end", status: "failed", stopReason: "service_restart" });
       } else if (job.status === "failed") {
         job.error = "This check did not complete. Run the check again.";
       }
@@ -621,7 +624,7 @@ class HostedJobManager {
     job.controller.abort();
     job.submission = undefined;
     job.expiresAt = Date.now() + this.config.jobTtlMs;
-    this.emit(job, { type: "run_end", status: "cancelled" });
+    this.emit(job, { type: "run_end", status: "cancelled", stopReason: "cancelled" });
     return true;
   }
 
@@ -681,6 +684,8 @@ class HostedJobManager {
       visibleOutcomes: patch.visibleOutcomes ?? previous?.visibleOutcomes,
       goalsReached: patch.goalsReached ?? previous?.goalsReached,
       stagesReached: patch.stagesReached ?? previous?.stagesReached,
+      stopReason: patch.stopReason ?? previous?.stopReason,
+      outcome: patch.outcome ?? previous?.outcome,
       meaningfulYield,
       statesSinceLastYield,
       forecast: {
@@ -720,14 +725,18 @@ class HostedJobManager {
       job.result = result;
       job.status = "complete";
       job.expiresAt = Date.now() + this.config.jobTtlMs;
-      this.emit(job, { type: "run_end", status: "complete" });
+      this.emit(job, {
+        type: "run_end",
+        status: "complete",
+        stopReason: job.events.at(-1)?.stopReason ?? "completed",
+      });
       this.onComplete(job);
     } catch (error) {
       if (job.status !== "cancelled") {
         job.status = "failed";
         job.error = error instanceof Error ? error.message : "Unexpected service error";
         job.expiresAt = Date.now() + this.config.jobTtlMs;
-        this.emit(job, { type: "run_end", status: "failed" });
+        this.emit(job, { type: "run_end", status: "failed", stopReason: "error" });
       }
     } finally {
       job.submission = undefined;
