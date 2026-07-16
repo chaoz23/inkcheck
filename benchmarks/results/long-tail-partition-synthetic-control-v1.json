@@ -1,0 +1,901 @@
+{
+  "schemaVersion": 1,
+  "inkcheckVersion": "0.6.0-beta.3",
+  "manifestSha256": "3f048ea2675de617d8310f9a790adf8617664a6fa9c9803cfb13bd7f35ee785a",
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "node": "v24.14.0",
+    "cpuCount": 8,
+    "totalMemoryBytes": 8589934592
+  },
+  "cases": [
+    {
+      "id": "synthetic-early-gate-control",
+      "source": {
+        "name": "Repository-owned long-tail early-gate control",
+        "license": "MIT",
+        "commit": "repository fixture",
+        "licenseFile": null
+      },
+      "sourceSha256": "88079f8864c8e4c88872071ba8f3ac713aa39efdd8fe4b8cb6caa344998c4dc3",
+      "configuration": {
+        "baseStates": 5000,
+        "additionalStates": 5000,
+        "maxDepth": 100,
+        "seed": 7,
+        "storySeed": 1,
+        "maxMemoryMb": 4096
+      },
+      "sameFrontier": {
+        "base": {
+          "elapsedMs": 2142,
+          "reportId": "report-18593c3b105180ad14a47673",
+          "checkpointId": "checkpoint-6eabb4479babfb15338f3aea",
+          "result": {
+            "statesExplored": 5000,
+            "exhaustive": false,
+            "truncated": true,
+            "truncatedBy": {
+              "maxDepth": false,
+              "maxStates": true,
+              "beamWidth": false,
+              "frontier": false,
+              "memory": false,
+              "time": false
+            },
+            "limits": {
+              "maxDepth": 100,
+              "maxStates": 5000,
+              "seed": 7,
+              "storySeed": 1
+            },
+            "findings": {
+              "runtimeErrors": {
+                "count": 1,
+                "sha256": "30ac175f119053f82821341d137df7f06a2915349464dfdd789dfdab1a11e22d",
+                "examples": [
+                  "ee1df3a56c5941fc77bf1c4e091f7db51f6986ce318b09ad9a808c5cfc75c798"
+                ]
+              },
+              "assertionViolations": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "goals": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "visitedKnots": {
+                "count": 6,
+                "sha256": "dc58f887ee509c7de84d3fad28b31663534115c431de63619622d40fd34c2332",
+                "examples": [
+                  "branch",
+                  "finish",
+                  "north_end",
+                  "origin_choice",
+                  "south_end",
+                  "west_failure"
+                ]
+              },
+              "visibleOutcomes": {
+                "count": 2,
+                "sha256": "1beeef7b493ee762c4f205bff243d6d327659e42b83ad1674ccaa2c32ac5e507",
+                "examples": [
+                  "North ending.",
+                  "South ending."
+                ]
+              },
+              "terminalVariants": {
+                "count": 1038,
+                "sha256": "d3e3fd257e52cc6ef71d5e353d107d5360920ec9a9d83e2df4267e7a7566ecd6",
+                "examples": [
+                  "000e406cda5e0dbaa179bd48234f158feed969b57bd96ba38433219d03008433",
+                  "00551c7c5cf706979c17301155b91e3f57055dd1161723afeeb545c8a5293472",
+                  "0095a590863fbdadf010aaa2b717d641a233b932517d79a51ccf5505eb190dd2",
+                  "00a60545d8f160430ef5c668ca835eebad699620207963faaaeae8d4d17d1c29",
+                  "00c2cffbf54e1d0f4f90fbe6b2c66a362304711928353f49b60b74d3232f55ce",
+                  "010ec975263f363a9c17b2a86f98fed68e30b1a165135b7609c4080730c9b863",
+                  "013cb1cad0181584542981c3acefdc4aa0e475b3e5b8fe1c50e1e8e96375302e",
+                  "017549d08784e3824886c1310ae3a9e5c6d2ef02ab55ca43edbf49053711a26e",
+                  "0179d17120bf47f0bd18197c14db25c5967e5f792499ae6e82b8ffca56159d71",
+                  "01b937f3cda34bbc13931ca957eddc24b6fe2a6e49b141a8214d1fbaab3e4544",
+                  "01ca9b05966e34fabfa1584b8b047b67346266da67c2951475b0d1b862936e66",
+                  "01cf95feeda44e4112cb65a41814d15659b0ed7bac7dd324a7f4eb8fc13a4522",
+                  "02aae8ee9c6afffa0669788d2969d3d985b11adbb1d8009d3ee559c20d1f9bd1",
+                  "033eb3c438e5d1ed1e7e5679d6a20b0ea214512b7e35e92a3e91c62c8b209c3a",
+                  "03b701e994d41cbd32f6a23d596296224248a4dbf84c34f8c2be6b3fce892b65",
+                  "03b8cdb3cdafcc6d652b0da43ec8c1ec2f7e8422804b0b06815e2d3b006b3af5",
+                  "03db7fbfb8f2cc4afc33a8d101afed9f9432441192c93b572dfa8d6dd8badc7c",
+                  "041ea1571483556f90b374ac1b3decb7b4dc0afbe2fc0c9948a388a6b9b900c0",
+                  "0454bfc70e100f1dd4937c99caf88f9ade1e6fee7fb4a2185794f6998594c6a3",
+                  "04747ce7c478d45fdea1550270f5365b33893a7c133c14db470fce416e7c1f16"
+                ]
+              }
+            }
+          }
+        },
+        "additional": {
+          "elapsedMs": 5282,
+          "windows": [
+            {
+              "reportId": "report-a74b4e2a197d9dac1cfc726a",
+              "purpose": "typical",
+              "partition": {
+                "strategy": "shared"
+              },
+              "consumedStates": 5000,
+              "elapsedMs": 5271,
+              "stopReason": "maxStates",
+              "marginalYield": {
+                "critical": 0,
+                "intent": 0,
+                "authoredCoverage": 0,
+                "terminalVariants": 1812
+              },
+              "result": {
+                "statesExplored": 10000,
+                "exhaustive": false,
+                "truncated": true,
+                "truncatedBy": {
+                  "maxDepth": false,
+                  "maxStates": true,
+                  "beamWidth": false,
+                  "frontier": false,
+                  "memory": false,
+                  "time": false
+                },
+                "limits": {
+                  "maxDepth": 100,
+                  "maxStates": 10000,
+                  "seed": 7,
+                  "storySeed": 1
+                },
+                "findings": {
+                  "runtimeErrors": {
+                    "count": 1,
+                    "sha256": "30ac175f119053f82821341d137df7f06a2915349464dfdd789dfdab1a11e22d",
+                    "examples": [
+                      "ee1df3a56c5941fc77bf1c4e091f7db51f6986ce318b09ad9a808c5cfc75c798"
+                    ]
+                  },
+                  "assertionViolations": {
+                    "count": 0,
+                    "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "examples": []
+                  },
+                  "goals": {
+                    "count": 0,
+                    "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "examples": []
+                  },
+                  "visitedKnots": {
+                    "count": 6,
+                    "sha256": "dc58f887ee509c7de84d3fad28b31663534115c431de63619622d40fd34c2332",
+                    "examples": [
+                      "branch",
+                      "finish",
+                      "north_end",
+                      "origin_choice",
+                      "south_end",
+                      "west_failure"
+                    ]
+                  },
+                  "visibleOutcomes": {
+                    "count": 2,
+                    "sha256": "1beeef7b493ee762c4f205bff243d6d327659e42b83ad1674ccaa2c32ac5e507",
+                    "examples": [
+                      "North ending.",
+                      "South ending."
+                    ]
+                  },
+                  "terminalVariants": {
+                    "count": 2850,
+                    "sha256": "b37366b343f49242aa74a7748d28b2ea55c7c9b8c04d7c2dfdcacdfa4fdfc3c1",
+                    "examples": [
+                      "0002c65ad7825380e312d75b36ab280094954af67809fde92ae0edadf330b517",
+                      "0006bdb28e11c7ecb1003a2ff6ffe6503cfd0ac0218bd51d463749802e835143",
+                      "000e406cda5e0dbaa179bd48234f158feed969b57bd96ba38433219d03008433",
+                      "00189531d69ca5d2cb43740de7453c54acbd2a31a636ff1f9ea5c17d5557fc0b",
+                      "00551c7c5cf706979c17301155b91e3f57055dd1161723afeeb545c8a5293472",
+                      "006343f274be5b222bd66297e963017e53315959af2a5d9a51bba4da3179f797",
+                      "0078e0bd887de83bd5d010e4a722da18c4c3b97ad3b5e7de3d7775e60f3c62e2",
+                      "007f341694f79e6ce37ce07908f66dccc8e748fb740a4ba04a86708db2db8587",
+                      "0095a590863fbdadf010aaa2b717d641a233b932517d79a51ccf5505eb190dd2",
+                      "00a60545d8f160430ef5c668ca835eebad699620207963faaaeae8d4d17d1c29",
+                      "00baec513d5ca63cbac8cef37a2a3fa90019da7e9c138c0edb4276d547b8f53a",
+                      "00c2cffbf54e1d0f4f90fbe6b2c66a362304711928353f49b60b74d3232f55ce",
+                      "00f618c301c1a2ba8f9404e3795403b6bc28af359679feee662e88e449a812ba",
+                      "01006f554d01ab4b9389c4a4d1b0d7d40410ac5c5d01c84bb6614f24dd2ff528",
+                      "010ec975263f363a9c17b2a86f98fed68e30b1a165135b7609c4080730c9b863",
+                      "013cb1cad0181584542981c3acefdc4aa0e475b3e5b8fe1c50e1e8e96375302e",
+                      "01595ec6938adad4ad1ee01037cfe41480f62365276373b2ac831b53ffb7b709",
+                      "01623ffa5589a4e5365b2902bcf6408df09a32953f2684bd600942c1c3151a14",
+                      "017549d08784e3824886c1310ae3a9e5c6d2ef02ab55ca43edbf49053711a26e",
+                      "0179d17120bf47f0bd18197c14db25c5967e5f792499ae6e82b8ffca56159d71"
+                    ]
+                  }
+                }
+              },
+              "newEvidence": {
+                "runtimeErrors": {
+                  "count": 0,
+                  "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                  "examples": []
+                },
+                "assertionViolations": {
+                  "count": 0,
+                  "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                  "examples": []
+                },
+                "goals": {
+                  "count": 0,
+                  "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                  "examples": []
+                },
+                "visitedKnots": {
+                  "count": 0,
+                  "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                  "examples": []
+                },
+                "visibleOutcomes": {
+                  "count": 0,
+                  "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                  "examples": []
+                },
+                "terminalVariants": {
+                  "count": 1812,
+                  "sha256": "e4e28e4abda3b1459e18c51af690655645981a0a28b915d7d6fc4f4e52087096",
+                  "examples": [
+                    "0002c65ad7825380e312d75b36ab280094954af67809fde92ae0edadf330b517",
+                    "0006bdb28e11c7ecb1003a2ff6ffe6503cfd0ac0218bd51d463749802e835143",
+                    "00189531d69ca5d2cb43740de7453c54acbd2a31a636ff1f9ea5c17d5557fc0b",
+                    "006343f274be5b222bd66297e963017e53315959af2a5d9a51bba4da3179f797",
+                    "0078e0bd887de83bd5d010e4a722da18c4c3b97ad3b5e7de3d7775e60f3c62e2",
+                    "007f341694f79e6ce37ce07908f66dccc8e748fb740a4ba04a86708db2db8587",
+                    "00baec513d5ca63cbac8cef37a2a3fa90019da7e9c138c0edb4276d547b8f53a",
+                    "00f618c301c1a2ba8f9404e3795403b6bc28af359679feee662e88e449a812ba",
+                    "01006f554d01ab4b9389c4a4d1b0d7d40410ac5c5d01c84bb6614f24dd2ff528",
+                    "01595ec6938adad4ad1ee01037cfe41480f62365276373b2ac831b53ffb7b709",
+                    "01623ffa5589a4e5365b2902bcf6408df09a32953f2684bd600942c1c3151a14",
+                    "01845ea9d083979628306843d35c3475e4add900da514140e713ab14154076b3",
+                    "01869efc751bd6e512e72955f5c0566e7e3e9284251f9590e5a41a81145c08e6",
+                    "022410ac512b58b8fbc3b257fed7b627d507d73d28c2c5660648d84d329fc4bc",
+                    "02305c749a73c8525f0cbbed444e6484c7571e58df92ca613648eb672bed28cd",
+                    "024cb11b332c2f4d1ad0357a04a1df89b9181e3e40c62664a582dbf748b8ffb1",
+                    "025342d71a570537e7de7c5aff4118cfda900ca84e58f0cc174ddafce006c973",
+                    "02a74437a0726a0b556474b93a2938d2f263251046de43440d5191a5fe76320a",
+                    "02ae0ffaad15b33563d494f27cf18610680118c19412d2179394254bcb04b4c1",
+                    "02b9281ea78849e8fa3cb1be0d2de7082bb0f79269c9d63c4a1c8656072a796d"
+                  ]
+                }
+              }
+            }
+          ],
+          "combinedEvidence": {
+            "runtimeErrors": {
+              "count": 1,
+              "sha256": "30ac175f119053f82821341d137df7f06a2915349464dfdd789dfdab1a11e22d",
+              "examples": [
+                "ee1df3a56c5941fc77bf1c4e091f7db51f6986ce318b09ad9a808c5cfc75c798"
+              ]
+            },
+            "assertionViolations": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "goals": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "visitedKnots": {
+              "count": 6,
+              "sha256": "dc58f887ee509c7de84d3fad28b31663534115c431de63619622d40fd34c2332",
+              "examples": [
+                "branch",
+                "finish",
+                "north_end",
+                "origin_choice",
+                "south_end",
+                "west_failure"
+              ]
+            },
+            "visibleOutcomes": {
+              "count": 2,
+              "sha256": "1beeef7b493ee762c4f205bff243d6d327659e42b83ad1674ccaa2c32ac5e507",
+              "examples": [
+                "North ending.",
+                "South ending."
+              ]
+            },
+            "terminalVariants": {
+              "count": 2850,
+              "sha256": "b37366b343f49242aa74a7748d28b2ea55c7c9b8c04d7c2dfdcacdfa4fdfc3c1",
+              "examples": [
+                "0002c65ad7825380e312d75b36ab280094954af67809fde92ae0edadf330b517",
+                "0006bdb28e11c7ecb1003a2ff6ffe6503cfd0ac0218bd51d463749802e835143",
+                "000e406cda5e0dbaa179bd48234f158feed969b57bd96ba38433219d03008433",
+                "00189531d69ca5d2cb43740de7453c54acbd2a31a636ff1f9ea5c17d5557fc0b",
+                "00551c7c5cf706979c17301155b91e3f57055dd1161723afeeb545c8a5293472",
+                "006343f274be5b222bd66297e963017e53315959af2a5d9a51bba4da3179f797",
+                "0078e0bd887de83bd5d010e4a722da18c4c3b97ad3b5e7de3d7775e60f3c62e2",
+                "007f341694f79e6ce37ce07908f66dccc8e748fb740a4ba04a86708db2db8587",
+                "0095a590863fbdadf010aaa2b717d641a233b932517d79a51ccf5505eb190dd2",
+                "00a60545d8f160430ef5c668ca835eebad699620207963faaaeae8d4d17d1c29",
+                "00baec513d5ca63cbac8cef37a2a3fa90019da7e9c138c0edb4276d547b8f53a",
+                "00c2cffbf54e1d0f4f90fbe6b2c66a362304711928353f49b60b74d3232f55ce",
+                "00f618c301c1a2ba8f9404e3795403b6bc28af359679feee662e88e449a812ba",
+                "01006f554d01ab4b9389c4a4d1b0d7d40410ac5c5d01c84bb6614f24dd2ff528",
+                "010ec975263f363a9c17b2a86f98fed68e30b1a165135b7609c4080730c9b863",
+                "013cb1cad0181584542981c3acefdc4aa0e475b3e5b8fe1c50e1e8e96375302e",
+                "01595ec6938adad4ad1ee01037cfe41480f62365276373b2ac831b53ffb7b709",
+                "01623ffa5589a4e5365b2902bcf6408df09a32953f2684bd600942c1c3151a14",
+                "017549d08784e3824886c1310ae3a9e5c6d2ef02ab55ca43edbf49053711a26e",
+                "0179d17120bf47f0bd18197c14db25c5967e5f792499ae6e82b8ffca56159d71"
+              ]
+            }
+          },
+          "newEvidence": {
+            "runtimeErrors": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "assertionViolations": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "goals": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "visitedKnots": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "visibleOutcomes": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "terminalVariants": {
+              "count": 1812,
+              "sha256": "e4e28e4abda3b1459e18c51af690655645981a0a28b915d7d6fc4f4e52087096",
+              "examples": [
+                "0002c65ad7825380e312d75b36ab280094954af67809fde92ae0edadf330b517",
+                "0006bdb28e11c7ecb1003a2ff6ffe6503cfd0ac0218bd51d463749802e835143",
+                "00189531d69ca5d2cb43740de7453c54acbd2a31a636ff1f9ea5c17d5557fc0b",
+                "006343f274be5b222bd66297e963017e53315959af2a5d9a51bba4da3179f797",
+                "0078e0bd887de83bd5d010e4a722da18c4c3b97ad3b5e7de3d7775e60f3c62e2",
+                "007f341694f79e6ce37ce07908f66dccc8e748fb740a4ba04a86708db2db8587",
+                "00baec513d5ca63cbac8cef37a2a3fa90019da7e9c138c0edb4276d547b8f53a",
+                "00f618c301c1a2ba8f9404e3795403b6bc28af359679feee662e88e449a812ba",
+                "01006f554d01ab4b9389c4a4d1b0d7d40410ac5c5d01c84bb6614f24dd2ff528",
+                "01595ec6938adad4ad1ee01037cfe41480f62365276373b2ac831b53ffb7b709",
+                "01623ffa5589a4e5365b2902bcf6408df09a32953f2684bd600942c1c3151a14",
+                "01845ea9d083979628306843d35c3475e4add900da514140e713ab14154076b3",
+                "01869efc751bd6e512e72955f5c0566e7e3e9284251f9590e5a41a81145c08e6",
+                "022410ac512b58b8fbc3b257fed7b627d507d73d28c2c5660648d84d329fc4bc",
+                "02305c749a73c8525f0cbbed444e6484c7571e58df92ca613648eb672bed28cd",
+                "024cb11b332c2f4d1ad0357a04a1df89b9181e3e40c62664a582dbf748b8ffb1",
+                "025342d71a570537e7de7c5aff4118cfda900ca84e58f0cc174ddafce006c973",
+                "02a74437a0726a0b556474b93a2938d2f263251046de43440d5191a5fe76320a",
+                "02ae0ffaad15b33563d494f27cf18610680118c19412d2179394254bcb04b4c1",
+                "02b9281ea78849e8fa3cb1be0d2de7082bb0f79269c9d63c4a1c8656072a796d"
+              ]
+            }
+          },
+          "ledger": {
+            "status": "active",
+            "stopReason": null,
+            "spend": {
+              "states": 10000,
+              "elapsedMs": 7397,
+              "peakMemoryBytes": 177172200,
+              "currentDiskBytes": 6910960,
+              "costMicrounits": 0
+            },
+            "latest": {
+              "purpose": "typical",
+              "reason": "ordinary window continues broad bounded QA",
+              "partition": {
+                "strategy": "shared"
+              },
+              "grantedStates": 5000,
+              "consumedStates": 5000,
+              "stopReason": "maxStates",
+              "yield": {
+                "critical": 0,
+                "intent": 0,
+                "authoredCoverage": 0,
+                "terminalVariants": 1812
+              },
+              "provenance": {
+                "reportId": "report-a74b4e2a197d9dac1cfc726a",
+                "checkpointId": "checkpoint-f06343ae4fbe3ae772081f0f",
+                "elapsedMs": 4721,
+                "peakMemoryBytes": 177172200,
+                "diskBytes": 6910960
+              }
+            }
+          }
+        },
+        "invariants": {
+          "baseReportPreserved": null,
+          "baseCheckpointPreserved": null,
+          "campaignStatesWithinCeiling": true,
+          "reportReopens": true
+        }
+      },
+      "independent": {
+        "base": {
+          "elapsedMs": 2162,
+          "reportId": "report-18593c3b105180ad14a47673",
+          "checkpointId": "checkpoint-6eabb4479babfb15338f3aea",
+          "result": {
+            "statesExplored": 5000,
+            "exhaustive": false,
+            "truncated": true,
+            "truncatedBy": {
+              "maxDepth": false,
+              "maxStates": true,
+              "beamWidth": false,
+              "frontier": false,
+              "memory": false,
+              "time": false
+            },
+            "limits": {
+              "maxDepth": 100,
+              "maxStates": 5000,
+              "seed": 7,
+              "storySeed": 1
+            },
+            "findings": {
+              "runtimeErrors": {
+                "count": 1,
+                "sha256": "30ac175f119053f82821341d137df7f06a2915349464dfdd789dfdab1a11e22d",
+                "examples": [
+                  "ee1df3a56c5941fc77bf1c4e091f7db51f6986ce318b09ad9a808c5cfc75c798"
+                ]
+              },
+              "assertionViolations": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "goals": {
+                "count": 0,
+                "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "examples": []
+              },
+              "visitedKnots": {
+                "count": 6,
+                "sha256": "dc58f887ee509c7de84d3fad28b31663534115c431de63619622d40fd34c2332",
+                "examples": [
+                  "branch",
+                  "finish",
+                  "north_end",
+                  "origin_choice",
+                  "south_end",
+                  "west_failure"
+                ]
+              },
+              "visibleOutcomes": {
+                "count": 2,
+                "sha256": "1beeef7b493ee762c4f205bff243d6d327659e42b83ad1674ccaa2c32ac5e507",
+                "examples": [
+                  "North ending.",
+                  "South ending."
+                ]
+              },
+              "terminalVariants": {
+                "count": 1038,
+                "sha256": "d3e3fd257e52cc6ef71d5e353d107d5360920ec9a9d83e2df4267e7a7566ecd6",
+                "examples": [
+                  "000e406cda5e0dbaa179bd48234f158feed969b57bd96ba38433219d03008433",
+                  "00551c7c5cf706979c17301155b91e3f57055dd1161723afeeb545c8a5293472",
+                  "0095a590863fbdadf010aaa2b717d641a233b932517d79a51ccf5505eb190dd2",
+                  "00a60545d8f160430ef5c668ca835eebad699620207963faaaeae8d4d17d1c29",
+                  "00c2cffbf54e1d0f4f90fbe6b2c66a362304711928353f49b60b74d3232f55ce",
+                  "010ec975263f363a9c17b2a86f98fed68e30b1a165135b7609c4080730c9b863",
+                  "013cb1cad0181584542981c3acefdc4aa0e475b3e5b8fe1c50e1e8e96375302e",
+                  "017549d08784e3824886c1310ae3a9e5c6d2ef02ab55ca43edbf49053711a26e",
+                  "0179d17120bf47f0bd18197c14db25c5967e5f792499ae6e82b8ffca56159d71",
+                  "01b937f3cda34bbc13931ca957eddc24b6fe2a6e49b141a8214d1fbaab3e4544",
+                  "01ca9b05966e34fabfa1584b8b047b67346266da67c2951475b0d1b862936e66",
+                  "01cf95feeda44e4112cb65a41814d15659b0ed7bac7dd324a7f4eb8fc13a4522",
+                  "02aae8ee9c6afffa0669788d2969d3d985b11adbb1d8009d3ee559c20d1f9bd1",
+                  "033eb3c438e5d1ed1e7e5679d6a20b0ea214512b7e35e92a3e91c62c8b209c3a",
+                  "03b701e994d41cbd32f6a23d596296224248a4dbf84c34f8c2be6b3fce892b65",
+                  "03b8cdb3cdafcc6d652b0da43ec8c1ec2f7e8422804b0b06815e2d3b006b3af5",
+                  "03db7fbfb8f2cc4afc33a8d101afed9f9432441192c93b572dfa8d6dd8badc7c",
+                  "041ea1571483556f90b374ac1b3decb7b4dc0afbe2fc0c9948a388a6b9b900c0",
+                  "0454bfc70e100f1dd4937c99caf88f9ade1e6fee7fb4a2185794f6998594c6a3",
+                  "04747ce7c478d45fdea1550270f5365b33893a7c133c14db470fce416e7c1f16"
+                ]
+              }
+            }
+          }
+        },
+        "additional": {
+          "elapsedMs": 1216,
+          "windows": [
+            {
+              "reportId": "report-d6c12e500ef00de7a21b2e8e",
+              "purpose": "long_tail",
+              "partition": {
+                "strategy": "portfolio",
+                "seed": 3256016810,
+                "frontier": "root",
+                "maxDepth": 200
+              },
+              "consumedStates": 5000,
+              "elapsedMs": 1207,
+              "stopReason": "maxStates",
+              "marginalYield": {
+                "critical": 0,
+                "intent": 0,
+                "authoredCoverage": 0,
+                "terminalVariants": 2321
+              },
+              "result": {
+                "statesExplored": 5000,
+                "exhaustive": false,
+                "truncated": true,
+                "truncatedBy": {
+                  "maxDepth": false,
+                  "maxStates": true,
+                  "beamWidth": true,
+                  "frontier": false,
+                  "memory": false,
+                  "time": false
+                },
+                "limits": {
+                  "maxDepth": 200,
+                  "maxStates": 5000,
+                  "storySeed": 1,
+                  "seed": 3256016810
+                },
+                "execution": {
+                  "mode": "sequential",
+                  "requestedConcurrency": 4,
+                  "effectiveConcurrency": 1,
+                  "workers": [
+                    {
+                      "pass": "dfs:last",
+                      "granted": 467,
+                      "consumed": 467,
+                      "status": "completed"
+                    },
+                    {
+                      "pass": "dfs:first",
+                      "granted": 1675,
+                      "consumed": 1675,
+                      "status": "completed"
+                    },
+                    {
+                      "pass": "dfs:inside-out",
+                      "granted": 1910,
+                      "consumed": 1910,
+                      "status": "completed"
+                    },
+                    {
+                      "pass": "beam:w=64",
+                      "granted": 435,
+                      "consumed": 435,
+                      "status": "completed"
+                    },
+                    {
+                      "pass": "random:seed=3256016810",
+                      "granted": 513,
+                      "consumed": 513,
+                      "status": "completed"
+                    }
+                  ],
+                  "fallbackReason": "budget_below_pilot",
+                  "activation": {
+                    "policyVersion": "single-pass-frontier-v3",
+                    "decision": "stay_sequential",
+                    "reason": "budget_below_pilot",
+                    "pilotBudget": 1024,
+                    "pilotStatesExplored": 0,
+                    "pilotExhaustive": false,
+                    "pilotPass": "dfs:inside-out",
+                    "duplicateStateEvaluations": 0,
+                    "uncertainty": "high",
+                    "productionEligible": true
+                  }
+                },
+                "findings": {
+                  "runtimeErrors": {
+                    "count": 1,
+                    "sha256": "30ac175f119053f82821341d137df7f06a2915349464dfdd789dfdab1a11e22d",
+                    "examples": [
+                      "ee1df3a56c5941fc77bf1c4e091f7db51f6986ce318b09ad9a808c5cfc75c798"
+                    ]
+                  },
+                  "assertionViolations": {
+                    "count": 0,
+                    "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "examples": []
+                  },
+                  "goals": {
+                    "count": 0,
+                    "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "examples": []
+                  },
+                  "visitedKnots": {
+                    "count": 6,
+                    "sha256": "dc58f887ee509c7de84d3fad28b31663534115c431de63619622d40fd34c2332",
+                    "examples": [
+                      "branch",
+                      "finish",
+                      "north_end",
+                      "origin_choice",
+                      "south_end",
+                      "west_failure"
+                    ]
+                  },
+                  "visibleOutcomes": {
+                    "count": 2,
+                    "sha256": "1beeef7b493ee762c4f205bff243d6d327659e42b83ad1674ccaa2c32ac5e507",
+                    "examples": [
+                      "North ending.",
+                      "South ending."
+                    ]
+                  },
+                  "terminalVariants": {
+                    "count": 2403,
+                    "sha256": "f83af88547ac4634574babeccda1cc4575e8fcdaf26998243cc6d057fb84e22b",
+                    "examples": [
+                      "001f00ce1e0c16eb27db13626fb958d520772436271e0f659885fbd0eb351c23",
+                      "0033e99899b7b397759f60e1d02b4d928b715948262544b8265ff5752db91769",
+                      "006343f274be5b222bd66297e963017e53315959af2a5d9a51bba4da3179f797",
+                      "008ae4c34af0f20b917c8a52ea4deb776ad68286874f16ac6491dd78680b460d",
+                      "00beb944fb4d8c0b6c2b2479a46601c1cfc7592279e49e7d77d178cf6d429d20",
+                      "00e295869999231fd257bbf98ee35fdd84c95138e09e074a8a4a2c0f7badc760",
+                      "00f2ebce7c42fd774c324bed7d474adf126ecddd3a06911417d053b4976012f8",
+                      "0101db665628eee0781a7cd1775eef7be7f14588ebb673d2505dc349b86c0de2",
+                      "0110363a304c416fe681f0af7a851e761ac4bbdcc3ccfa8ac59bc40037603833",
+                      "011a7c1f093387c025a57613aa8b369be862ee7b3cde2e5b3193669f51af6f4e",
+                      "0129143fe5eaa1e93c23ea0592bfc445ce99102a54a81d0d7ec01621248e91ac",
+                      "015747ad7749bfe4543886cec392cd21f233552f5ad4aac2cabd5d8c6274e234",
+                      "015898fc89ae13edbae82042465a44706402c2be7d8483bc791c9f431322c482",
+                      "01c7921605599c372add9aa50d771e6b6cc7dadfe06bc5d082a08568b2c91ae0",
+                      "020afc56dded1c132d8a7a53038102b9886adb40089b125a95e1d8b67381b157",
+                      "023e3ef6792e78fde44b2a0a135e4690b5b68076bc9cce5b6436416009b7302c",
+                      "024cb11b332c2f4d1ad0357a04a1df89b9181e3e40c62664a582dbf748b8ffb1",
+                      "0252bda955a9e20d4e257e3877e1eaf74625f9e4b315d873a8561cf456528098",
+                      "02a6e227ed6184e1cc9512b147c7eb651647b507d7b14ac3693c76bfe04554e4",
+                      "02a74437a0726a0b556474b93a2938d2f263251046de43440d5191a5fe76320a"
+                    ]
+                  }
+                }
+              },
+              "newEvidence": {
+                "runtimeErrors": {
+                  "count": 0,
+                  "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                  "examples": []
+                },
+                "assertionViolations": {
+                  "count": 0,
+                  "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                  "examples": []
+                },
+                "goals": {
+                  "count": 0,
+                  "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                  "examples": []
+                },
+                "visitedKnots": {
+                  "count": 0,
+                  "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                  "examples": []
+                },
+                "visibleOutcomes": {
+                  "count": 0,
+                  "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                  "examples": []
+                },
+                "terminalVariants": {
+                  "count": 2321,
+                  "sha256": "b7af13abfec93a4f0dfda9e39b36e90fbb6a619eda2a84808c74d95dabcb7294",
+                  "examples": [
+                    "001f00ce1e0c16eb27db13626fb958d520772436271e0f659885fbd0eb351c23",
+                    "0033e99899b7b397759f60e1d02b4d928b715948262544b8265ff5752db91769",
+                    "006343f274be5b222bd66297e963017e53315959af2a5d9a51bba4da3179f797",
+                    "008ae4c34af0f20b917c8a52ea4deb776ad68286874f16ac6491dd78680b460d",
+                    "00beb944fb4d8c0b6c2b2479a46601c1cfc7592279e49e7d77d178cf6d429d20",
+                    "00e295869999231fd257bbf98ee35fdd84c95138e09e074a8a4a2c0f7badc760",
+                    "00f2ebce7c42fd774c324bed7d474adf126ecddd3a06911417d053b4976012f8",
+                    "0101db665628eee0781a7cd1775eef7be7f14588ebb673d2505dc349b86c0de2",
+                    "0110363a304c416fe681f0af7a851e761ac4bbdcc3ccfa8ac59bc40037603833",
+                    "011a7c1f093387c025a57613aa8b369be862ee7b3cde2e5b3193669f51af6f4e",
+                    "0129143fe5eaa1e93c23ea0592bfc445ce99102a54a81d0d7ec01621248e91ac",
+                    "015747ad7749bfe4543886cec392cd21f233552f5ad4aac2cabd5d8c6274e234",
+                    "015898fc89ae13edbae82042465a44706402c2be7d8483bc791c9f431322c482",
+                    "01c7921605599c372add9aa50d771e6b6cc7dadfe06bc5d082a08568b2c91ae0",
+                    "020afc56dded1c132d8a7a53038102b9886adb40089b125a95e1d8b67381b157",
+                    "023e3ef6792e78fde44b2a0a135e4690b5b68076bc9cce5b6436416009b7302c",
+                    "024cb11b332c2f4d1ad0357a04a1df89b9181e3e40c62664a582dbf748b8ffb1",
+                    "0252bda955a9e20d4e257e3877e1eaf74625f9e4b315d873a8561cf456528098",
+                    "02a6e227ed6184e1cc9512b147c7eb651647b507d7b14ac3693c76bfe04554e4",
+                    "02a74437a0726a0b556474b93a2938d2f263251046de43440d5191a5fe76320a"
+                  ]
+                }
+              }
+            }
+          ],
+          "combinedEvidence": {
+            "runtimeErrors": {
+              "count": 1,
+              "sha256": "30ac175f119053f82821341d137df7f06a2915349464dfdd789dfdab1a11e22d",
+              "examples": [
+                "ee1df3a56c5941fc77bf1c4e091f7db51f6986ce318b09ad9a808c5cfc75c798"
+              ]
+            },
+            "assertionViolations": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "goals": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "visitedKnots": {
+              "count": 6,
+              "sha256": "dc58f887ee509c7de84d3fad28b31663534115c431de63619622d40fd34c2332",
+              "examples": [
+                "branch",
+                "finish",
+                "north_end",
+                "origin_choice",
+                "south_end",
+                "west_failure"
+              ]
+            },
+            "visibleOutcomes": {
+              "count": 2,
+              "sha256": "1beeef7b493ee762c4f205bff243d6d327659e42b83ad1674ccaa2c32ac5e507",
+              "examples": [
+                "North ending.",
+                "South ending."
+              ]
+            },
+            "terminalVariants": {
+              "count": 2403,
+              "sha256": "f83af88547ac4634574babeccda1cc4575e8fcdaf26998243cc6d057fb84e22b",
+              "examples": [
+                "001f00ce1e0c16eb27db13626fb958d520772436271e0f659885fbd0eb351c23",
+                "0033e99899b7b397759f60e1d02b4d928b715948262544b8265ff5752db91769",
+                "006343f274be5b222bd66297e963017e53315959af2a5d9a51bba4da3179f797",
+                "008ae4c34af0f20b917c8a52ea4deb776ad68286874f16ac6491dd78680b460d",
+                "00beb944fb4d8c0b6c2b2479a46601c1cfc7592279e49e7d77d178cf6d429d20",
+                "00e295869999231fd257bbf98ee35fdd84c95138e09e074a8a4a2c0f7badc760",
+                "00f2ebce7c42fd774c324bed7d474adf126ecddd3a06911417d053b4976012f8",
+                "0101db665628eee0781a7cd1775eef7be7f14588ebb673d2505dc349b86c0de2",
+                "0110363a304c416fe681f0af7a851e761ac4bbdcc3ccfa8ac59bc40037603833",
+                "011a7c1f093387c025a57613aa8b369be862ee7b3cde2e5b3193669f51af6f4e",
+                "0129143fe5eaa1e93c23ea0592bfc445ce99102a54a81d0d7ec01621248e91ac",
+                "015747ad7749bfe4543886cec392cd21f233552f5ad4aac2cabd5d8c6274e234",
+                "015898fc89ae13edbae82042465a44706402c2be7d8483bc791c9f431322c482",
+                "01c7921605599c372add9aa50d771e6b6cc7dadfe06bc5d082a08568b2c91ae0",
+                "020afc56dded1c132d8a7a53038102b9886adb40089b125a95e1d8b67381b157",
+                "023e3ef6792e78fde44b2a0a135e4690b5b68076bc9cce5b6436416009b7302c",
+                "024cb11b332c2f4d1ad0357a04a1df89b9181e3e40c62664a582dbf748b8ffb1",
+                "0252bda955a9e20d4e257e3877e1eaf74625f9e4b315d873a8561cf456528098",
+                "02a6e227ed6184e1cc9512b147c7eb651647b507d7b14ac3693c76bfe04554e4",
+                "02a74437a0726a0b556474b93a2938d2f263251046de43440d5191a5fe76320a"
+              ]
+            }
+          },
+          "newEvidence": {
+            "runtimeErrors": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "assertionViolations": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "goals": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "visitedKnots": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "visibleOutcomes": {
+              "count": 0,
+              "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "examples": []
+            },
+            "terminalVariants": {
+              "count": 2321,
+              "sha256": "b7af13abfec93a4f0dfda9e39b36e90fbb6a619eda2a84808c74d95dabcb7294",
+              "examples": [
+                "001f00ce1e0c16eb27db13626fb958d520772436271e0f659885fbd0eb351c23",
+                "0033e99899b7b397759f60e1d02b4d928b715948262544b8265ff5752db91769",
+                "006343f274be5b222bd66297e963017e53315959af2a5d9a51bba4da3179f797",
+                "008ae4c34af0f20b917c8a52ea4deb776ad68286874f16ac6491dd78680b460d",
+                "00beb944fb4d8c0b6c2b2479a46601c1cfc7592279e49e7d77d178cf6d429d20",
+                "00e295869999231fd257bbf98ee35fdd84c95138e09e074a8a4a2c0f7badc760",
+                "00f2ebce7c42fd774c324bed7d474adf126ecddd3a06911417d053b4976012f8",
+                "0101db665628eee0781a7cd1775eef7be7f14588ebb673d2505dc349b86c0de2",
+                "0110363a304c416fe681f0af7a851e761ac4bbdcc3ccfa8ac59bc40037603833",
+                "011a7c1f093387c025a57613aa8b369be862ee7b3cde2e5b3193669f51af6f4e",
+                "0129143fe5eaa1e93c23ea0592bfc445ce99102a54a81d0d7ec01621248e91ac",
+                "015747ad7749bfe4543886cec392cd21f233552f5ad4aac2cabd5d8c6274e234",
+                "015898fc89ae13edbae82042465a44706402c2be7d8483bc791c9f431322c482",
+                "01c7921605599c372add9aa50d771e6b6cc7dadfe06bc5d082a08568b2c91ae0",
+                "020afc56dded1c132d8a7a53038102b9886adb40089b125a95e1d8b67381b157",
+                "023e3ef6792e78fde44b2a0a135e4690b5b68076bc9cce5b6436416009b7302c",
+                "024cb11b332c2f4d1ad0357a04a1df89b9181e3e40c62664a582dbf748b8ffb1",
+                "0252bda955a9e20d4e257e3877e1eaf74625f9e4b315d873a8561cf456528098",
+                "02a6e227ed6184e1cc9512b147c7eb651647b507d7b14ac3693c76bfe04554e4",
+                "02a74437a0726a0b556474b93a2938d2f263251046de43440d5191a5fe76320a"
+              ]
+            }
+          },
+          "ledger": {
+            "status": "active",
+            "stopReason": null,
+            "spend": {
+              "states": 10000,
+              "elapsedMs": 3256,
+              "peakMemoryBytes": 113522008,
+              "currentDiskBytes": 5988560,
+              "costMicrounits": 0
+            },
+            "latest": {
+              "purpose": "long_tail",
+              "reason": "protected minimum long-tail probe is due",
+              "partition": {
+                "strategy": "portfolio",
+                "seed": 3256016810,
+                "frontier": "root",
+                "maxDepth": 200
+              },
+              "grantedStates": 5000,
+              "consumedStates": 5000,
+              "stopReason": "maxStates",
+              "yield": {
+                "critical": 0,
+                "intent": 0,
+                "authoredCoverage": 0,
+                "terminalVariants": 2321
+              },
+              "provenance": {
+                "reportId": "report-d6c12e500ef00de7a21b2e8e",
+                "elapsedMs": 558,
+                "peakMemoryBytes": 113522008,
+                "diskBytes": 5988560
+              }
+            }
+          }
+        },
+        "invariants": {
+          "baseReportPreserved": true,
+          "baseCheckpointPreserved": true,
+          "campaignStatesWithinCeiling": true,
+          "reportReopens": true
+        }
+      }
+    }
+  ]
+}
