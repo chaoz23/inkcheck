@@ -44,7 +44,7 @@ At approximately the baseline's 107-second additional wall clock, the first two 
 
 The decreasing but nonzero sequence is direct evidence that Inkcheck can instrument a long-tail yield curve. It supports a future marginal-stop or reallocation policy; it does not establish an asymptote, because a later independent seed could still find another peak.
 
-The first #180 shadow policy replays this sequence as rotate recommendations while authorization remains, then stops when the protected reserve is exhausted. Under a runtime/assertion preference, the same terminal-only windows become dry preferred-value evidence; scarce/balanced/abundant postures require three/four/five dry independent probes before a shadow stop. This replay remains observational and is not included in the measured execution comparison above.
+The first #180 shadow policy replays this sequence as rotate recommendations while authorization remains, then stops when the protected reserve is exhausted. Under a runtime/assertion preference, the same terminal-only windows become dry preferred-value evidence; scarce/balanced/abundant postures require three/four/five dry independent probes before a shadow stop. New evaluation runs also retain compact observed-versus-campaign-new identity counts and report-local discovery gaps for every independent child. The checked v1 artifact predates those fields, so no rediscovery or spacing values are backfilled or guessed. This replay remains observational and is not included in the measured execution comparison above.
 
 ## Interpretation
 

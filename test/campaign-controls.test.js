@@ -133,6 +133,7 @@ function longTailSequence({
   resourcePreference = "balanced",
   valuePreference = "outcomes",
   yields,
+  observability = [],
 }) {
   const windowStates = 100;
   const policy = createCampaignPolicy({
@@ -151,7 +152,7 @@ function longTailSequence({
     regressionReserveStates: 0,
   });
   let ledger = createCampaignLedger(policy, fingerprint, start);
-  const commit = (plan, yieldValue, index) => commitCampaignRun(plan.ledger, {
+  const commit = (plan, yieldValue, index, observation) => commitCampaignRun(plan.ledger, {
     now: new Date(Date.parse(start) + (index * 2 + 1) * 1_000).toISOString(),
     bindingFingerprint: fingerprint,
     allocationId: plan.allocation.id,
@@ -162,6 +163,7 @@ function longTailSequence({
     windowElapsedMs: 1_000,
     reportId: `report-${String(index + 100).padStart(24, "0")}`,
     yield: yieldValue,
+    ...(observation ? { observability: observation } : {}),
   });
   const base = planCampaignRun(ledger, { now: start, bindingFingerprint: fingerprint, recommendation: "continue" });
   assert.strictEqual(base.action, "allocate");
@@ -178,7 +180,7 @@ function longTailSequence({
     });
     assert.strictEqual(plan.action, "allocate");
     assert.strictEqual(plan.allocation.purpose, "long_tail");
-    ledger = commit(plan, yieldValue, index + 1);
+    ledger = commit(plan, yieldValue, index + 1, observability[index]);
     shadows.push(recommendLongTailShadow(ledger));
   });
   return { ledger, shadows };
@@ -205,6 +207,83 @@ test("long-tail shadow replays the Intercept curve without changing live allocat
   assert.deepStrictEqual(shadows.at(-1).unavailableSignals, ["duplicate_rate", "discovery_spacing"]);
   assert.strictEqual(campaignRecommendation(ledger), "continue");
   assert.deepStrictEqual(explainCampaignDecision(ledger).longTailShadow, shadows.at(-1));
+});
+
+function observedWindow({ campaignNew, rediscovered, state, latestGap, longestGap }) {
+  const zero = { critical: 0, intent: 0, authoredCoverage: 0 };
+  return {
+    schemaVersion: 1,
+    observedYield: { ...zero, terminalVariants: campaignNew + rediscovered },
+    rediscoveredYield: { ...zero, terminalVariants: rediscovered },
+    discoverySpacing: {
+      scope: "report_meaningful_events",
+      discoveryEvents: campaignNew + rediscovered,
+      firstDiscoveryAtState: 1,
+      lastDiscoveryAtState: state - latestGap,
+      statesSinceLastDiscovery: latestGap,
+      latestDiscoveryGap: latestGap,
+      longestObservedDiscoveryGap: longestGap,
+    },
+  };
+}
+
+test("long-tail shadow exposes selected-value rediscovery and factual discovery gaps", () => {
+  const campaignNew = [10, 2, 1, 1];
+  const rediscovered = [10, 18, 19, 19];
+  const observability = campaignNew.map((value, index) => observedWindow({
+    campaignNew: value,
+    rediscovered: rediscovered[index],
+    state: 100,
+    latestGap: 10 + index,
+    longestGap: 20 + index,
+  }));
+  const { shadows } = longTailSequence({
+    yields: campaignNew.map((terminalVariants) => ({ critical: 0, intent: 0, authoredCoverage: 0, terminalVariants })),
+    observability,
+  });
+  const shadow = shadows[2];
+  assert.deepStrictEqual(shadow.signals.duplicateRate, {
+    scope: "selected_value_report_rediscovery",
+    observed: 60,
+    campaignNew: 13,
+    rediscovered: 47,
+    rate: 0.783333,
+  });
+  assert.deepStrictEqual(shadow.signals.discoverySpacing, {
+    scope: "report_meaningful_events",
+    windows: 3,
+    discoveryEvents: 60,
+    statesSinceLastDiscovery: 12,
+    latestDiscoveryGap: 12,
+    longestObservedDiscoveryGap: 22,
+  });
+  assert.deepStrictEqual(shadow.unavailableSignals, []);
+  assert.strictEqual(shadow.liveEffect, false);
+});
+
+test("campaign commits reject observability that invents or loses evidence", () => {
+  const policy = createCampaignPolicy({
+    intent: "balanced",
+    totalStates: 1_000,
+    maxElapsedMs: 60_000,
+    maxMemoryBytes: 10_000_000,
+    maxDiskBytes: 10_000_000,
+    maxConcurrency: 1,
+  });
+  const ledger = createCampaignLedger(policy, fingerprint, start);
+  const plan = planCampaignRun(ledger, { now: start, bindingFingerprint: fingerprint, recommendation: "continue" });
+  assert.strictEqual(plan.action, "allocate");
+  assert.throws(() => commitCampaignRun(plan.ledger, {
+    now: new Date(Date.parse(start) + 1_000).toISOString(),
+    bindingFingerprint: fingerprint,
+    allocationId: plan.allocation.id,
+    consumedStates: 100,
+    peakMemoryBytes: 1_000,
+    currentDiskBytes: 2_000,
+    stopReason: "window_complete",
+    yield: { critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: 2 },
+    observability: observedWindow({ campaignNew: 1, rediscovered: 1, state: 100, latestGap: 10, longestGap: 20 }),
+  }), /must equal campaign-new plus rediscovered evidence/);
 });
 
 test("long-tail shadow protects recovery and separates dry value preferences", () => {

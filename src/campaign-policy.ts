@@ -100,6 +100,23 @@ export interface CampaignAllocation {
     authoredCoverage: number;
     terminalVariants: number;
   };
+  observability?: {
+    schemaVersion: 1;
+    /** Distinct evidence identities present in this report, before campaign deduplication. */
+    observedYield: NonNullable<CampaignAllocation["yield"]>;
+    /** Observed identities already present in an earlier campaign report. */
+    rediscoveredYield: NonNullable<CampaignAllocation["yield"]>;
+    /** Report-local factual spacing across meaningful discovery events. */
+    discoverySpacing: {
+      scope: "report_meaningful_events";
+      discoveryEvents: number;
+      firstDiscoveryAtState: number | null;
+      lastDiscoveryAtState: number | null;
+      statesSinceLastDiscovery: number | null;
+      latestDiscoveryGap: number | null;
+      longestObservedDiscoveryGap: number | null;
+    };
+  };
   provenance?: {
     reportId: string;
     checkpointId?: string;
@@ -166,6 +183,7 @@ export interface CommitCampaignRunInput {
   costMicrounits?: number;
   stopReason: string;
   yield?: CampaignAllocation["yield"];
+  observability?: CampaignAllocation["observability"];
   reportId?: string;
   checkpointId?: string;
   windowElapsedMs?: number;
@@ -572,6 +590,51 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
   if (input.yield) {
     for (const [key, value] of Object.entries(input.yield)) integer(value, `yield.${key}`, 0);
   }
+  if (input.observability) {
+    if (input.observability.schemaVersion !== 1) throw new Error("unsupported campaign observability schema");
+    if (!input.yield) throw new Error("campaign observability requires yield");
+    const yieldKeys = ["authoredCoverage", "critical", "intent", "terminalVariants"] as const;
+    const expectedKeys = [...yieldKeys].sort().join(",");
+    if (Object.keys(input.observability.observedYield).sort().join(",") !== expectedKeys
+      || Object.keys(input.observability.rediscoveredYield).sort().join(",") !== expectedKeys) {
+      throw new Error("campaign observability yield categories are incomplete");
+    }
+    for (const key of yieldKeys) {
+      const observed = input.observability.observedYield[key];
+      integer(observed, `observability.observedYield.${key}`, 0);
+      const rediscovered = input.observability.rediscoveredYield[key];
+      integer(rediscovered, `observability.rediscoveredYield.${key}`, 0);
+      const campaignNew = input.yield[key];
+      if (campaignNew + rediscovered !== observed) {
+        throw new Error(`observability.${key} must equal campaign-new plus rediscovered evidence`);
+      }
+    }
+    const spacing = input.observability.discoverySpacing;
+    if (spacing.scope !== "report_meaningful_events") throw new Error("unsupported discovery spacing scope");
+    integer(spacing.discoveryEvents, "observability.discoverySpacing.discoveryEvents", 0);
+    for (const key of [
+      "firstDiscoveryAtState", "lastDiscoveryAtState", "statesSinceLastDiscovery",
+      "latestDiscoveryGap", "longestObservedDiscoveryGap",
+    ] as const) {
+      const value = spacing[key];
+      if (value !== null) integer(value, `observability.discoverySpacing.${key}`, 0);
+    }
+    const eventLocations = [spacing.firstDiscoveryAtState, spacing.lastDiscoveryAtState, spacing.statesSinceLastDiscovery];
+    if (spacing.discoveryEvents === 0 && eventLocations.some((value) => value !== null)) {
+      throw new Error("discovery spacing without events must not invent event locations");
+    }
+    if (spacing.discoveryEvents > 0) {
+      if (eventLocations.some((value) => value === null)) throw new Error("discovery spacing events require bounded locations");
+      if (spacing.firstDiscoveryAtState! > spacing.lastDiscoveryAtState!
+        || spacing.lastDiscoveryAtState! + spacing.statesSinceLastDiscovery! !== input.consumedStates) {
+        throw new Error("discovery spacing locations do not match consumed states");
+      }
+    }
+    if (spacing.latestDiscoveryGap !== null && spacing.longestObservedDiscoveryGap !== null
+      && spacing.latestDiscoveryGap > spacing.longestObservedDiscoveryGap) {
+      throw new Error("latest discovery gap cannot exceed the longest observed gap");
+    }
+  }
   if (input.reportId !== undefined && !/^report-[0-9a-f]{24}$/.test(input.reportId)) throw new Error("reportId is invalid");
   if (input.checkpointId !== undefined && !/^checkpoint-[0-9a-f]{24}$/.test(input.checkpointId)) throw new Error("checkpointId is invalid");
   if (input.checkpointId !== undefined && input.reportId === undefined) throw new Error("checkpointId requires reportId provenance");
@@ -601,6 +664,7 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
   target.completedAt = new Date(input.now).toISOString();
   target.stopReason = input.stopReason;
   if (input.yield) target.yield = clone(input.yield);
+  if (input.observability) target.observability = clone(input.observability);
   if (input.reportId) {
     target.provenance = {
       reportId: input.reportId,

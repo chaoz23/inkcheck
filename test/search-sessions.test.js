@@ -215,6 +215,20 @@ test("protected long-tail work runs an independent portfolio and preserves the e
     assert.deepStrictEqual(Object.keys(continued.campaign.latestWindow.yield).sort(), [
       "authoredCoverage", "critical", "intent", "terminalVariants",
     ]);
+    const observability = continued.campaign.latestWindow.observability;
+    assert.strictEqual(observability.schemaVersion, 1);
+    for (const key of ["authoredCoverage", "critical", "intent", "terminalVariants"]) {
+      assert.strictEqual(
+        observability.observedYield[key],
+        continued.campaign.latestWindow.yield[key] + observability.rediscoveredYield[key]
+      );
+    }
+    assert.strictEqual(observability.discoverySpacing.scope, "report_meaningful_events");
+    assert.ok(observability.discoverySpacing.discoveryEvents >= 0);
+    assert.deepStrictEqual(continued.campaign.decision.longTailShadow.unavailableSignals, []);
+    assert.ok(continued.campaign.decision.longTailShadow.signals.duplicateRate);
+    assert.ok(continued.campaign.decision.longTailShadow.signals.discoverySpacing);
+    assert.strictEqual(continued.campaign.decision.longTailShadow.liveEffect, false);
     assert.ok(continued.campaign.spend.states > baseStates);
 
     const child = await openSessionReport({

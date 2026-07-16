@@ -53,6 +53,7 @@ import {
   deriveIndependentLongTailPartition,
   finishCampaignLedger,
   planCampaignRun,
+  type CampaignAllocation,
   type CampaignIntent,
   type CampaignLedger,
   type CampaignMode,
@@ -216,6 +217,7 @@ export interface SearchSessionResponse {
       stopReason: string;
       partition: CampaignLedger["allocations"][number]["partition"];
       yield: NonNullable<CampaignLedger["allocations"][number]["yield"]>;
+      observability?: NonNullable<CampaignLedger["allocations"][number]["observability"]>;
     };
   };
   savedFindings: FindingPage;
@@ -766,6 +768,7 @@ function campaignSummary(record: SearchSessionRecord): SearchSessionResponse["ca
         stopReason: latest.stopReason ?? "window_complete",
         partition: latest.partition,
         yield: latest.yield ?? { critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: 0 },
+        ...(latest.observability ? { observability: latest.observability } : {}),
       },
     } : {}),
   };
@@ -1208,11 +1211,52 @@ function campaignEvidence(result: ExploreResult): CampaignEvidence {
   };
 }
 
-async function marginalCampaignYield(
+function evidenceCounts(evidence: CampaignEvidence): NonNullable<CampaignAllocation["yield"]> {
+  return {
+    critical: evidence.critical.size,
+    intent: evidence.goals.size,
+    authoredCoverage: evidence.authoredCoverage.size,
+    terminalVariants: evidence.terminalVariants.size,
+  };
+}
+
+function campaignObservability(
+  result: ExploreResult,
+  observedYield: NonNullable<CampaignAllocation["yield"]>,
+  marginalYield: NonNullable<CampaignAllocation["yield"]>
+): NonNullable<CampaignAllocation["observability"]> {
+  const spacing = result.discoverySummary ?? {
+    discoveryEvents: 0,
+    firstDiscoveryAtState: null,
+    lastDiscoveryAtState: null,
+    statesSinceLastDiscovery: null,
+    latestDiscoveryGap: null,
+    longestObservedDiscoveryGap: null,
+  };
+  return {
+    schemaVersion: 1,
+    observedYield,
+    rediscoveredYield: {
+      critical: observedYield.critical - marginalYield.critical,
+      intent: observedYield.intent - marginalYield.intent,
+      authoredCoverage: observedYield.authoredCoverage - marginalYield.authoredCoverage,
+      terminalVariants: observedYield.terminalVariants - marginalYield.terminalVariants,
+    },
+    discoverySpacing: {
+      scope: "report_meaningful_events",
+      ...spacing,
+    },
+  };
+}
+
+async function marginalCampaignEvidence(
   projectRoot: string,
   ledger: CampaignLedger,
   result: ExploreResult
-): Promise<NonNullable<Parameters<typeof commitCampaignRun>[1]["yield"]>> {
+): Promise<{
+  yield: NonNullable<Parameters<typeof commitCampaignRun>[1]["yield"]>;
+  observability: NonNullable<Parameters<typeof commitCampaignRun>[1]["observability"]>;
+}> {
   const prior: CampaignEvidence = {
     critical: new Set(),
     goals: new Set(),
@@ -1232,11 +1276,15 @@ async function marginalCampaignYield(
     evidence.terminalVariants.forEach((value) => prior.terminalVariants.add(value));
   }
   const current = campaignEvidence(result);
-  return {
+  const yieldValue = {
     critical: [...current.critical].filter((value) => !prior.critical.has(value)).length,
     intent: [...current.goals].filter((value) => !prior.goals.has(value)).length,
     authoredCoverage: [...current.authoredCoverage].filter((value) => !prior.authoredCoverage.has(value)).length,
     terminalVariants: [...current.terminalVariants].filter((value) => !prior.terminalVariants.has(value)).length,
+  };
+  return {
+    yield: yieldValue,
+    observability: campaignObservability(result, evidenceCounts(current), yieldValue),
   };
 }
 
@@ -1593,6 +1641,7 @@ export async function continueCampaign(input: ContinueCampaignInput): Promise<Se
     );
     const completedAt = new Date().toISOString();
     const diskBytes = campaignDiskBytes(projectRoot, plan.ledger, run.reportId);
+    const evidence = await marginalCampaignEvidence(projectRoot, ledger, run.result);
     const completedLedger = commitCampaignRun(plan.ledger, {
       now: completedAt,
       bindingFingerprint: ledger.bindingFingerprint,
@@ -1601,7 +1650,8 @@ export async function continueCampaign(input: ContinueCampaignInput): Promise<Se
       peakMemoryBytes: run.peakMemoryBytes,
       currentDiskBytes: diskBytes,
       stopReason: run.bindingLimit ?? (run.result.exhaustive ? "exhaustive" : "window_complete"),
-      yield: await marginalCampaignYield(projectRoot, ledger, run.result),
+      yield: evidence.yield,
+      observability: evidence.observability,
       reportId: run.reportId,
       windowElapsedMs: run.elapsedMs,
     });
