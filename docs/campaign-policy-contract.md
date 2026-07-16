@@ -27,6 +27,8 @@ The memory ceiling defaults to Inkcheck's V8-safe watermark. Every explicit over
 
 Agents can override the bounded ceilings, resource preference, value preference, stop policy, and protected reserves without setting explorer weights. The planner never lets an ordinary window consume the protected regression or long-tail reserves. Pending exact regression replays receive their reserve first. A protected long-tail probe may continue after a knee signal, but every hard campaign ceiling still binds.
 
+A child that finishes just beyond the elapsed ceiling is accepted only when it explicitly reports a time stop. Its partial report, marginal evidence, and actual elapsed overshoot are committed, then the next campaign decision stops at `time_ceiling`. A late ordinary result still fails closed. This preserves evidence produced under the guard without turning serialization overhead into an unexpected campaign error.
+
 Value preference changes which observed marginal evidence counts toward the knee: all structured QA yield, runtime/assertion evidence, terminal outcomes, or approved-goal progress. Exact resumable checkpoints still exclude assertions and goals. Instead, `add_assertions` and campaign `add_goal` create explicit root-started child windows only for matching `runtime_assertions` and `approved_goals` campaigns. Their grants and reports are additive, so they cannot reduce the protected base-search ceiling. Repeated evidence is deduplicated before campaign yield credit. A preference does not rewrite the story or imply that one exact shared trajectory became a specialist search.
 
 ## Honesty boundary
