@@ -641,7 +641,10 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
   if (input.windowElapsedMs !== undefined) integer(input.windowElapsedMs, "windowElapsedMs", 0);
   if (input.consumedStates > allocation.grantedStates) throw new Error("child run consumed more states than its allocation");
   const elapsedMs = elapsed(ledger, input.now);
-  if (elapsedMs > ledger.policy.ceilings.maxElapsedMs) throw new Error("child result crossed the campaign elapsed-time ceiling");
+  const timeStop = input.stopReason === "time" || input.stopReason === "maxTime" || input.stopReason === "time_ceiling";
+  if (elapsedMs > ledger.policy.ceilings.maxElapsedMs && !timeStop) {
+    throw new Error("child result crossed the campaign elapsed-time ceiling without reporting a time stop");
+  }
   if (ledger.policy.ceilings.deadlineAt && isoTime(input.now, "now") > isoTime(ledger.policy.ceilings.deadlineAt, "deadlineAt")) {
     throw new Error("child result crossed the campaign deadline");
   }

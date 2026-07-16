@@ -407,6 +407,28 @@ test("deadline, elapsed-time, disk, cost, and exhaustive boundaries stay explici
   };
   assert.throws(() => commitCampaignRun(planned.ledger, observation), /disk ceiling/);
   assert.throws(() => commitCampaignRun(planned.ledger, { ...observation, currentDiskBytes: 1, costMicrounits: 3 }), /cost ceiling/);
+
+  assert.throws(() => commitCampaignRun(planned.ledger, {
+    ...observation,
+    now: "2026-07-14T12:00:01.100Z",
+    currentDiskBytes: 1,
+  }), /without reporting a time stop/);
+  const timed = commitCampaignRun(planned.ledger, {
+    ...observation,
+    now: "2026-07-14T12:00:01.100Z",
+    currentDiskBytes: 1,
+    stopReason: "time",
+  });
+  assert.strictEqual(timed.allocations[0].status, "completed");
+  assert.strictEqual(timed.allocations[0].stopReason, "time");
+  assert.strictEqual(timed.spend.elapsedMs, 1_100);
+  const afterTimed = planCampaignRun(timed, {
+    now: "2026-07-14T12:00:01.100Z",
+    bindingFingerprint: fingerprint,
+    recommendation: "continue",
+  });
+  assert.strictEqual(afterTimed.action, "stop");
+  assert.strictEqual(afterTimed.reason, "time_ceiling");
 });
 
 test("scarce, balanced, and abundant simulations preserve progressively more long-tail work", () => {

@@ -291,6 +291,10 @@ async function runArm(
       sessionCapability: base.sessionCapability,
       revision: response.session.revision,
     });
+    if (response.campaign!.spend.states <= previousSpend) {
+      if (!response.session.recoverable || response.campaign!.status !== "active") break;
+      throw new Error(`${entry.id} ${label} campaign made no accounting progress`);
+    }
     const reportId = independent ? response.campaign!.latestWindow!.reportId : response.session.latestReportId;
     const windowResult = await report(root, reportId);
     additionalResults.push(windowResult);
@@ -309,7 +313,6 @@ async function runArm(
       newEvidence: delta(baseResult, windowResult),
     });
     process.stderr.write(`${entry.id} ${label} window ${additionalWindows.length}: campaign=${response.campaign!.spend.states} report=${windowResult.statesExplored} states\n`);
-    if (response.campaign!.spend.states <= previousSpend) throw new Error(`${entry.id} ${label} campaign made no accounting progress`);
     onSnapshot(await armResult(false));
   }
   return armResult(true);
