@@ -1,10 +1,12 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
 const { recommendLongTailShadow } = require("../dist/campaign-controls");
 const { createCampaignLedger, createCampaignPolicy } = require("../dist/campaign-policy");
+const { runIsolatedArm } = require("../dist/long-tail-evaluation-cli");
 
 const ROOT = path.resolve(__dirname, "..");
 const manifestFile = path.join(ROOT, "benchmarks", "long-tail-partition-evaluation-v1.json");
@@ -98,4 +100,73 @@ test("long-tail evaluation pins a finite control and a matched 5M authored campa
     "rotate_partition", "rotate_partition", "rotate_partition", "rotate_partition", "rotate_partition",
     "rotate_partition", "rotate_partition", "rotate_partition", "stop_after_floor",
   ]);
+});
+
+test("long-tail promotion manifest predeclares three guarded authored 5M families", () => {
+  const manifest = json("benchmarks/long-tail-promotion-v2.json");
+  assert.strictEqual(manifest.schemaVersion, 2);
+  assert.strictEqual(manifest.workerTimeoutMs, 900_000);
+  assert.deepStrictEqual(manifest.cases.map((entry) => entry.id), [
+    "dog-ink-adventure-5m",
+    "the-intercept-5m",
+    "heresy2-5m",
+  ]);
+  for (const entry of manifest.cases) {
+    assert.strictEqual(entry.baseStates + entry.additionalStates, 5_000_000);
+    assert.strictEqual(entry.maxDepth, 100);
+    assert.ok(entry.maxElapsedSeconds * 1_000 < manifest.workerTimeoutMs);
+    assert.ok(fs.existsSync(path.join(ROOT, "benchmarks", entry.story)));
+    assert.ok(fs.existsSync(path.join(ROOT, "benchmarks", entry.source.licenseFile)));
+  }
+});
+
+function timeoutWorker(root, name, snapshot) {
+  const worker = path.join(root, `${name}.js`);
+  fs.writeFileSync(worker, [
+    'const fs = require("node:fs");',
+    'const outputIndex = process.argv.indexOf("--output");',
+    ...(snapshot ? ['fs.writeFileSync(process.argv[outputIndex + 1], JSON.stringify({ armResult: { marker: "saved" } }));'] : []),
+    'setInterval(() => {}, 1000);',
+  ].join("\n"));
+  return worker;
+}
+
+test("long-tail evaluator records pre-snapshot hard timeouts instead of losing the matrix", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-long-tail-timeout-test-"));
+  try {
+    const result = await runIsolatedArm(
+      manifestFile,
+      "forced-timeout",
+      "same-frontier",
+      100,
+      timeoutWorker(root, "no-snapshot-worker", false)
+    );
+    assert.strictEqual(result.unavailable, true);
+    assert.strictEqual(result.reason, "worker_timeout_before_snapshot");
+    assert.strictEqual(result.timeoutMs, 100);
+    assert.strictEqual(result.hardTerminationScope, process.platform === "win32" ? "coordinator_process" : "process_group");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("long-tail evaluator recovers atomic partial evidence after a hard timeout", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-long-tail-snapshot-test-"));
+  try {
+    const result = await runIsolatedArm(
+      manifestFile,
+      "forced-partial",
+      "independent",
+      100,
+      timeoutWorker(root, "snapshot-worker", true)
+    );
+    assert.strictEqual(result.marker, "saved");
+    assert.deepStrictEqual(result.worker, {
+      status: "hard_timeout_snapshot",
+      timeoutMs: 100,
+      hardTerminationScope: process.platform === "win32" ? "coordinator_process" : "process_group",
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
