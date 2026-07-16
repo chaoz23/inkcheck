@@ -121,6 +121,87 @@ test("long-tail promotion manifest predeclares three guarded authored 5M familie
   }
 });
 
+test("checked three-family promotion evidence keeps long-tail decisions shadow-only", () => {
+  const manifest = json("benchmarks/long-tail-promotion-v2.json");
+  const result = json("benchmarks/results/long-tail-promotion-v2.json");
+  const manifestSha256 = createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
+
+  assert.strictEqual(result.schemaVersion, 2);
+  assert.strictEqual(result.manifestSha256, manifestSha256);
+  assert.deepStrictEqual(result.cases.map((entry) => entry.id), [
+    "dog-ink-adventure-5m",
+    "the-intercept-5m",
+    "heresy2-5m",
+  ]);
+  for (const entry of result.cases) {
+    assert.strictEqual(entry.sameFrontier.worker.status, "completed");
+    assert.strictEqual(entry.independent.worker.status, "completed");
+  }
+
+  const dog = result.cases[0];
+  for (const arm of [dog.sameFrontier, dog.independent]) {
+    assert.strictEqual(arm.availability, "base_only");
+    assert.strictEqual(arm.reason, "base_time_ceiling");
+    assert.ok(arm.base.result.statesExplored > 100_000);
+    assert.ok(arm.base.result.statesExplored < 500_000);
+    assert.strictEqual(arm.base.result.truncatedBy.time, true);
+    assert.deepStrictEqual(arm.additional.windows, []);
+  }
+  assert.strictEqual(
+    dog.sameFrontier.base.result.findings.visitedKnots.sha256,
+    dog.independent.base.result.findings.visitedKnots.sha256
+  );
+
+  const intercept = result.cases[1];
+  assert.ok(intercept.sameFrontier.additional.ledger.spend.states > 700_000);
+  assert.ok(intercept.sameFrontier.additional.ledger.spend.states < 900_000);
+  assert.strictEqual(intercept.sameFrontier.additional.ledger.stopReason, "memory_ceiling");
+  assert.ok(intercept.independent.additional.ledger.spend.states > 4_000_000);
+  assert.strictEqual(intercept.independent.additional.ledger.stopReason, "time_ceiling");
+  assert.strictEqual(intercept.independent.additional.windows.length, 9);
+  assert.deepStrictEqual(intercept.independent.invariants, {
+    baseReportPreserved: true,
+    baseCheckpointPreserved: true,
+    campaignStatesWithinCeiling: true,
+    reportReopens: true,
+  });
+  assert.ok(
+    intercept.independent.additional.newEvidence.terminalVariants.count
+      > intercept.sameFrontier.additional.newEvidence.terminalVariants.count
+  );
+  for (const category of ["runtimeErrors", "assertionViolations", "goals", "visitedKnots", "visibleOutcomes"]) {
+    assert.strictEqual(intercept.independent.additional.newEvidence[category].count, 0);
+  }
+  for (const window of intercept.independent.additional.windows) {
+    assert.strictEqual(window.marginalYield.critical, 0);
+    assert.strictEqual(window.marginalYield.intent, 0);
+    assert.strictEqual(window.marginalYield.authoredCoverage, 0);
+  }
+  const firstWindow = intercept.independent.additional.windows[0];
+  const lastWindow = intercept.independent.additional.windows.at(-1);
+  const rediscoveryRate = (window) => (
+    window.observability.rediscoveredYield.terminalVariants
+      / window.observability.observedYield.terminalVariants
+  );
+  assert.ok(rediscoveryRate(firstWindow) < rediscoveryRate(lastWindow));
+  assert.ok(rediscoveryRate(lastWindow) > 0.9);
+  assert.strictEqual(lastWindow.stopReason, "time");
+
+  const heresy = result.cases[2];
+  for (const arm of [heresy.sameFrontier, heresy.independent]) {
+    assert.strictEqual(arm.availability, "base_only");
+    assert.strictEqual(arm.reason, "base_memory_ceiling");
+    assert.ok(arm.base.result.statesExplored > 100_000);
+    assert.ok(arm.base.result.statesExplored < 500_000);
+    assert.strictEqual(arm.base.result.truncatedBy.memory, true);
+    assert.deepStrictEqual(arm.additional.windows, []);
+  }
+  assert.strictEqual(
+    heresy.sameFrontier.base.result.findings.visibleOutcomes.sha256,
+    heresy.independent.base.result.findings.visibleOutcomes.sha256
+  );
+});
+
 test("long-tail evaluator preserves multi-file authored project includes", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-long-tail-project-test-"));
   try {

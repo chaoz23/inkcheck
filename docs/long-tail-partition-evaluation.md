@@ -59,7 +59,22 @@ This slice solves a real resource trap. A monolithic retained frontier can bind 
 
 The authored cell did **not** find a new runtime error, authored knot, or visible ending. Its measured advantage is resource feasibility, wall-clock-left-shifted terminal diversity, and deterministic campaign-new accounting. More terminal variable combinations may expose future assertions or regressions, but they are not automatically actionable findings. Promotion of a dynamic long-tail default still needs multiple public story families and value-weighted stopping evidence.
 
+## 0.6 promotion gate
+
+The schema-2 gate ran all three pinned authored families at a declared 5M-state, depth-100 campaign configuration with a 14-minute graceful ceiling per arm. Base-only results are resource evidence, not strategy comparisons.
+
+| Family | Same-frontier result | Independent result | Promotion evidence |
+| --- | --- | --- | --- |
+| Dog Ink Adventure | 244,415 base states; 840.5s; time ceiling | 243,199 base states; 840.6s; time ceiling | Both base-only; no allocation policy ran |
+| The Intercept | 786,559 total states; 405.1s; memory ceiling; 3.70 GiB peak | 4,655,255 total states; 865.8s; time ceiling; 1.40 GiB peak | Nine child slots, last partial; 3,379 new terminal variants versus 407 |
+| Heresy II | 402,431 base states; 143.8s; memory ceiling | 400,127 base states; 143.5s; memory ceiling | Both base-only; no allocation policy ran |
+
+At the same-frontier arm's 405.1-second wall-clock point, the independent arm had completed its base and first child: 1M states and 1,022 campaign-new terminal variants versus 786,559 states and 407. Across all nine independent windows, marginal terminal credit was `1022, 537, 408, 344, 268, 276, 250, 229, 45`; the last window consumed 155,255 states before time. Terminal-identity rediscovery rose from 33.9% to 94.4%. No child added a runtime error, assertion violation, authored knot, visible outcome, or approved-goal result. The base report and content-addressed checkpoint remained byte-preserved.
+
+**Decision:** do not promote shadow expansion, rotation, or stopping into live allocation for 0.6. Only one family reached the policy phase, and its extra evidence was terminal-state diversity rather than a critical or author-facing finding. Independent long-tail execution remains a useful bounded primitive, and the measured shadow explanation remains useful to agents, but `liveEffect: false` stays part of the contract. Dog and Heresy identify the stronger next requirement: choose smaller first windows dynamically from observed throughput and resource growth so users receive a result before a fixed base consumes the whole envelope.
+
 Machine results:
 
 - `benchmarks/results/long-tail-partition-synthetic-control-v1.json`
 - `benchmarks/results/long-tail-partition-intercept-5m-v1.json`
+- `benchmarks/results/long-tail-promotion-v2.json`
