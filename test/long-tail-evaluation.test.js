@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
+const { spawnSync } = require("node:child_process");
 const { recommendLongTailShadow } = require("../dist/campaign-controls");
 const { createCampaignLedger, createCampaignPolicy } = require("../dist/campaign-policy");
 const { runIsolatedArm } = require("../dist/long-tail-evaluation-cli");
@@ -117,6 +118,44 @@ test("long-tail promotion manifest predeclares three guarded authored 5M familie
     assert.ok(entry.maxElapsedSeconds * 1_000 < manifest.workerTimeoutMs);
     assert.ok(fs.existsSync(path.join(ROOT, "benchmarks", entry.story)));
     assert.ok(fs.existsSync(path.join(ROOT, "benchmarks", entry.source.licenseFile)));
+  }
+});
+
+test("long-tail evaluator preserves multi-file authored project includes", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-long-tail-project-test-"));
+  try {
+    const manifestFile = path.join(root, "manifest.json");
+    const outputFile = path.join(root, "result.json");
+    fs.writeFileSync(manifestFile, JSON.stringify({
+      schemaVersion: 1,
+      cases: [{
+        id: "dog-project",
+        story: path.join(ROOT, "benchmarks", "authored", "dog-ink-adventure", "root.ink"),
+        source: { name: "Dog Ink Adventure", license: "MIT", commit: "test", licenseFile: null },
+        baseStates: 100,
+        additionalStates: 100,
+        maxDepth: 30,
+        seed: 7,
+        storySeed: 1,
+        maxElapsedSeconds: 20,
+        maxMemoryMb: 512,
+        maxDiskMb: 128,
+      }],
+    }));
+    const run = spawnSync(process.execPath, [
+      path.join(ROOT, "dist", "long-tail-evaluation-cli.js"),
+      manifestFile,
+      "--output", outputFile,
+      "--case", "dog-project",
+      "--arm", "same-frontier",
+    ], { encoding: "utf8", timeout: 30_000 });
+    assert.strictEqual(run.status, 0, run.stderr);
+    const result = JSON.parse(fs.readFileSync(outputFile, "utf8"));
+    assert.strictEqual(result.complete, true);
+    assert.strictEqual(result.armResult.base.result.statesExplored, 100);
+    assert.strictEqual(result.armResult.invariants.reportReopens, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
