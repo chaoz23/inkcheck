@@ -45,9 +45,9 @@ Ten out of ten never means “all paths in every story were tested.” Inkcheck'
 
 ## Proposed 0.7 assessment gate
 
-The proposed 0.7 **Rules That Matter** epic is intentionally not scored yet. Its target is to raise structured specialist advantage from 4/10 to 7/10 by proving that author-declared invariants can receive bounded additive search without weakening baseline QA. The related product-truth targets are actionable repeatable QA 8 -> 9, honest bounded evidence 8 -> 9, unknown-shape exploration 6 -> 7, anytime value 7 -> 8, author and agent intent 8 -> 9, human trust 7 -> 8, and demonstrated generalization 4 -> 6.
+The proposed 0.7 **Rules That Matter** epic is intentionally not scored yet. The shippable foundation is a trustworthy author-defined rule contract and ordinary assertion reporting. Its experimental specialist target is to raise structured specialist advantage from 4/10 to 7/10 by proving that author-declared invariants can receive bounded additive search without weakening baseline QA. The related product-truth targets are actionable repeatable QA 8 -> 9, honest bounded evidence 8 -> 9, unknown-shape exploration 6 -> 7, anytime value 7 -> 8, author and agent intent 8 -> 9, human trust 7 -> 8, and demonstrated generalization 4 -> 6.
 
-Those are release gates, not forecasts. They require deterministic replay, protected general-search evidence, explicit probe-to-expansion economics, resource ceilings, a nontechnical author flow, and preregistered evaluation across twenty structural families plus at least three consent-safe authored projects. The full contract is [Rules That Matter 0.7](rules-that-matter-0.7.md).
+Those target movements are specialist-promotion gates, not forecasts. The rule foundation has its own validation, replay, privacy, accessibility, and evidence-language gates; directed expansion additionally requires protected general-search evidence, explicit probe-to-expansion economics, resource ceilings, and preregistered evaluation across twenty structural families plus at least three consent-safe authored projects. The full contract is [Rules That Matter 0.7](rules-that-matter-0.7.md).
 
 ## Durable product position
 

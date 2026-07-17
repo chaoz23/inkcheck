@@ -3287,6 +3287,9 @@ test("Rules That Matter contract stays linked, packaged, and bounded", () => {
   assert.ok(packageJson.files.includes("docs/rules-that-matter-0.7.md"));
   assert.match(contract, /gold >= 0/);
   assert.match(contract, /additive probe budget/);
+  assert.match(contract, /0\.7 foundation: author-defined mechanical rules/);
+  assert.match(contract, /Specialist promotion gates/);
+  assert.match(contract, /must not be enabled by default/);
   assert.match(contract, /not_observed_within_limits/);
   assert.match(contract, /exhaustively_verified/);
   assert.match(contract, /may not silently authorize/);

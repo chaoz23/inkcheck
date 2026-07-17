@@ -1,6 +1,6 @@
 # Inkcheck 0.7: Rules That Matter
 
-Status: proposed release contract. This document does not change the current 0.6 scorecard. It defines the evidence required before a 0.7 release may claim the proposed improvements.
+Status: proposed release contract. This document does not change the current 0.6 scorecard. It separates the shippable author-defined rule foundation from the evidence required before assertion-directed search may become a promoted product claim.
 
 ## Product promise
 
@@ -10,7 +10,9 @@ Examples include `gold >= 0`, `health <= max_health`, and `key_found == true` be
 
 This is mechanical QA, not semantic understanding. Inkcheck does not infer whether a variable is desirable, use AI to decide story intent, or turn a bounded clean run into a proof. A clean bounded result means only that no violation was observed in that run; exhaustive verification is reported only when systematic traversal earns it.
 
-## What 0.7 must ship
+## 0.7 foundation: author-defined mechanical rules
+
+The foundation can ship once its contract, validation, replay evidence, privacy boundary, and accessible hosted flow are complete. It evaluates the rules an author explicitly configures during the ordinary bounded check. It does not claim that Inkcheck understands the story, and it does not spend extra search budget merely because a rule exists.
 
 ### One typed rule contract everywhere
 
@@ -35,7 +37,11 @@ The hosted checker needs a small rule-builder flow that can select an inspected 
 
 The web flow must not expose raw explorer weights or imply that a clean partial run proves an assertion. It must preserve the existing consent, deletion, non-AI, progress, cancellation, and report-trust boundaries.
 
-### Bounded assertion-directed work
+## Experimental 0.7 specialist: assertion-directed work
+
+An assertion-directed specialist is a separate opt-in experiment. It may receive extra search budget only after the promotion gates below are met. Until then, it must not be enabled by default, change the current scorecard, or be described as an evidence-earned coverage improvement.
+
+### Protected, bounded work
 
 General QA remains protected. An assertion-directed specialist receives a separately reported additive probe budget; it must not silently take states from the baseline portfolio.
 
@@ -45,7 +51,7 @@ Every result records the general budget, assertion budget, actual spend, stop re
 
 ### Approval boundary for agents
 
-Humans can author rules directly. An agent may inspect source structure and draft a typed rule proposal, but it cannot silently add, modify, or authorize a rule. The proposal must name the variables and locations it used, state the intended invariant, disclose uncertainty, and wait for explicit human approval before a directed run.
+Humans can author rules directly. An agent may inspect source structure and draft a typed rule proposal, but it may not silently authorize, add, or modify a rule. The proposal must name the variables and locations it used, state the intended invariant, disclose uncertainty, and wait for explicit human approval before a directed run.
 
 ## Report language
 
@@ -58,20 +64,27 @@ For every assertion, the report must use one of these meanings:
 | `exhaustively_verified` | A systematic pass completed the reachable state space under the configured semantics without observing a violation. |
 | `invalid` | The rule could not be safely evaluated and exploration did not proceed on its behalf. |
 
-## Release gates
+## Foundation release gates
 
-0.7 may ship the author-facing rule builder and assertion-directed specialist only when all of the following are true:
+The author-defined rule foundation may ship when all of the following are true:
 
 1. Same source, configuration, seed, and policy reproduce assertion identities and replay witnesses across supported platforms.
-2. Baseline general QA is retained exactly when the additive assertion child is enabled; runtime errors and existing assertion violations cannot be hidden by aggregate yield.
-3. The specialist has deterministic probe, expansion, saturation, and stop decisions with all resource ceilings enforced.
-4. A preregistered evaluation covers at least twenty structural synthetic families and at least three consent-safe authored public projects, with multiple seeds and budgets. A resource-bound cell is recorded as such rather than omitted.
-5. The evaluation reports gains, neutral outcomes, regressions, duplicate rediscovery, cost, and every critical finding separately. A score increase for specialist advantage requires value in more than one family; a single attractive story is not enough.
-6. The hosted flow is checked for keyboard access, mobile layout, cancellation, deletion language, and the distinction between observed, partial, and exhaustive evidence.
+2. Invalid variables, knots, types, and operators fail before exploration spends work; reports retain observed values, rule identity, source/config binding, and an exact witness for each violation.
+3. The hosted flow is checked for keyboard access, mobile layout, cancellation, deletion language, and the distinction between observed, partial, invalid, and exhaustive evidence.
+4. The public documentation includes adversarial fixtures for valid violations, clean partial runs, exhaustive verification, and validation failures.
+
+## Specialist promotion gates
+
+The assertion-directed specialist cannot become default behavior, receive a score increase, or claim an evidence-earned coverage improvement until all of the following are true:
+
+1. Baseline general QA is retained exactly when the additive assertion child is enabled; runtime errors and existing assertion violations cannot be hidden by aggregate yield.
+2. The specialist has deterministic probe, expansion, saturation, and stop decisions with all resource ceilings enforced.
+3. A preregistered evaluation covers at least twenty structural synthetic families and at least three consent-safe authored public projects, with multiple seeds and budgets. A resource-bound cell is recorded as such rather than omitted.
+4. The evaluation reports gains, neutral outcomes, regressions, duplicate rediscovery, cost, and every critical finding separately. A score increase for specialist advantage requires value in more than one family; a single attractive story is not enough.
 
 ## Scorecard target, not current score
 
-If the release gates pass, the expected product-truth movement from the 0.6 baseline is:
+The foundation improves author intent and report clarity, but the broader target movement below is conditional on the specialist promotion gates passing:
 
 | Dimension | 0.6 baseline | 0.7 target | Why |
 | --- | ---: | ---: | --- |
@@ -97,7 +110,7 @@ There is no overall average. In particular, a polished rule builder cannot compe
 ## Initial work slices
 
 1. Define the versioned hosted assertion request/report contract and its privacy boundary.
-2. Implement the author-facing rule builder against that contract.
-3. Implement assertion-specialist probe, expansion, saturation, and accounting decisions behind an opt-in flag.
-4. Add adversarial fixtures for valid violations, clean partial runs, exhaustive verification, variable/type validation, and specialist traps.
-5. Run and publish the preregistered baseline-versus-additive evaluation before changing defaults or scores.
+2. Implement the author-facing rule builder and ordinary assertion reporting against that contract.
+3. Add adversarial fixtures for valid violations, clean partial runs, exhaustive verification, and variable/type validation.
+4. Implement assertion-specialist probe, expansion, saturation, and accounting decisions behind an opt-in flag.
+5. Run and publish the preregistered baseline-versus-additive evaluation before changing defaults, raising scores, or promoting the specialist.

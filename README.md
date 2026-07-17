@@ -46,7 +46,7 @@ This is a completed release contract, not a claim that the larger research probl
 
 ### Proposed 0.7: Rules That Matter
 
-The proposed 0.7 epic turns author-declared invariants into a first-class, bounded QA workflow: a human can state rules such as `gold >= 0`, Inkcheck can search for an observed violation without displacing broad QA, and reports can distinguish a violation, a bounded non-finding, an invalid rule, and an earned exhaustive verification. Agents may draft typed rule proposals but may not silently authorize them. The [Rules That Matter contract](docs/rules-that-matter-0.7.md) defines the protected-budget, human-trust, evaluation, and scorecard gates required before these targets become release claims.
+The proposed 0.7 epic starts with first-class author-declared invariants: a human can state rules such as `gold >= 0`, and reports can distinguish a violation, a bounded non-finding, an invalid rule, and an earned exhaustive verification. Agents may draft typed rule proposals but may not silently authorize them. A separate, opt-in assertion-directed specialist may eventually search for an observed violation with additive budget, but it will not become default behavior or a coverage claim until it passes its preregistered evidence gate. The [Rules That Matter contract](docs/rules-that-matter-0.7.md) defines both boundaries.
 
 ### Agent campaign policies
 
