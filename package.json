@@ -1,6 +1,6 @@
 {
   "name": "inkcheck",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Mechanical QA for ink stories — compile checks, bounded branch exploration, repro paths, and dead-content review.",
   "main": "dist/server.js",
   "scripts": {
@@ -71,6 +71,7 @@
     "docs/concurrency-evaluation.md",
     "docs/long-tail-partition-evaluation.md",
     "docs/product-engineering-scorecard.md",
+    "docs/rules-that-matter-0.7.md",
     "docs/shadow-policy-evaluation.md",
     "docs/promotion-benchmark.md",
     "docs/promotion-policy-v2-evaluation.md",

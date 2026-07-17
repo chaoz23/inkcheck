@@ -370,6 +370,16 @@ export async function runSubmission(
       fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
       fs.writeFileSync(destination, file.content, { encoding: "utf8", mode: 0o600 });
     }
+    if (submission.assertions?.length) {
+      // JSON is valid YAML. This private, temporary project config reuses the
+      // CLI's existing typed-rule validation and report contract, then leaves
+      // with the uploaded files in the finally block below.
+      fs.writeFileSync(
+        path.join(jobDir, "inkcheck.yml"),
+        JSON.stringify({ schemaVersion: 1, entrypoint: submission.root, assertions: submission.assertions }),
+        { encoding: "utf8", mode: 0o600 }
+      );
+    }
     const root = path.join(jobDir, ...submission.root.split("/"));
     const cli = path.join(__dirname, "cli.js");
     // Give the CLI a wall-clock budget a bit under the hard SIGKILL deadline so
@@ -869,9 +879,19 @@ export async function parseMultipartBody(contentType: string, body: Buffer): Pro
       const value = fields.get(name);
       return value === undefined || value === "" ? undefined : Number(value);
     };
+    let assertions: unknown;
+    const rawAssertions = fields.get("assertions");
+    if (rawAssertions !== undefined && rawAssertions !== "") {
+      try {
+        assertions = JSON.parse(rawAssertions);
+      } catch {
+        throw new SubmissionError("Story rules could not be read", 422);
+      }
+    }
     return {
       root: fields.get("root"),
       files,
+      ...(assertions !== undefined ? { assertions } : {}),
       runIntent: fields.get("runIntent"),
       maxDepth: optionalNumber("maxDepth"),
       maxStates: optionalNumber("maxStates"),

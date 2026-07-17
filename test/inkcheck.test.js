@@ -216,7 +216,7 @@ test("compile succeeds and returns story JSON for a valid story", async () => {
 test("capabilities explicitly reports supported and unavailable features", () => {
   const value = capabilities();
   assert.strictEqual(value.schemaVersion, 1);
-  assert.strictEqual(value.inkcheckVersion, "0.6.0");
+  assert.strictEqual(value.inkcheckVersion, "0.7.0");
   assert.deepStrictEqual(value.searchModes, ["portfolio", "shared", "shared-variable"]);
   assert.deepStrictEqual(value.resumableSearchSurfaces, ["cli", "mcp"]);
   assert.strictEqual(value.limits.maxStates, 100_000_000);
@@ -845,8 +845,8 @@ test("Codex agent kit creates synchronized config, CI, ignore rules, and instruc
     fs.writeFileSync(path.join(tmp, "story.ink"), "-> END\n");
     const first = createAgentKit(tmp, "codex");
     assert.deepStrictEqual(first.files.map((file) => file.status), ["created", "created", "created", "created"]);
-    assert.match(fs.readFileSync(path.join(tmp, ".inkcheck", "AGENTS.md"), "utf8"), /Inkcheck 0\.6\.0/);
-    assert.match(fs.readFileSync(path.join(tmp, ".github", "workflows", "inkcheck.yml"), "utf8"), /inkcheck@0\.6\.0/);
+    assert.match(fs.readFileSync(path.join(tmp, ".inkcheck", "AGENTS.md"), "utf8"), /Inkcheck 0\.7\.0/);
+    assert.match(fs.readFileSync(path.join(tmp, ".github", "workflows", "inkcheck.yml"), "utf8"), /inkcheck@0\.7\.0/);
     assert.match(fs.readFileSync(path.join(tmp, ".inkcheck", ".gitignore"), "utf8"), /checkpoints\//);
     assert.match(fs.readFileSync(path.join(tmp, ".inkcheck", ".gitignore"), "utf8"), /sessions\//);
     assert.match(fs.readFileSync(path.join(tmp, ".inkcheck", ".gitignore"), "utf8"), /regressions\//);
@@ -1075,7 +1075,7 @@ test("versioned JSON reports have stable identities and exact replay instruction
   const first = JSON.parse(run().stdout);
   const second = JSON.parse(run().stdout);
   assert.strictEqual(first.schemaVersion, 1);
-  assert.strictEqual(first.inkcheckVersion, "0.6.0");
+  assert.strictEqual(first.inkcheckVersion, "0.7.0");
   assert.strictEqual(first.storyFingerprint.value, second.storyFingerprint.value);
   assert.strictEqual(first.explore.runtimeErrors[0].id, second.explore.runtimeErrors[0].id);
   assert.strictEqual(first.explore.runtimeErrors[0].kind, "runtime.content_exhaustion");
@@ -3278,6 +3278,23 @@ test("NDJSON progress contract docs stay linked and privacy-focused", () => {
   assert.match(docs, /must not contain:[\s\S]*story source text[\s\S]*choice prose[\s\S]*variable names or values/);
 });
 
+test("Rules That Matter contract stays linked, packaged, and bounded", () => {
+  const fs = require("node:fs");
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  const contract = fs.readFileSync(path.join(ROOT, "docs", "rules-that-matter-0.7.md"), "utf8");
+  const packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  assert.match(readme, /docs\/rules-that-matter-0\.7\.md/);
+  assert.ok(packageJson.files.includes("docs/rules-that-matter-0.7.md"));
+  assert.match(contract, /gold >= 0/);
+  assert.match(contract, /additive probe budget/);
+  assert.match(contract, /0\.7 foundation: author-defined mechanical rules/);
+  assert.match(contract, /Specialist promotion gates/);
+  assert.match(contract, /must not be enabled by default/);
+  assert.match(contract, /\| `not_observed` \|/);
+  assert.match(contract, /exhaustively_verified/);
+  assert.match(contract, /may not silently authorize/);
+});
+
 test("exploration progress emits a time-based heartbeat before its state interval", async () => {
   const compiled = await compile(CLEAN_BRANCH);
   const events = [];
@@ -3669,7 +3686,7 @@ test("release version stays synchronized across package and manifests", () => {
   const tool = readJson("tool.json");
   const server = readJson("server.json");
   const { VERSION } = require("../dist/version");
-  assert.strictEqual(pkg.version, "0.6.0");
+  assert.strictEqual(pkg.version, "0.7.0");
   assert.strictEqual(lock.version, pkg.version);
   assert.strictEqual(lock.packages[""].version, pkg.version);
   assert.strictEqual(tool.version, pkg.version);
