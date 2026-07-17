@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.7.0 — 2026-07-17
+
+This release makes safe author-defined story rules available in the hosted checker without changing Inkcheck's bounded-search promise. The new web rule builder adds one explicit numeric invariant to an ordinary hosted run; it does not use AI, infer author intent, or spend hidden directed-search budget.
+
+- Add a hosted typed-rule request contract. A browser can submit up to twelve safe rules using the same non-executable assertion grammar as `inkcheck.yml`, CI, and MCP; malformed, empty, or oversized rule sets fail before exploration.
+- Add the first hosted author flow for one optional numeric rule: detected `VAR` names assist input; the writer chooses a comparison, a numeric literal or second variable, and `always` or `terminal` scope; the exact typed rule is previewed before the run.
+- Generate a private temporary `inkcheck.yml` only inside the hosted job directory, reuse the CLI's existing validation/exploration/report pipeline, and delete that configuration with the uploaded files after every result, error, or cancellation.
+- Surface rule violations as report findings with observed values and exact indexed replay witnesses. A quiet bounded run remains `not_observed`, never verification; only an exhaustive pass earns `exhaustively_verified`.
+- Keep assertion-directed extra search experimental and opt-in. It cannot become a default, receive scorecard credit, or make a coverage-improvement claim until the separate preregistered specialist-promotion evaluation passes.
+
 ## 0.6.0 — 2026-07-16
 
 This stable release ships Inkcheck's anytime QA foundation without claiming that bounded search can cover every large story or that an experimental allocator has become universally better. The established deterministic portfolio remains the search default. Workload-aware concurrency, durable result windows, campaigns, exact replay, and human/agent controls make long checks more useful and inspectable; dynamic long-tail expansion, rotation, and stopping remain shadow-only after the three-family promotion gate did not establish broad author-facing value.

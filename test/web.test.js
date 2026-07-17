@@ -44,6 +44,7 @@ function multipartBody(body = validBody()) {
   }
   data.append("root", body.root);
   if (body.runIntent !== undefined) data.append("runIntent", body.runIntent);
+  if (body.assertions !== undefined) data.append("assertions", JSON.stringify(body.assertions));
   data.append("maxDepth", String(body.maxDepth));
   data.append("maxStates", String(body.maxStates));
   data.append("authorized", String(body.authorized));
@@ -57,6 +58,29 @@ test("hosted submission accepts an authorized include bundle", () => {
   assert.strictEqual(result.files.length, 2);
   assert.strictEqual(result.maxStates, 500);
   assert.strictEqual(result.runIntent, "balanced");
+});
+
+test("hosted submission accepts only bounded typed story rules", () => {
+  const assertions = [{
+    id: "gold-nonnegative",
+    description: "Gold never goes negative",
+    when: "always",
+    condition: {
+      left: { variable: "gold" },
+      operator: ">=",
+      right: { literal: 0 },
+    },
+  }];
+  const accepted = validateSubmission(validBody({ assertions }), LIMITS);
+  assert.deepStrictEqual(accepted.assertions, assertions);
+  assert.throws(
+    () => validateSubmission(validBody({ assertions: [{ ...assertions[0], expression: "gold >= 0" }] }), LIMITS),
+    /Invalid story rule/
+  );
+  assert.throws(
+    () => validateSubmission(validBody({ assertions: [] }), LIMITS),
+    /at least one assertion/
+  );
 });
 
 test("hosted submission uses service ceilings when browser limits are omitted", () => {
@@ -128,6 +152,21 @@ test("multipart upload preserves unchanged ink contents and relative paths", asy
   assert.deepStrictEqual(parsed.files, expected.files);
   assert.strictEqual(parsed.root, expected.root);
   assert.strictEqual(parsed.runIntent, undefined);
+  const withRule = multipartBody(validBody({ assertions: [{
+    id: "gold-nonnegative",
+    when: "always",
+    condition: { left: { variable: "gold" }, operator: ">=", right: { literal: 0 } },
+  }] }));
+  const rulesRequest = new Request("http://localhost/api/check", { method: "POST", body: withRule });
+  const parsedRules = await parseMultipartBody(
+    rulesRequest.headers.get("content-type"),
+    Buffer.from(await rulesRequest.arrayBuffer())
+  );
+  assert.deepStrictEqual(parsedRules.assertions, [{
+    id: "gold-nonnegative",
+    when: "always",
+    condition: { left: { variable: "gold" }, operator: ">=", right: { literal: 0 } },
+  }]);
   assert.strictEqual(parsed.authorized, true);
   assert.strictEqual(parsed.privacyAcknowledged, true);
 });

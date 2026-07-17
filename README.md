@@ -44,9 +44,11 @@ Inkcheck 0.6 ships the anytime QA foundation without claiming a universally bett
 
 This is a completed release contract, not a claim that the larger research problem is solved. Dynamic first-window sizing, compact large checkpoints, provider-attributed cost, broader agent evaluation, and bounded specialist explorers remain separately tracked roadmap work. A future release may replace the fixed portfolio only after checked evidence clears the same critical-retention, replay, resource, and honesty gates.
 
-### Proposed 0.7: Rules That Matter
+### Inkcheck 0.7: Rules That Matter
 
-The proposed 0.7 epic starts with first-class author-declared invariants: a human can state rules such as `gold >= 0`, and reports can distinguish a violation, a bounded non-finding, an invalid rule, and an earned exhaustive verification. Agents may draft typed rule proposals but may not silently authorize them. A separate, opt-in assertion-directed specialist may eventually search for an observed violation with additive budget, but it will not become default behavior or a coverage claim until it passes its preregistered evidence gate. The [Rules That Matter contract](docs/rules-that-matter-0.7.md) defines both boundaries.
+Inkcheck 0.7 makes author-declared invariants first-class in the hosted checker as well as local config, CI, and MCP. A writer can add one optional numeric rule such as `gold >= 0` in the web flow; it is shown in plain language and generated typed configuration before the run, checked during ordinary bounded QA, and reported with an exact replay witness if violated. The web flow detects declared Ink variables to assist selection, but the server remains authoritative: unknown variables, invalid types, and unsupported grammar fail before exploration; temporary rule configuration is deleted with the upload. Agents may draft typed rule proposals but may not silently authorize them.
+
+A separate assertion-directed specialist remains opt-in and experimental. It does not receive default budget, change the scorecard, or claim better coverage until it passes its preregistered evidence gate. The [Rules That Matter contract](docs/rules-that-matter-0.7.md) defines both boundaries.
 
 ### Agent campaign policies
 

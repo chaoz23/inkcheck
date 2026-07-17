@@ -1,4 +1,5 @@
 import * as path from "path";
+import { AssertionDefinition, parseAssertionDefinitions } from "./assertions";
 
 export interface HostedLimits {
   maxBodyBytes: number;
@@ -19,9 +20,27 @@ export type HostedRunIntent = "quick" | "balanced";
 export interface HostedSubmission {
   root: string;
   files: HostedFile[];
+  /** Explicit author-defined rules evaluated during ordinary bounded QA. */
+  assertions?: AssertionDefinition[];
   runIntent: HostedRunIntent;
   maxDepth: number;
   maxStates: number;
+}
+
+function hostedAssertions(value: unknown): AssertionDefinition[] | undefined {
+  if (value === undefined) return undefined;
+  const issues: string[] = [];
+  const assertions = parseAssertionDefinitions(value, "assertions", issues);
+  if (issues.length) {
+    throw new SubmissionError(`Invalid story rule:\n${issues.map((issue) => `- ${issue}`).join("\n")}`, 422);
+  }
+  if (!assertions?.length) {
+    throw new SubmissionError("Story rules must include at least one assertion", 422);
+  }
+  if (assertions.length > 12) {
+    throw new SubmissionError("This hosted check accepts up to 12 story rules", 422);
+  }
+  return assertions;
 }
 
 export class SubmissionError extends Error {
@@ -161,10 +180,12 @@ export function validateSubmission(input: unknown, limits: HostedLimits): Hosted
   const intentStateDefault = runIntent === "quick"
     ? Math.min(250_000, limits.maxStates)
     : limits.maxStates;
+  const assertions = hostedAssertions(body.assertions);
 
   return {
     root,
     files,
+    ...(assertions ? { assertions } : {}),
     runIntent,
     maxDepth: boundedInteger(body.maxDepth, limits.maxDepth, 1, limits.maxDepth, "maxDepth"),
     maxStates: boundedInteger(body.maxStates, intentStateDefault, 1, limits.maxStates, "maxStates"),

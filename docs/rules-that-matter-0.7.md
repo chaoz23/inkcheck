@@ -1,6 +1,6 @@
 # Inkcheck 0.7: Rules That Matter
 
-Status: proposed release contract. This document does not change the current 0.6 scorecard. It separates the shippable author-defined rule foundation from the evidence required before assertion-directed search may become a promoted product claim.
+Status: 0.7 foundation release contract. This document records the shipped author-defined-rule surface and the evidence required before assertion-directed search may become a promoted product claim. It does not change the current 0.6 scorecard targets.
 
 ## Product promise
 
@@ -12,7 +12,7 @@ This is mechanical QA, not semantic understanding. Inkcheck does not infer wheth
 
 ## 0.7 foundation: author-defined mechanical rules
 
-The foundation can ship once its contract, validation, replay evidence, privacy boundary, and accessible hosted flow are complete. It evaluates the rules an author explicitly configures during the ordinary bounded check. It does not claim that Inkcheck understands the story, and it does not spend extra search budget merely because a rule exists.
+The foundation ships with its contract, validation, replay evidence, privacy boundary, and accessible hosted flow. It evaluates the rules an author explicitly configures during the ordinary bounded check. It does not claim that Inkcheck understands the story, and it does not spend extra search budget merely because a rule exists.
 
 ### One typed rule contract everywhere
 
@@ -33,7 +33,7 @@ Unknown variables or knots, invalid types, and unsupported operators must fail b
 
 ### Human intent without a configuration tax
 
-The hosted checker needs a small rule-builder flow that can select an inspected variable, comparison, literal or another declared variable, and evaluation point. It must show the authored rule in plain language and generated configuration form before the run begins.
+The hosted checker provides a small rule-builder flow for one optional numeric rule. It offers browser-detected declared variables as a selection aid, a comparison, a numeric literal or another declared variable, and an `always` or `terminal` evaluation point. It shows the authored rule in plain language and generated configuration form before the run begins. The server remains authoritative and validates the same typed grammar against the compiled story before exploration.
 
 The web flow must not expose raw explorer weights or imply that a clean partial run proves an assertion. It must preserve the existing consent, deletion, non-AI, progress, cancellation, and report-trust boundaries.
 
@@ -60,13 +60,13 @@ For every assertion, the report must use one of these meanings:
 | Status | Meaning |
 | --- | --- |
 | `violated` | A reachable explored state broke the rule; the report includes an exact replay witness. |
-| `not_observed_within_limits` | No violation was seen before a declared limit bound the run. This is not verification. |
+| `not_observed` | No violation was seen before a declared limit bound the run. This is not verification. |
 | `exhaustively_verified` | A systematic pass completed the reachable state space under the configured semantics without observing a violation. |
 | `invalid` | The rule could not be safely evaluated and exploration did not proceed on its behalf. |
 
-## Foundation release gates
+## Foundation release evidence
 
-The author-defined rule foundation may ship when all of the following are true:
+The author-defined rule foundation ships with all of the following:
 
 1. Same source, configuration, seed, and policy reproduce assertion identities and replay witnesses across supported platforms.
 2. Invalid variables, knots, types, and operators fail before exploration spends work; reports retain observed values, rule identity, source/config binding, and an exact witness for each violation.
