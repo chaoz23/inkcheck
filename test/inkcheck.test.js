@@ -3278,6 +3278,20 @@ test("NDJSON progress contract docs stay linked and privacy-focused", () => {
   assert.match(docs, /must not contain:[\s\S]*story source text[\s\S]*choice prose[\s\S]*variable names or values/);
 });
 
+test("Rules That Matter contract stays linked, packaged, and bounded", () => {
+  const fs = require("node:fs");
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  const contract = fs.readFileSync(path.join(ROOT, "docs", "rules-that-matter-0.7.md"), "utf8");
+  const packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  assert.match(readme, /docs\/rules-that-matter-0\.7\.md/);
+  assert.ok(packageJson.files.includes("docs/rules-that-matter-0.7.md"));
+  assert.match(contract, /gold >= 0/);
+  assert.match(contract, /additive probe budget/);
+  assert.match(contract, /not_observed_within_limits/);
+  assert.match(contract, /exhaustively_verified/);
+  assert.match(contract, /may not silently authorize/);
+});
+
 test("exploration progress emits a time-based heartbeat before its state interval", async () => {
   const compiled = await compile(CLEAN_BRANCH);
   const events = [];

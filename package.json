@@ -71,6 +71,7 @@
     "docs/concurrency-evaluation.md",
     "docs/long-tail-partition-evaluation.md",
     "docs/product-engineering-scorecard.md",
+    "docs/rules-that-matter-0.7.md",
     "docs/shadow-policy-evaluation.md",
     "docs/promotion-benchmark.md",
     "docs/promotion-policy-v2-evaluation.md",
