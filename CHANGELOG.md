@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.1 — 2026-07-18
+
 - Add a conservative forced-choice-cycle specialist. It reports an exact replay path when the only offered choice returns to the same author-visible control state, prunes that branch across sequential DFS, beam, and random passes, and stops a whole portfolio only for the proven direct root-cycle case. Turn, visit-count, random, and EXTERNAL-sensitive stories remain outside this specialist's claim; changing counters and optional exits remain unflagged.
 
 ## 0.7.0 — 2026-07-17
