@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "loop_specialist_sanity_cell",
+  "story": {
+    "name": "The Intercept",
+    "path": "benchmarks/authored/the-intercept/TheIntercept.ink",
+    "compiledFingerprint": "9d1a3aa2919419377e4ed4eb25b3ff05ad40f1790e8973049ca592d441e8d6ad"
+  },
+  "configuration": {
+    "search": "portfolio",
+    "concurrency": 1,
+    "maxStates": 100000,
+    "maxDepth": 100,
+    "seed": 7,
+    "storySeed": 1,
+    "minRepro": false
+  },
+  "baseline": {
+    "version": "0.7.0",
+    "statesExplored": 100000,
+    "endingsFound": 757,
+    "runtimeErrors": 0,
+    "loopWarnings": 0,
+    "unvisitedKnots": 1,
+    "bindingLimit": "maxStates"
+  },
+  "candidate": {
+    "version": "0.7.1",
+    "statesExplored": 100000,
+    "endingsFound": 757,
+    "runtimeErrors": 0,
+    "loopWarnings": 0,
+    "unvisitedKnots": 1,
+    "bindingLimit": "maxStates"
+  },
+  "interpretation": "Sanity cell only: it confirms evidence parity on a real story at 100K states, not a general specialist-value or resource claim."
+}
