@@ -177,6 +177,7 @@ function explorationSummary(explore: Record<string, unknown> | undefined) {
   return {
     statesExplored: explore.statesExplored,
     runtimeErrorCount: array(explore.runtimeErrors).length,
+    loopRiskCount: array(explore.loopRisks).length,
     assertionViolationCount,
     endingCount: array(explore.endingsFound).length,
     goalCount: array(explore.goalResults).length,

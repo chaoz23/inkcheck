@@ -130,6 +130,19 @@ export function recommendNextRun(
     };
   }
 
+  if (report.loopRisks?.length) {
+    const first = report.loopRisks[0];
+    return {
+      recommendation: "investigate",
+      stop: true,
+      flags: sameFlags,
+      rationale:
+        `a possible non-terminating forced choice cycle was observed via [${first.path.join(" → ") || "linear"}]; increasing depth or state budget does not resolve that repeated branch.`,
+      expectedGain:
+        "none from flags alone — inspect the reported choice loop and add an intended exit, guard, or terminal divert",
+    };
+  }
+
   const passes = report.passes ?? [];
   const systematicLate = passes.some((p) => p.systematic && discoveredLate(p));
   const randomPass = passes.find((p) => p.pass.startsWith("random:"));

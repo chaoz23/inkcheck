@@ -859,6 +859,7 @@ async function main() {
       sharedMaxPendingBytes: maxFrontierMb === undefined ? undefined : maxFrontierMb * 1024 * 1024,
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
+      detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
       randomnessDetected: semantics.usesRandomness,
       onProgress: (progress: ExploreProgress) => {
         statesExplored = saveCheckpoint ? progress.statesExplored : statesBase + progress.statesExplored;
@@ -944,7 +945,10 @@ async function main() {
     }
     statesExplored = saveCheckpoint ? checked.statesExplored : statesBase + checked.statesExplored;
     emitProgress("phase_end", { phase: "explore" });
-    if (reproStates > 0) {
+    const forcedRootCycle = checked.loopRisks?.some(
+      (risk) => risk.firstObservedAtState === 0 && risk.repeatedAtState === 1
+    );
+    if (reproStates > 0 && !forcedRootCycle) {
       emitProgress("phase_start", { phase: "min_repro" });
       const bfs = explore(compiled.storyJson!, knots, externals, {
         maxDepth: bounds.maxDepth,
@@ -955,6 +959,7 @@ async function main() {
       timeGuard,
         preserveTurnState: semantics.usesTurns,
         preserveRandomState: semantics.usesRandomness,
+        detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
         randomnessDetected: semantics.usesRandomness,
         assertions: configuredAssertions,
       });
@@ -1111,6 +1116,14 @@ async function main() {
         console.log(
           `    ${e.message}\n      repro: [${e.path.join(" → ")}]${e.foundBy ? ` (found by ${e.foundBy})` : ""}`
         );
+    }
+    if (report.loopRisks?.length) {
+      console.log(`⚠ ${report.loopRisks.length} possible non-terminating choice cycle(s):`);
+      for (const risk of report.loopRisks) {
+        console.log(
+          `    [${risk.path.join(" → ") || "linear"}] repeats the only offered choice (${risk.repeatedChoice}); stopped this branch for review`
+        );
+      }
     }
     const violatedAssertions = report.assertionResults.filter((result) => result.status === "violated");
     if (violatedAssertions.length) {
@@ -1287,6 +1300,7 @@ function renderMarkdown(
     `| Exhaustive | ${report.exhaustive ? "yes" : "no"} |`,
     `| Distinct terminal states | ${report.endingsFound.length} |`,
     `| Runtime errors | ${report.runtimeErrors.length} |`,
+    `| Possible non-terminating choice cycles | ${report.loopRisks?.length ?? 0} |`,
     `| Assertion violations | ${assertionViolations.length} |`,
     ...(report.goalResults?.length ? [`| Search goals reached | ${report.goalResults.filter((goal) => goal.status === "reached").length}/${report.goalResults.length} |`] : []),
     `| Unvisited knots | ${report.unvisitedKnots.length} |`,
@@ -1296,6 +1310,14 @@ function renderMarkdown(
     for (const error of report.runtimeErrors) {
       lines.push(
         `- ${escapeCell(error.message)} — path: ${error.path.join(" → ") || "linear"}${error.foundBy ? ` — found by \`${error.foundBy}\`` : ""}`
+      );
+    }
+  }
+  if (report.loopRisks?.length) {
+    lines.push("", "## Possible non-terminating choice cycles", "");
+    for (const risk of report.loopRisks) {
+      lines.push(
+        `- Path: ${risk.path.join(" → ") || "linear"}; the only offered choice, ${escapeCell(risk.repeatedChoice)}, repeats the same control state. This is a review warning, not a runtime error.`
       );
     }
   }

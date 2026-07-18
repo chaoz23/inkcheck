@@ -67,6 +67,23 @@ export interface RuntimeErrorReport {
   foundBy?: string;
 }
 
+/** A conservatively detected forced choice cycle, for author review. */
+export interface LoopRiskReport {
+  kind: "possible_non_terminating_choice_cycle";
+  path: string[];
+  choiceIndices: number[];
+  repeatedChoice: string;
+  firstObservedAtState: number;
+  repeatedAtState: number;
+  foundBy?: string;
+}
+
+/** Per-run cache shared by sequential portfolio passes. */
+interface LoopRiskRegistry {
+  confirmedCandidates: Set<string>;
+  confirmedControls: Map<string, LoopRiskReport>;
+}
+
 /** Which configured limit cut coverage short, when `truncated` is true. */
 export interface TruncationCauses {
   /** At least one live path was cut at the depth limit. */
@@ -81,6 +98,8 @@ export interface TruncationCauses {
   memory: boolean;
   /** Exploration stopped early because the wall-clock time budget elapsed. */
   time: boolean;
+  /** A source-semantically safe forced choice cycle was stopped for review. */
+  loop?: boolean;
   /** One concurrent explorer failed before returning its complete bounded result. */
   worker?: boolean;
 }
@@ -99,11 +118,11 @@ export interface PortfolioExecutionEvidence {
   mode: "sequential" | "concurrent";
   requestedConcurrency: number;
   effectiveConcurrency: number;
-  fallbackReason?: "single_core" | "memory_headroom" | "single_pass" | "budget_below_pilot" | "pilot_exhaustive" | "pilot_consumed_budget" | "pilot_depth_bound" | "pilot_authored_frontier_saturated";
+  fallbackReason?: "single_core" | "memory_headroom" | "single_pass" | "budget_below_pilot" | "pilot_exhaustive" | "pilot_consumed_budget" | "pilot_forced_cycle" | "pilot_depth_bound" | "pilot_authored_frontier_saturated";
   activation?: {
     policyVersion: "pilot-frontier-v2" | "single-pass-frontier-v3";
     decision: "stay_sequential" | "activate_concurrent";
-    reason: "budget_below_pilot" | "pilot_exhaustive" | "pilot_consumed_budget" | "pilot_depth_bound" | "pilot_authored_frontier_saturated" | "pilot_open_frontier";
+    reason: "budget_below_pilot" | "pilot_exhaustive" | "pilot_consumed_budget" | "pilot_forced_cycle" | "pilot_depth_bound" | "pilot_authored_frontier_saturated" | "pilot_open_frontier";
     pilotBudget: number;
     pilotStatesExplored: number;
     pilotExhaustive: boolean;
@@ -139,6 +158,8 @@ export interface ExploreResult {
   statesExplored: number;
   endingsFound: EndingReport[];
   runtimeErrors: RuntimeErrorReport[];
+  /** Conservative review findings; these are not runtime errors or CI failures. */
+  loopRisks?: LoopRiskReport[];
   assertionResults: AssertionResult[];
   /** Optional author/agent search targets; absent for ordinary runs. */
   goalResults?: GoalResult[];
@@ -210,6 +231,177 @@ export function stateKey(
     return createHash("sha1").update(JSON.stringify(state)).digest("hex");
   } catch {
     return createHash("sha1").update(stateJson).digest("hex");
+  }
+}
+
+/**
+ * A normalized runtime-state fingerprint for forced-cycle review. Retain Ink's
+ * authored control paths and variables, but discard bookkeeping that changes
+ * when a semantically identical choice thread is recreated.
+ */
+function loopControlKey(
+  stateJson: string,
+  _variables: Record<string, unknown>,
+  _choices: Array<{ text?: string; sourcePath?: string }>
+): string | undefined {
+  try {
+    const state = JSON.parse(stateJson) as {
+      flows?: Record<string, {
+        outputStream?: unknown;
+        callstack?: { threadCounter?: unknown; threads?: Array<{ threadIndex?: unknown }> };
+        choiceThreads?: Record<string, { threadIndex?: unknown }>;
+        currentChoices?: Array<{ originalThreadIndex?: unknown }>;
+      }>;
+      visitCounts?: unknown;
+      turnIndices?: unknown;
+      turnIdx?: unknown;
+      storySeed?: unknown;
+      previousRandom?: unknown;
+    };
+    delete state.visitCounts;
+    delete state.turnIndices;
+    delete state.turnIdx;
+    delete state.storySeed;
+    delete state.previousRandom;
+    for (const flow of Object.values(state.flows ?? {})) {
+      delete flow.outputStream;
+      if (flow.callstack) {
+        delete flow.callstack.threadCounter;
+        for (const thread of flow.callstack.threads ?? []) delete thread.threadIndex;
+      }
+      if (flow.choiceThreads) {
+        const threads = Object.values(flow.choiceThreads);
+        for (const thread of threads) delete thread.threadIndex;
+        flow.choiceThreads = Object.fromEntries(threads.map((thread, index) => [String(index), thread]));
+      }
+      for (const choice of flow.currentChoices ?? []) delete choice.originalThreadIndex;
+    }
+    return createHash("sha1").update(JSON.stringify(state)).digest("hex");
+  } catch {
+    return undefined;
+  }
+}
+
+/** Cheap first-pass keys: source is primary; text recovers unstable source paths. */
+function forcedChoiceCandidateKeys(choice: { text?: string; sourcePath?: string }): { source?: string; text?: string } {
+  return {
+    ...(choice.sourcePath ? { source: `source:${choice.sourcePath}` } : {}),
+    ...(choice.text ? { text: `text:${choice.text}` } : {}),
+  };
+}
+
+interface LoopObservation {
+  stateJson: string;
+  variables: Record<string, unknown>;
+  choices: Array<{ text?: string; sourcePath?: string }>;
+  path: string[];
+  choiceIndices: number[];
+  state: number;
+}
+
+function isChoicePathPrefix(prefix: number[], path: number[]): boolean {
+  return prefix.length <= path.length && prefix.every((choice, index) => path[index] === choice);
+}
+
+function sameChoicePath(left: number[], right: number[]): boolean {
+  return left.length === right.length && left.every((choice, index) => right[index] === choice);
+}
+
+/** Shared exact-cycle confirmation with a cheap first-visit fast path. */
+class LoopRiskTracker {
+  private readonly registry: LoopRiskRegistry;
+  private readonly seenControls = new Map<string, Omit<LoopRiskReport, "kind" | "repeatedAtState">>();
+  private readonly candidates = new Map<string, LoopObservation>();
+  private readonly noisyTextCandidates = new Set<string>();
+
+  constructor(
+    private readonly enabled: boolean,
+    registry: LoopRiskRegistry | undefined,
+    private readonly foundBy: string
+  ) {
+    this.registry = registry ?? {
+      confirmedCandidates: new Set<string>(),
+      confirmedControls: new Map<string, LoopRiskReport>(),
+    };
+  }
+
+  /** A random restart is a new replay, not a transition in the current walk. */
+  reset(): void {
+    this.seenControls.clear();
+    this.candidates.clear();
+    this.noisyTextCandidates.clear();
+  }
+
+  observe(observation: LoopObservation): { key: string; risk: LoopRiskReport } | undefined {
+    if (!this.enabled || observation.choices.length !== 1) return undefined;
+    const keys = forcedChoiceCandidateKeys(observation.choices[0] ?? {});
+    const candidateKey = keys.source && this.candidates.has(keys.source)
+      ? keys.source
+      : keys.text && !this.noisyTextCandidates.has(keys.text) && this.candidates.has(keys.text)
+        ? keys.text
+        : undefined;
+    if (!candidateKey) {
+      // Ordinary forced choices only pay source/text map lookups. Text is a
+      // fallback for Ink restores whose internal source path is unstable.
+      if (keys.source) this.candidates.set(keys.source, observation);
+      if (keys.text && !this.noisyTextCandidates.has(keys.text)) this.candidates.set(keys.text, observation);
+      return undefined;
+    }
+    const confirmedCandidate = [candidateKey, keys.source, keys.text].find(
+      (key): key is string => Boolean(key && this.registry.confirmedCandidates.has(key))
+    );
+    if (confirmedCandidate) {
+      const key = loopControlKey(observation.stateJson, observation.variables, observation.choices);
+      const risk = key ? this.registry.confirmedControls.get(key) : undefined;
+      if (key && risk && sameChoicePath(risk.choiceIndices, observation.choiceIndices)) {
+        return { key, risk };
+      }
+    }
+    const prior = this.candidates.get(candidateKey)!;
+    this.candidates.set(candidateKey, observation);
+    if (keys.source) this.candidates.set(keys.source, observation);
+    if (!isChoicePathPrefix(prior.choiceIndices, observation.choiceIndices)) return undefined;
+    const priorKey = loopControlKey(prior.stateJson, prior.variables, prior.choices);
+    const key = loopControlKey(observation.stateJson, observation.variables, observation.choices);
+    if (!priorKey || !key) return undefined;
+    if (candidateKey.startsWith("text:") && priorKey !== key) {
+      // A repeated label alone is not a useful signal after its first miss.
+      this.noisyTextCandidates.add(candidateKey);
+      this.candidates.delete(candidateKey);
+    }
+    if (!this.seenControls.has(priorKey)) {
+      this.seenControls.set(priorKey, {
+        path: prior.path,
+        choiceIndices: prior.choiceIndices,
+        repeatedChoice: prior.choices[0]?.text ?? "#0",
+        firstObservedAtState: prior.state,
+        foundBy: this.foundBy,
+      });
+    }
+    const previous = this.seenControls.get(key);
+    if (!previous) {
+      this.seenControls.set(key, {
+        path: observation.path,
+        choiceIndices: observation.choiceIndices,
+        repeatedChoice: observation.choices[0]?.text ?? "#0",
+        firstObservedAtState: observation.state,
+        foundBy: this.foundBy,
+      });
+      return undefined;
+    }
+    const risk = this.registry.confirmedControls.get(key) ?? {
+      kind: "possible_non_terminating_choice_cycle" as const,
+      ...previous,
+      path: observation.path,
+      choiceIndices: observation.choiceIndices,
+      repeatedChoice: observation.choices[0]?.text ?? "#0",
+      repeatedAtState: observation.state,
+    };
+    this.registry.confirmedCandidates.add(candidateKey);
+    if (keys.source) this.registry.confirmedCandidates.add(keys.source);
+    if (keys.text) this.registry.confirmedCandidates.add(keys.text);
+    this.registry.confirmedControls.set(key, risk);
+    return { key, risk };
   }
 }
 
@@ -505,6 +697,10 @@ export interface ExploreOptions {
   preserveTurnState?: boolean;
   /** Preserve RNG bookkeeping when the source uses random behavior. Default true. */
   preserveRandomState?: boolean;
+  /** Enable forced-cycle detection only after a source-semantic safety audit. */
+  detectLoopRisks?: boolean;
+  /** Internal: shares confirmed forced cycles across sequential portfolio passes. */
+  loopRiskRegistry?: LoopRiskRegistry;
   /** Report that the source scanner found random behavior. */
   randomnessDetected?: boolean;
   /** PRNG seed for the random-sampling pass; fixed default keeps CI reproducible. */
@@ -980,6 +1176,9 @@ function createSearchEngine(
   const runtimeWarnings = new Set<string>();
   const visitedKnots = new Set<string>();
   const seenStates = new Set<string>();
+  const loopRisks = new Map<string, LoopRiskReport>();
+  const loopRiskEnabled = opts.detectLoopRisks === true && externals.length === 0;
+  const loopTracker = new LoopRiskTracker(loopRiskEnabled, opts.loopRiskRegistry, foundBy);
   let statesExplored = 0;
   let totalGranted = 0;
   let truncated = false;
@@ -1061,6 +1260,26 @@ function createSearchEngine(
   const rootState = s.story.state.ToJson();
   seenStates.add(stateKey(rootState, stateSensitivity));
   const frames: Frame[] = [{ stateJson: rootState, path: [], choiceIndices: [], depth: 0 }];
+  const noteLoopControl = (stateJson: string, variables: Record<string, unknown>, path: string[], choiceIndices: number[], state: number): boolean => {
+    const result = loopTracker.observe({
+      stateJson,
+      variables,
+      choices: (s.story.currentChoices as Array<{ text?: string; sourcePath?: string }>).map(
+        (choice) => ({ text: choice.text, sourcePath: choice.sourcePath })
+      ),
+      path: [...path],
+      choiceIndices: [...choiceIndices],
+      state,
+    });
+    if (!result) return false;
+    loopRisks.set(result.key, result.risk);
+    return true;
+  };
+  if (noteLoopControl(rootState, rootVariables, [], [], 0)) {
+    truncated = true;
+    truncatedBy.loop = true;
+    frames.length = 0;
+  }
   let head = 0; // BFS read pointer (avoids O(n) shifts)
   // Pause state: the frame currently being expanded and its choice cursor.
   let current: { frame: Frame; order: number[]; cursor: number } | null = null;
@@ -1164,12 +1383,17 @@ function createSearchEngine(
       }
       return true;
     }
+    const nextState = s.story.state.ToJson();
+    if (noteLoopControl(nextState, stateVariables, path, choiceIndices, statesExplored)) {
+      truncated = true;
+      truncatedBy.loop = true;
+      return true;
+    }
     if (path.length >= maxDepth) {
       truncated = true;
       truncatedBy.maxDepth = true;
       return true;
     }
-    const nextState = s.story.state.ToJson();
     const key = stateKey(nextState, stateSensitivity);
     if (seenStates.has(key)) {
       dedupeHits++;
@@ -1197,6 +1421,7 @@ function createSearchEngine(
     discoverySummary: discoveryCurve.summary(statesExplored),
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
+    ...(loopRisks.size ? { loopRisks: [...loopRisks.values()] } : {}),
     assertionResults: assertions.results(exhaustive),
     ...(opts.goals?.length ? { goalResults: goals.results(exhaustive) } : {}),
     runtimeWarnings: [...runtimeWarnings],
@@ -2690,6 +2915,14 @@ function createRandomEngine(
   const runtimeErrors = new Map<string, RuntimeErrorReport>();
   const runtimeWarnings = new Set<string>();
   const visitedKnots = new Set<string>();
+  const loopRisks = new Map<string, LoopRiskReport>();
+  const loopTracker = new LoopRiskTracker(
+    opts.detectLoopRisks === true && externals.length === 0,
+    // Random sampling restarts at the root repeatedly, so it cannot safely
+    // reuse the systematic portfolio's confirmed-cycle registry.
+    undefined,
+    foundBy
+  );
   let statesExplored = 0;
   let totalGranted = 0;
   let truncated = false;
@@ -2770,6 +3003,25 @@ function createRandomEngine(
   noteDiscoveryProgress();
 
   const rootState = linear ? "" : s.story.state.ToJson();
+  const noteLoopControl = (stateJson: string, variables: Record<string, unknown>, path: string[], choiceIndices: number[], state: number): LoopRiskReport | undefined => {
+    const result = loopTracker.observe({
+      stateJson,
+      variables,
+      choices: (s.story.currentChoices as Array<{ text?: string; sourcePath?: string }>).map(
+        (choice) => ({ text: choice.text, sourcePath: choice.sourcePath })
+      ),
+      path: [...path],
+      choiceIndices: [...choiceIndices],
+      state,
+    });
+    if (result) loopRisks.set(result.key, result.risk);
+    return result?.risk;
+  };
+  let terminatedByLoop = !linear && Boolean(noteLoopControl(rootState, rootVariables, [], [], 0));
+  if (terminatedByLoop) {
+    truncated = true;
+    truncatedBy.loop = true;
+  }
   // Pause state: the walk in progress. The pooled story instance holds the
   // live mid-walk position between grants; only this engine touches it.
   let walkPath: string[] | null = null;
@@ -2782,6 +3034,8 @@ function createRandomEngine(
       s.story.state.LoadJson(rootState);
       walkPath = [];
       walkChoiceIndices = [];
+      loopTracker.reset();
+      noteLoopControl(rootState, rootVariables, walkPath, walkChoiceIndices, statesExplored);
     }
     const numChoices = s.story.currentChoices.length;
     if (numChoices === 0) {
@@ -2853,6 +3107,16 @@ function createRandomEngine(
       walkChoiceIndices = null;
       return;
     }
+    const nextState = s.story.state.ToJson();
+    const loopRisk = noteLoopControl(nextState, stateVariables, walkPath, walkChoiceIndices!, statesExplored);
+    if (loopRisk) {
+      truncated = true;
+      truncatedBy.loop = true;
+      if (loopRisk.firstObservedAtState === 0 && loopRisk.repeatedAtState === 1) terminatedByLoop = true;
+      walkPath = null;
+      walkChoiceIndices = null;
+      return;
+    }
     if (walkPath.length >= maxDepth) {
       truncated = true;
       truncatedBy.maxDepth = true;
@@ -2868,6 +3132,7 @@ function createRandomEngine(
     discoverySummary: discoveryCurve.summary(statesExplored),
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
+    ...(loopRisks.size ? { loopRisks: [...loopRisks.values()] } : {}),
     assertionResults: assertions.results(false),
     ...(opts.goals?.length ? { goalResults: goals.results(false) } : {}),
     runtimeWarnings: [...runtimeWarnings],
@@ -2889,10 +3154,11 @@ function createRandomEngine(
     systematic: false,
     run(grant: number): number {
       totalGranted += grant;
-      if (linear) return 0;
+      if (linear || terminatedByLoop) return 0;
       const start = statesExplored;
       let sinceGuard = 0;
       while (statesExplored - start < grant) {
+        if (terminatedByLoop) break;
         if ((memoryGuard || timeGuard) && ++sinceGuard >= guardInterval) {
           sinceGuard = 0;
           if (memoryGuard && !memoryGuard()) {
@@ -2910,7 +3176,7 @@ function createRandomEngine(
     },
     // A linear story is fully sampled by its root walk; otherwise sampling
     // always has more walks to take.
-    done: () => linear,
+    done: () => linear || terminatedByLoop,
     exhaustive: () => false,
     stoppedForMemory: () => memoryStopped,
     stoppedForTime: () => timeStopped,
@@ -3017,6 +3283,12 @@ function createBeamEngine(
   const seenStates = new Set<string>();
   const seenVarSignatures = new Set<string>();
   const seenChoiceSets = new Set<string>();
+  const loopRisks = new Map<string, LoopRiskReport>();
+  const loopTracker = new LoopRiskTracker(
+    opts.detectLoopRisks === true && externals.length === 0,
+    opts.loopRiskRegistry,
+    foundBy
+  );
   let statesExplored = 0;
   let totalGranted = 0;
   let truncated = false;
@@ -3074,6 +3346,21 @@ function createBeamEngine(
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
   const rootVariables = extractVariables(s.story);
+  const noteLoopControl = (stateJson: string, variables: Record<string, unknown>, path: string[], choiceIndices: number[], state: number): boolean => {
+    const result = loopTracker.observe({
+      stateJson,
+      variables,
+      choices: (s.story.currentChoices as Array<{ text?: string; sourcePath?: string }>).map(
+        (choice) => ({ text: choice.text, sourcePath: choice.sourcePath })
+      ),
+      path: [...path],
+      choiceIndices: [...choiceIndices],
+      state,
+    });
+    if (!result) return false;
+    loopRisks.set(result.key, result.risk);
+    return true;
+  };
   assertions.observe({
     variables: rootVariables,
     terminal: rootStep.choicesOffered.length === 0 && s.errors.length === 0,
@@ -3118,11 +3405,17 @@ function createBeamEngine(
     finished = true;
   } else {
     const rootState = s.story.state.ToJson();
-    seenStates.add(stateKey(rootState, stateSensitivity));
-    seenVarSignatures.add(JSON.stringify(extractVariables(s.story)));
-    seenChoiceSets.add(rootStep.choicesOffered.slice().sort().join(""));
-    frontier = [{ stateJson: rootState, path: [], choiceIndices: [] }];
-    peakFrontier = 1;
+    if (noteLoopControl(rootState, rootVariables, [], [], 0)) {
+      truncated = true;
+      truncatedBy.loop = true;
+      finished = true;
+    } else {
+      seenStates.add(stateKey(rootState, stateSensitivity));
+      seenVarSignatures.add(JSON.stringify(extractVariables(s.story)));
+      seenChoiceSets.add(rootStep.choicesOffered.slice().sort().join(""));
+      frontier = [{ stateJson: rootState, path: [], choiceIndices: [] }];
+      peakFrontier = 1;
+    }
   }
   noteDiscoveryProgress();
 
@@ -3249,6 +3542,11 @@ function createBeamEngine(
       return true;
     }
     const nextState = s.story.state.ToJson();
+    if (noteLoopControl(nextState, stateVariables, path, choiceIndices, statesExplored)) {
+      truncated = true;
+      truncatedBy.loop = true;
+      return true;
+    }
     const key = stateKey(nextState, stateSensitivity);
     if (seenStates.has(key)) {
       dedupeHits++;
@@ -3281,6 +3579,7 @@ function createBeamEngine(
     discoverySummary: discoveryCurve.summary(statesExplored),
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
+    ...(loopRisks.size ? { loopRisks: [...loopRisks.values()] } : {}),
     assertionResults: assertions.results(exhaustive),
     ...(opts.goals?.length ? { goalResults: goals.results(exhaustive) } : {}),
     runtimeWarnings: [...runtimeWarnings],
@@ -3483,7 +3782,15 @@ function explorePortfolioInternal(
   }
 
   const weights = opts.weights ?? DEFAULT_PORTFOLIO_WEIGHTS;
-  const shared = { ...opts };
+  const shared: ExploreOptions = {
+    ...opts,
+    ...(opts.detectLoopRisks ? {
+      loopRiskRegistry: {
+        confirmedCandidates: new Set<string>(),
+        confirmedControls: new Map<string, LoopRiskReport>(),
+      },
+    } : {}),
+  };
   const engines: PassEngine[] = [];
   const engineWeights: number[] = [];
   const addEngine = (engine: PassEngine, weight: number) => {
@@ -3563,6 +3870,7 @@ function explorePortfolioInternal(
   let policyControlsCurrentRound = false;
   let remaining = maxStates - (initialPilot?.consumed ?? 0);
   let exhaustedEarly = false;
+  let forcedRootCycleFound = false;
   let memoryStopped = false;
   let timeStopped = false;
 
@@ -3604,7 +3912,7 @@ function explorePortfolioInternal(
     i: number,
     granted: number,
     consumed: number
-  ): { entry: ScheduleRoundEntry; score: number } => {
+  ): { entry: ScheduleRoundEntry; score: number; forcedRootCycle: boolean } => {
     const snapshot = engine.snapshot();
     const marginal = countMarginalFindings(snapshot, seenEndings, seenKnots, seenErrors);
     let newPolicyErrors = 0;
@@ -3693,6 +4001,9 @@ function explorePortfolioInternal(
     return {
       entry: { pass: engine.label, granted, consumed, ...marginal },
       score: marginal.newRuntimeErrors * 5 + marginal.newEndings * 3 + marginal.newKnots * 2,
+      forcedRootCycle: snapshot.loopRisks?.some(
+        (risk) => risk.firstObservedAtState === 0 && risk.repeatedAtState === 1
+      ) ?? false,
     };
   };
 
@@ -3722,7 +4033,7 @@ function explorePortfolioInternal(
     opts.onSnapshot?.(pilotSnapshot);
   }
 
-  while (remaining > 0 && !exhaustedEarly && !memoryStopped && !timeStopped && engines.some((e) => !e.done())) {
+  while (remaining > 0 && !exhaustedEarly && !forcedRootCycleFound && !memoryStopped && !timeStopped && engines.some((e) => !e.done())) {
     // Stop before a round begins if a guard has already tripped, so we do not
     // start allocating another round's worth of frontier/state hashes.
     if (opts.memoryGuard && !opts.memoryGuard()) {
@@ -3762,6 +4073,13 @@ function explorePortfolioInternal(
       const recorded = recordSnapshot(engine, i, fullGrants[a], consumed + pilotConsumed);
       entries.push(recorded.entry);
       scores[i] = recorded.score;
+      if (recorded.forcedRootCycle) {
+        // Root had exactly one choice and it returned directly to the same
+        // control state. There is no alternative reachable path for another
+        // portfolio pass to discover, so do not reallocate its unused budget.
+        forcedRootCycleFound = true;
+        break;
+      }
       if (engine.stoppedForMemory()) {
         // A guard tripped mid-round; finish recording this round, then stop.
         memoryStopped = true;
@@ -3978,6 +4296,14 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
   for (const e of other.runtimeErrors) {
     if (!mainErrs.has(e.message)) main.runtimeErrors.push(e);
   }
+  const loopRiskKeys = new Set((main.loopRisks ?? []).map((risk) => `${risk.path.join("\u0001")}|${risk.repeatedChoice}`));
+  for (const risk of other.loopRisks ?? []) {
+    const key = `${risk.path.join("\u0001")}|${risk.repeatedChoice}`;
+    if (!loopRiskKeys.has(key)) {
+      (main.loopRisks ??= []).push(risk);
+      loopRiskKeys.add(key);
+    }
+  }
   const assertionsById = new Map(main.assertionResults.map((result) => [result.id, result]));
   for (const result of other.assertionResults) {
     const existing = assertionsById.get(result.id);
@@ -4041,12 +4367,16 @@ export function mergeExploreResults(main: ExploreResult, other: ExploreResult): 
     frontier: main.truncatedBy.frontier || other.truncatedBy.frontier,
     memory: main.truncatedBy.memory || other.truncatedBy.memory,
     time: main.truncatedBy.time || other.truncatedBy.time,
+    loop: main.truncatedBy.loop || other.truncatedBy.loop || undefined,
     worker: main.truncatedBy.worker || other.truncatedBy.worker || undefined,
   };
   // One systematic pass finishing without truncation proves every reachable
   // state was visited, so partial-coverage flags from budget-bound sampling
   // passes (which resample a space already proven exhausted) are cleared.
   main.exhaustive ||= other.exhaustive;
+  // A forced-cycle finding is deliberately conservative, but it means this
+  // portfolio has not enumerated the repeated branch to completion.
+  if (main.loopRisks?.length) main.exhaustive = false;
   if (main.exhaustive) {
     main.truncated = false;
     main.truncatedBy = { maxDepth: false, maxStates: false, beamWidth: false, frontier: false, memory: false, time: false };

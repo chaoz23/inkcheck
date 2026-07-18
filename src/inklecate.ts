@@ -198,6 +198,8 @@ export interface KnotInfo {
 export interface StorySemantics {
   usesTurns: boolean;
   usesRandomness: boolean;
+  /** READ_COUNT() / TURNS_SINCE() can make visit bookkeeping observable. */
+  usesVisitCounts: boolean;
 }
 
 /**
@@ -210,13 +212,15 @@ export function scanStorySemantics(
   seen: Set<string> = new Set()
 ): StorySemantics {
   const abs = path.resolve(inkFile);
-  if (seen.has(abs) || !fs.existsSync(abs)) return { usesTurns: false, usesRandomness: false };
+  if (seen.has(abs) || !fs.existsSync(abs)) return { usesTurns: false, usesRandomness: false, usesVisitCounts: false };
   seen.add(abs);
   let usesTurns = false;
   let usesRandomness = false;
+  let usesVisitCounts = false;
   for (const line of fs.readFileSync(abs, "utf8").split(/\r?\n/)) {
     const code = line.replace(/\/\/.*$/, "");
     if (/\b(?:TURNS|TURNS_SINCE)\s*\(/.test(code)) usesTurns = true;
+    if (/\b(?:READ_COUNT|TURNS_SINCE)\s*\(/.test(code)) usesVisitCounts = true;
     if (/\b(?:RANDOM|SEED_RANDOM|LIST_RANDOM)\s*\(/.test(code) || /\{\s*~/.test(code)) {
       usesRandomness = true;
     }
@@ -225,9 +229,10 @@ export function scanStorySemantics(
       const child = scanStorySemantics(path.join(path.dirname(abs), inc[1]), seen);
       usesTurns ||= child.usesTurns;
       usesRandomness ||= child.usesRandomness;
+      usesVisitCounts ||= child.usesVisitCounts;
     }
   }
-  return { usesTurns, usesRandomness };
+  return { usesTurns, usesRandomness, usesVisitCounts };
 }
 
 /**

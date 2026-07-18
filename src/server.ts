@@ -386,6 +386,7 @@ server.registerTool(
       memoryGuard,
       preserveTurnState: semantics.usesTurns,
       preserveRandomState: semantics.usesRandomness,
+      detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
       randomnessDetected: semantics.usesRandomness,
       sharedMaxPendingStates: maxFrontierStates,
       sharedMaxPendingBytes: maxFrontierMb === undefined ? undefined : maxFrontierMb * 1024 * 1024,
@@ -406,7 +407,10 @@ server.registerTool(
             memoryCapBytes,
           })
       : exploreWithGoals(compiled.storyJson, knots, externals, options, search ?? "portfolio");
-    if (reproStates > 0) {
+    const forcedRootCycle = result.loopRisks?.some(
+      (risk) => risk.firstObservedAtState === 0 && risk.repeatedAtState === 1
+    );
+    if (reproStates > 0 && !forcedRootCycle) {
       const bfs = explore(compiled.storyJson, knots, externals, {
         maxDepth,
         maxStates: reproStates,
@@ -415,6 +419,7 @@ server.registerTool(
         memoryGuard,
         preserveTurnState: semantics.usesTurns,
         preserveRandomState: semantics.usesRandomness,
+        detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
         randomnessDetected: semantics.usesRandomness,
         assertions,
       });

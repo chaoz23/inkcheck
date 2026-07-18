@@ -105,6 +105,7 @@ function sanitizedOptions(options: AdaptiveConcurrentOptions): ExploreOptions {
     onSnapshot: _onSnapshot,
     memoryGuard: _memoryGuard,
     timeGuard: _timeGuard,
+    loopRiskRegistry: _loopRiskRegistry,
     weights: _weights,
     ...safe
   } = options;

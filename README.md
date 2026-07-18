@@ -135,6 +135,7 @@ The local CLI remains the privacy-first option because no story upload occurs. S
 
 - **Compile errors and warnings** — broken diverts, unresolved variables, loose ends, with file and line numbers (via [inklecate](https://github.com/inkle/ink/releases), the official compiler)
 - **Runtime errors with a reproduction path** — the exact sequence of choices that triggers a divide-by-zero, a bad external call, or out-of-content, e.g. `repro: [Enter in darkness → Descend to the cellar]`
+- **Possible non-terminating forced choice cycles** — a conservative review warning when the only available choice returns to the same control state with the same author-visible variables; optional exits, random behavior, turn counts, visit counts, and EXTERNAL calls are intentionally excluded
 - **Unvisited content, triaged** — knots no explored path visits within the configured limits, each classified with an inbound-divert scan: "no authored divert points here — possible orphan" versus "has inbound diverts — likely beyond this run's limits"
 - **Distinct terminal states** — with a choice trail that reaches each one; differing final variables are retained as distinct outcomes
 

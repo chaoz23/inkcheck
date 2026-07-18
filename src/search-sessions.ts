@@ -813,6 +813,7 @@ async function runWindow(
     timeGuard: guards.timeGuard,
     preserveTurnState: semantics.usesTurns,
     preserveRandomState: semantics.usesRandomness,
+    detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
     randomnessDetected: semantics.usesRandomness,
     sharedMaxPendingStates: bindings.maxFrontierStates,
     sharedMaxPendingBytes: bindings.maxFrontierMb === undefined ? undefined : bindings.maxFrontierMb * 1024 * 1024,
@@ -948,6 +949,7 @@ async function runIndependentLongTailWindow(
     timeGuard: guards.timeGuard,
     preserveTurnState: semantics.usesTurns,
     preserveRandomState: semantics.usesRandomness,
+    detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
     randomnessDetected: semantics.usesRandomness,
     sharedMaxPendingStates: bindings.maxFrontierStates,
     sharedMaxPendingBytes: bindings.maxFrontierMb === undefined ? undefined : bindings.maxFrontierMb * 1024 * 1024,
@@ -1812,6 +1814,7 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
     timeGuard: guards.timeGuard,
     preserveTurnState: semantics.usesTurns,
     preserveRandomState: semantics.usesRandomness,
+    detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
     randomnessDetected: semantics.usesRandomness,
     sharedMaxPendingStates: baseConfiguration.maxFrontierStates ?? undefined,
     sharedMaxPendingBytes: baseConfiguration.maxFrontierMb === null || baseConfiguration.maxFrontierMb === undefined
@@ -1995,6 +1998,7 @@ export async function addCampaignAssertions(input: AddAssertionsInput): Promise<
     timeGuard: guards.timeGuard,
     preserveTurnState: semantics.usesTurns,
     preserveRandomState: semantics.usesRandomness,
+    detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
     randomnessDetected: semantics.usesRandomness,
     sharedMaxPendingStates: baseConfiguration.maxFrontierStates ?? undefined,
     sharedMaxPendingBytes: baseConfiguration.maxFrontierMb === null || baseConfiguration.maxFrontierMb === undefined
