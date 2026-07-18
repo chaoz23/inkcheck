@@ -98,6 +98,14 @@ const POLICY_LATE_ERROR = path.join(__dirname, "fixtures", "policy-late-error.in
 const STAGED_DISJOINT = path.join(__dirname, "fixtures", "staged-disjoint.ink");
 const NO_DISCOVERY_BEFORE_DEPTH = path.join(__dirname, "fixtures", "no-discovery-before-depth.ink");
 const LATE_RECOVERY = path.join(__dirname, "fixtures", "late-recovery.ink");
+const LOOP_FIXTURES = path.join(__dirname, "fixtures", "loops");
+const EXACT_REPEAT_LOOP = path.join(LOOP_FIXTURES, "exact-repeat.ink");
+const GROWING_LOOP = path.join(LOOP_FIXTURES, "growing-counter.ink");
+const FINITE_LOOP = path.join(LOOP_FIXTURES, "finite-counter.ink");
+const OPTIONAL_EXIT_LOOP = path.join(LOOP_FIXTURES, "optional-exit.ink");
+const FORKED_LOOP = path.join(LOOP_FIXTURES, "forked-loop.ink");
+const NEGATIVE_THEN_LOOP = path.join(LOOP_FIXTURES, "negative-then-loop.ink");
+const SIBLING_FORCED_CHOICES = path.join(LOOP_FIXTURES, "sibling-forced-choices.ink");
 const POLICY_RENEWED_GOALS = path.join(SEARCH_FIXTURES, "policy-renewed-goals.ink");
 
 test("cumulative floors rotate exact service through tiny windows", () => {
@@ -3074,7 +3082,138 @@ test("scanStorySemantics follows includes and detects turn and random behavior",
   const semantics = scanStorySemantics(
     path.join(__dirname, "..", "examples", "semantic-features.ink")
   );
-  assert.deepStrictEqual(semantics, { usesTurns: true, usesRandomness: true });
+  assert.deepStrictEqual(semantics, { usesTurns: true, usesRandomness: true, usesVisitCounts: false });
+});
+
+test("forced repeated choice cycles become conservative review findings", async () => {
+  const compiled = await compile(EXACT_REPEAT_LOOP);
+  assert.strictEqual(compiled.success, true);
+  const report = explore(compiled.storyJson, scanKnots(EXACT_REPEAT_LOOP), [], {
+    maxStates: 100,
+    maxDepth: 20,
+    preserveTurnState: false,
+    preserveRandomState: false,
+    detectLoopRisks: true,
+  });
+  assert.strictEqual(report.runtimeErrors.length, 0);
+  assert.strictEqual(report.loopRisks.length, 1);
+  assert.deepStrictEqual(report.loopRisks[0].path, ["Again"]);
+  assert.strictEqual(report.loopRisks[0].kind, "possible_non_terminating_choice_cycle");
+  assert.strictEqual(report.truncatedBy.loop, true);
+  assert.strictEqual(report.exhaustive, false);
+  assert.strictEqual(recommendNextRun(report).recommendation, "investigate");
+  const finding = buildHumanFindings({ explore: report }).find((value) =>
+    value.title === "Possible non-terminating choice cycle"
+  );
+  assert.strictEqual(finding.severity, "warning");
+  assert.match(finding.action, /exit, a state-changing guard, or a terminal divert/);
+
+  const portfolio = explorePortfolio(compiled.storyJson, scanKnots(EXACT_REPEAT_LOOP), [], {
+    maxStates: 100,
+    maxDepth: 20,
+    preserveTurnState: false,
+    preserveRandomState: false,
+    detectLoopRisks: true,
+  });
+  assert.strictEqual(portfolio.statesExplored, 1);
+  assert.strictEqual(portfolio.loopRisks?.length, 1);
+
+  for (const engine of [exploreRandom, exploreBeam]) {
+    const result = engine(compiled.storyJson, scanKnots(EXACT_REPEAT_LOOP), [], {
+      maxStates: 100,
+      maxDepth: 20,
+      preserveTurnState: false,
+      preserveRandomState: false,
+      detectLoopRisks: true,
+    });
+    assert.strictEqual(result.statesExplored, 1);
+    assert.strictEqual(result.loopRisks?.length, 1);
+    assert.strictEqual(result.truncatedBy.loop, true);
+  }
+
+  const cli = spawnSync(process.execPath, [CLI, EXACT_REPEAT_LOOP, "--max-states", "100", "--max-depth", "20", "--json"], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(cli.status, 0);
+  assert.strictEqual(JSON.parse(cli.stdout).explore.statesExplored, 1);
+});
+
+test("loop review stays silent for state-changing, finite, and optional paths", async () => {
+  const options = {
+    maxStates: 100,
+    maxDepth: 20,
+    preserveTurnState: false,
+    preserveRandomState: false,
+    detectLoopRisks: true,
+  };
+  const growing = await compile(GROWING_LOOP);
+  const finite = await compile(FINITE_LOOP);
+  const optional = await compile(OPTIONAL_EXIT_LOOP);
+  const deepChain = await compile(DEEP_CHAIN);
+  assert.strictEqual(growing.success, true);
+  assert.strictEqual(finite.success, true);
+  assert.strictEqual(optional.success, true);
+  assert.strictEqual(deepChain.success, true);
+  // A changing counter might be a finite guard, so this high-confidence
+  // detector deliberately requires the complete author-visible state to repeat.
+  assert.strictEqual(explore(growing.storyJson, scanKnots(GROWING_LOOP), [], options).loopRisks?.length ?? 0, 0);
+  const finiteReport = explore(finite.storyJson, scanKnots(FINITE_LOOP), [], options);
+  assert.strictEqual(finiteReport.loopRisks?.length ?? 0, 0);
+  assert.strictEqual(finiteReport.exhaustive, true);
+  assert.strictEqual(
+    explore(optional.storyJson, scanKnots(OPTIONAL_EXIT_LOOP), [], options).loopRisks?.length ?? 0,
+    0
+  );
+  const deepReport = explore(deepChain.storyJson, scanKnots(DEEP_CHAIN), [], { ...options, maxDepth: 3 });
+  assert.strictEqual(deepReport.loopRisks?.length ?? 0, 0);
+  assert.strictEqual(deepReport.truncatedBy.maxDepth, true);
+});
+
+test("a loop specialist prunes only the looping fork and retains healthy endings", async () => {
+  const compiled = await compile(FORKED_LOOP);
+  assert.strictEqual(compiled.success, true);
+  const report = explorePortfolio(compiled.storyJson, scanKnots(FORKED_LOOP), [], {
+    maxStates: 100,
+    maxDepth: 20,
+    preserveTurnState: false,
+    preserveRandomState: false,
+    detectLoopRisks: true,
+  });
+  assert.strictEqual(report.loopRisks?.length, 1);
+  assert.deepStrictEqual(report.loopRisks[0].path, ["Enter the loop", "Again"]);
+  assert.strictEqual(report.endingsFound.length, 1);
+  assert.deepStrictEqual(report.endingsFound[0].path, ["Leave"]);
+  assert.ok(report.statesExplored > 1, "a non-root loop must not halt unrelated portfolio work");
+});
+
+test("a repeated forced label can miss safely before a later real cycle", async () => {
+  const compiled = await compile(NEGATIVE_THEN_LOOP);
+  assert.strictEqual(compiled.success, true);
+  const report = explore(compiled.storyJson, scanKnots(NEGATIVE_THEN_LOOP), [], {
+    maxStates: 100,
+    maxDepth: 20,
+    preserveTurnState: false,
+    preserveRandomState: false,
+    detectLoopRisks: true,
+  });
+  assert.strictEqual(report.loopRisks?.length, 1);
+  assert.deepStrictEqual(report.loopRisks[0].path, ["Continue", "Continue", "Again"]);
+  assert.strictEqual(report.loopRisks[0].firstObservedAtState, 2);
+  assert.strictEqual(report.loopRisks[0].repeatedAtState, 3);
+});
+
+test("matching forced states reached by sibling branches are not called cycles", async () => {
+  const compiled = await compile(SIBLING_FORCED_CHOICES);
+  assert.strictEqual(compiled.success, true);
+  const report = explore(compiled.storyJson, scanKnots(SIBLING_FORCED_CHOICES), [], {
+    maxStates: 100,
+    maxDepth: 20,
+    preserveTurnState: false,
+    preserveRandomState: false,
+    detectLoopRisks: true,
+  });
+  assert.strictEqual(report.loopRisks?.length ?? 0, 0);
+  assert.strictEqual(report.endingsFound.length, 1);
 });
 
 test("CLI accepts limit flags before the story path", () => {

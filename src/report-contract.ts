@@ -129,6 +129,7 @@ export function bindingLimit(explore: ExploreResult): string | null {
   if (explore.truncatedBy.memory) return "memory";
   if (explore.truncatedBy.time) return "time";
   if (explore.truncatedBy.frontier) return "frontier";
+  if (explore.truncatedBy.loop) return "loop";
   if (explore.truncatedBy.maxDepth) return "maxDepth";
   if (explore.truncatedBy.maxStates) return "maxStates";
   if (explore.truncatedBy.beamWidth) return "beamWidth";

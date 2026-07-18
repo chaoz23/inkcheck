@@ -26,6 +26,9 @@ export function truncationAdvice(
     // Time is the binding constraint — a bigger budget would run out sooner.
     return "exploration stopped at its time budget; raise --max-time, or run locally without a wall-clock limit, for broader coverage";
   }
+  if (causes?.loop) {
+    return "exploration stopped expanding a possible non-terminating forced choice cycle; follow the reported path and add an exit, guard, or terminal divert if that repetition is unintended";
+  }
   if (causes?.frontier) {
     return "shared search reached its explicit pending-checkpoint envelope; raise the shared frontier state or byte limit only when the machine has headroom, or use portfolio search";
   }
@@ -147,6 +150,20 @@ export function buildHumanFindings(
       approximateLocation: error.sourceLocation?.approximate,
       path: error.path,
       action: "Follow the choice path, then inspect the source near this location for a bad divert, variable, expression, or runtime-only edge case.",
+    });
+  }
+
+  const loopRisks = Array.isArray(input.explore?.loopRisks)
+    ? input.explore.loopRisks
+    : [];
+  for (const risk of loopRisks) {
+    findings.push({
+      severity: "warning",
+      category: "Loop risk",
+      title: "Possible non-terminating choice cycle",
+      message: `The only offered choice repeated the same control state after ${risk.repeatedAtState - risk.firstObservedAtState} transition(s). Inkcheck stopped expanding this branch for review.`,
+      path: risk.path,
+      action: "Follow this choice path and decide whether the repeated choice needs an exit, a state-changing guard, or a terminal divert.",
     });
   }
 

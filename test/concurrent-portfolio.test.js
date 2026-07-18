@@ -27,7 +27,26 @@ const SUSTAINED_GRID = path.join(__dirname, "..", "examples", "early-choice-grid
 const CLEAN_BRANCH = path.join(__dirname, "..", "examples", "clean-branch.ink");
 const PLATEAU = path.join(ROOT, "deceptive-plateau.ink");
 const LOW_DEDUP = path.join(ROOT, "low-dedup-wide.ink");
+const EXACT_REPEAT_LOOP = path.join(__dirname, "fixtures", "loops", "exact-repeat.ink");
 const CLI = path.join(__dirname, "..", "dist", "cli.js");
+
+test("handoff pilot declines workers for a proven forced root cycle", async () => {
+  const compiled = await compile(EXACT_REPEAT_LOOP);
+  assert.strictEqual(compiled.success, true);
+  const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, scanKnots(EXACT_REPEAT_LOOP), [], {
+    maxStates: 10_000,
+    maxDepth: 20,
+    concurrency: 2,
+    memoryCapBytes: 512 * 1024 * 1024,
+    activationPilotStatesForTest: 100,
+    preserveTurnState: false,
+    preserveRandomState: false,
+    detectLoopRisks: true,
+  });
+  assert.strictEqual(result.statesExplored, 1);
+  assert.strictEqual(result.execution.effectiveConcurrency, 1);
+  assert.strictEqual(result.execution.fallbackReason, "pilot_forced_cycle");
+});
 const ONE_GIB = 1024 * 1024 * 1024;
 const TEST_HANDOFF_PILOT = 32;
 

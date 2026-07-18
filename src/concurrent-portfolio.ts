@@ -32,6 +32,12 @@ function availableCpus(): number {
   return typeof os.availableParallelism === "function" ? os.availableParallelism() : os.cpus().length;
 }
 
+function hasForcedRootCycle(result: ExploreResult): boolean {
+  return result.loopRisks?.some(
+    (risk) => risk.firstObservedAtState === 0 && risk.repeatedAtState === 1
+  ) ?? false;
+}
+
 function enabledPasses(maxStates: number, weights: PortfolioWeights): number {
   let count = 0;
   if (weights.last > 0) count++;
@@ -47,7 +53,7 @@ function sequential(
   knots: KnotInfo[],
   externals: string[],
   options: ConcurrentPortfolioOptions,
-  fallbackReason?: "single_core" | "memory_headroom" | "single_pass" | "pilot_depth_bound" | "pilot_authored_frontier_saturated"
+  fallbackReason?: "single_core" | "memory_headroom" | "single_pass" | "pilot_forced_cycle" | "pilot_depth_bound" | "pilot_authored_frontier_saturated"
 ): ExploreResult {
   const result = explorePortfolio(storyJson, knots, externals, options);
   result.execution = {
@@ -96,8 +102,9 @@ export function explorePortfolioPilotActivatedConcurrent(
     onSnapshot: undefined,
   });
   const pilotConsumedBudget = pilotBudget === maxStates;
-  if (pilot.exhaustive || pilotConsumedBudget) {
-    const reason = pilot.exhaustive ? "pilot_exhaustive" : "pilot_consumed_budget";
+  const forcedRootCycle = hasForcedRootCycle(pilot);
+  if (pilot.exhaustive || pilotConsumedBudget || forcedRootCycle) {
+    const reason = pilot.exhaustive ? "pilot_exhaustive" : pilotConsumedBudget ? "pilot_consumed_budget" : "pilot_forced_cycle";
     pilot.execution = {
       mode: "sequential",
       requestedConcurrency: options.concurrency,
@@ -223,9 +230,12 @@ export function explorePortfolioPilotHandoffConcurrent(
   const consumed = engine.run(pilotBudget);
   const pilot = { pass: pilotPass, engine, granted: pilotBudget, consumed };
   const snapshot = engine.snapshot();
+  const forcedRootCycle = hasForcedRootCycle(snapshot);
   const authoredKnots = knots.filter((knot) => !knot.isFunction).length;
   const pilotConsumedBudget = consumed >= maxStates;
-  const reason = engine.exhaustive()
+  const reason = forcedRootCycle
+    ? "pilot_forced_cycle"
+    : engine.exhaustive()
     ? "pilot_exhaustive"
     : pilotConsumedBudget
       ? "pilot_consumed_budget"
@@ -237,7 +247,7 @@ export function explorePortfolioPilotHandoffConcurrent(
   const requestedDecision = reason === "pilot_open_frontier" ? "activate_concurrent" : "stay_sequential";
   let result: ExploreResult;
 
-  if (engine.exhaustive() || pilotConsumedBudget) {
+  if (engine.exhaustive() || pilotConsumedBudget || forcedRootCycle) {
     result = engine.finalize();
     const telemetry = engine.telemetry();
     result.passes = [telemetry];
