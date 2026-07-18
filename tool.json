@@ -1,6 +1,6 @@
 {
   "name": "inkcheck",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Mechanical QA for ink interactive-fiction stories — compile checks, bounded systematic branch exploration, runtime-error repro paths, and dead-content review. Writes no prose.",
   "homepage": "https://github.com/chaoz23/inkcheck",
   "license": "MIT",
