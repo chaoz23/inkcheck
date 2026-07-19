@@ -32,7 +32,7 @@ import {
 } from "./concurrency-policy";
 
 export const CAPABILITIES_SCHEMA_VERSION = 1;
-export const PROJECT_INSPECTION_SCHEMA_VERSION = 2;
+export const PROJECT_INSPECTION_SCHEMA_VERSION = 3;
 export const REPORT_SCHEMA_VERSION = 1;
 export const ARTIFACT_SCHEMA_VERSION = 1;
 export const DEFAULT_MAX_REPORT_BYTES = 256 * 1024 * 1024;
@@ -43,6 +43,7 @@ export const MAX_INSPECT_LOCATIONS = 20;
 export const MAX_INSPECT_INCLUDES = 500;
 export const MAX_INSPECT_KNOTS = 1_000;
 export const MAX_INSPECT_EXTERNALS = 200;
+export const MAX_INSPECT_GATES = 200;
 export const DEFAULT_INSPECT_PAGE_SIZE = 50;
 export const MAX_INSPECT_PAGE_SIZE = 100;
 export const DEFAULT_INSPECT_SAMPLE_SIZE = 10;
@@ -199,6 +200,148 @@ interface VariableRecord {
   writeCount: number;
 }
 
+interface GateRecord {
+  expression: string;
+  location: SourceLocation;
+  supported: boolean;
+  isCompound: boolean;
+  referencedVariables: string[];
+  operators: string[];
+  assignmentSites: Array<{
+    name: string;
+    declaration?: SourceLocation;
+    writes: Array<SourceLocation & { operation: string }>;
+    writeCount: number;
+  }>;
+  unsupportedReason?: string;
+}
+
+type GateToken =
+  | { type: "identifier"; value: string }
+  | { type: "number" | "string" | "boolean" | "null" | "operator" | "paren"; value: string };
+
+function tokenizeGate(expression: string): { tokens?: GateToken[]; error?: string } {
+  const tokens: GateToken[] = [];
+  let index = 0;
+  while (index < expression.length) {
+    const rest = expression.slice(index);
+    const whitespace = rest.match(/^\s+/);
+    if (whitespace) {
+      index += whitespace[0].length;
+      continue;
+    }
+    const string = rest.match(/^"(?:\\.|[^"\\])*"/);
+    if (string) {
+      tokens.push({ type: "string", value: string[0] });
+      index += string[0].length;
+      continue;
+    }
+    const operator = rest.match(/^(?:&&|\|\||==|!=|<=|>=|!|<|>)/);
+    if (operator) {
+      tokens.push({ type: "operator", value: operator[0] });
+      index += operator[0].length;
+      continue;
+    }
+    const paren = rest.match(/^[()]/);
+    if (paren) {
+      tokens.push({ type: "paren", value: paren[0] });
+      index++;
+      continue;
+    }
+    const number = rest.match(/^-?(?:\d+\.?\d*|\.\d+)/);
+    if (number) {
+      tokens.push({ type: "number", value: number[0] });
+      index += number[0].length;
+      continue;
+    }
+    const identifier = rest.match(/^[A-Za-z_][A-Za-z0-9_]*/);
+    if (identifier) {
+      const value = identifier[0];
+      tokens.push({ type: value === "true" || value === "false" ? "boolean" : value === "null" ? "null" : "identifier", value });
+      index += value.length;
+      continue;
+    }
+    return { error: `unsupported token \`${rest[0]}\`` };
+  }
+  return { tokens };
+}
+
+function inspectGateExpression(expression: string, declaredVariables: Set<string>): Pick<GateRecord, "supported" | "isCompound" | "referencedVariables" | "operators" | "unsupportedReason"> {
+  const tokenized = tokenizeGate(expression);
+  if (!tokenized.tokens) {
+    return { supported: false, isCompound: false, referencedVariables: [], operators: [], unsupportedReason: tokenized.error };
+  }
+  const tokens = tokenized.tokens;
+  const referencedVariables = [...new Set(tokens.filter((token) => token.type === "identifier" && declaredVariables.has(token.value)).map((token) => token.value))].sort();
+  const operators = [...new Set(tokens.filter((token) => token.type === "operator").map((token) => token.value))].sort();
+  const isCompound = operators.includes("&&") || operators.includes("||");
+  const unsupportedIdentifier = tokens.find((token, index) => token.type === "identifier" && !declaredVariables.has(token.value) && tokens[index + 1]?.value === "(");
+  if (unsupportedIdentifier) {
+    return { supported: false, isCompound, referencedVariables, operators, unsupportedReason: `function calls are not supported (${unsupportedIdentifier.value}())` };
+  }
+  const unsupported = tokens.find((token) => token.type === "identifier" && !declaredVariables.has(token.value));
+  if (unsupported) {
+    return { supported: false, isCompound, referencedVariables, operators, unsupportedReason: `unknown or dynamic identifier \`${unsupported.value}\`` };
+  }
+  let position = 0;
+  const peek = () => tokens[position];
+  const consume = (value: string): boolean => {
+    if (!peek() || peek().value !== value) return false;
+    position++;
+    return true;
+  };
+  const value = (): boolean => {
+    const token = peek();
+    if (!token) return false;
+    if (token.type === "identifier" || token.type === "number" || token.type === "string" || token.type === "boolean" || token.type === "null") {
+      position++;
+      return true;
+    }
+    if (consume("(")) {
+      const valid = orExpression();
+      return valid && consume(")");
+    }
+    return false;
+  };
+  const comparison = (): boolean => {
+    if (!value()) return false;
+    if (peek()?.type === "operator" && ["==", "!=", "<", "<=", ">", ">="].includes(peek().value)) {
+      position++;
+      return value();
+    }
+    return true;
+  };
+  const unary = (): boolean => consume("!") ? unary() : comparison();
+  const andExpression = (): boolean => {
+    if (!unary()) return false;
+    while (consume("&&")) {
+      if (!unary()) return false;
+    }
+    return true;
+  };
+  const orExpression = (): boolean => {
+    if (!andExpression()) return false;
+    while (consume("||")) {
+      if (!andExpression()) return false;
+    }
+    return true;
+  };
+  if (!orExpression() || position !== tokens.length) {
+    return { supported: false, isCompound, referencedVariables, operators, unsupportedReason: "expression is outside the supported boolean comparison grammar" };
+  }
+  return { supported: true, isCompound, referencedVariables, operators };
+}
+
+function extractGateCandidates(code: string): string[] {
+  const candidates: string[] = [];
+  for (const match of code.matchAll(/\{([^{}]*)(?:\}|$)/g)) {
+    const raw = match[1].trim();
+    const expression = raw.endsWith(":") ? raw.slice(0, -1).trim() : raw;
+    if (expression && (raw.endsWith(":") || /(?:&&|\|\||==|!=|<=|>=|[<>!]|\w\s*\()/.test(expression))) candidates.push(expression);
+  }
+  return candidates;
+}
+
 function relativeFile(root: string, file: string): string {
   return path.relative(root, file).split(path.sep).join("/") || path.basename(file);
 }
@@ -233,11 +376,13 @@ export interface ProjectInspection {
   externals: string[];
   knots: Array<SourceLocation & { name: string; kind: "knot" | "function" }>;
   variables: VariableRecord[];
+  gates: GateRecord[];
   truncation: {
     includes: boolean;
     knots: boolean;
     externals: boolean;
     variables: boolean;
+    gates: boolean;
     locationsPerVariable: boolean;
   };
   recommendedNextOperation: "compile_story";
@@ -254,6 +399,7 @@ function inspectProjectInventory(entryFile: string): ProjectInspection {
   const includes: string[] = [];
   const knots: ProjectInspection["knots"] = [];
   const variables = new Map<string, VariableRecord>();
+  const gateCandidates: Array<{ expression: string; location: SourceLocation }> = [];
   const codeLines: Array<{
     code: string;
     location: SourceLocation;
@@ -323,6 +469,7 @@ function inspectProjectInventory(entryFile: string): ProjectInspection {
         assignmentName: assignment?.[1],
         assignmentOperation: assignment?.[2],
       });
+      for (const expression of extractGateCandidates(code)) gateCandidates.push({ expression, location });
     }
   };
 
@@ -350,6 +497,24 @@ function inspectProjectInventory(entryFile: string): ProjectInspection {
   const sortedIncludes = [...new Set(includes)].sort();
   const sortedKnots = knots.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
   const sortedExternals = scanExternals(entry).sort();
+  const declaredVariables = new Set(variables.keys());
+  const gates = gateCandidates.map(({ expression, location }) => {
+    const inspected = inspectGateExpression(expression, declaredVariables);
+    return {
+      expression,
+      location,
+      ...inspected,
+      assignmentSites: inspected.referencedVariables.map((name) => {
+        const record = variables.get(name)!;
+        return {
+          name,
+          ...(record.declaration ? { declaration: record.declaration } : {}),
+          writes: record.writes,
+          writeCount: record.writeCount,
+        };
+      }),
+    };
+  }).sort((a, b) => a.location.file.localeCompare(b.location.file) || a.location.line - b.location.line || a.expression.localeCompare(b.expression));
   return {
     schemaVersion: PROJECT_INSPECTION_SCHEMA_VERSION,
     inkcheckVersion: VERSION,
@@ -360,11 +525,13 @@ function inspectProjectInventory(entryFile: string): ProjectInspection {
     externals: sortedExternals,
     knots: sortedKnots,
     variables: sortedVariables,
+    gates,
     truncation: {
       includes: sortedIncludes.length > MAX_INSPECT_INCLUDES,
       knots: sortedKnots.length > MAX_INSPECT_KNOTS,
       externals: sortedExternals.length > MAX_INSPECT_EXTERNALS,
       variables: variablesTruncated,
+      gates: gates.length > MAX_INSPECT_GATES,
       locationsPerVariable: locationsTruncated,
     },
     recommendedNextOperation: "compile_story",
@@ -380,6 +547,7 @@ export function inspectProject(entryFile: string): ProjectInspection {
     externals: inventory.externals.slice(0, MAX_INSPECT_EXTERNALS),
     knots: inventory.knots.slice(0, MAX_INSPECT_KNOTS),
     variables: inventory.variables.slice(0, MAX_INSPECT_VARIABLES),
+    gates: inventory.gates.slice(0, MAX_INSPECT_GATES),
   };
 }
 
@@ -402,6 +570,7 @@ export function inspectProjectOverview(entryFile: string) {
       externals: inventory.externals.length,
       knots: inventory.knots.length,
       variables: inventory.variables.length,
+      gates: inventory.gates.length,
     },
     samples: {
       includes: inventory.includes.slice(0, DEFAULT_INSPECT_SAMPLE_SIZE).map((item) => ({
@@ -431,20 +600,27 @@ export function inspectProjectOverview(entryFile: string) {
           line: item.declaration.line,
         } } : {}),
       })),
+      gates: inventory.gates.slice(0, DEFAULT_INSPECT_SAMPLE_SIZE).map((item) => ({
+        location: { file: compactPath(item.location.file), line: item.location.line },
+        supported: item.supported,
+        isCompound: item.isCompound,
+        referencedVariables: item.referencedVariables.map(boundedName),
+      })),
     },
     response: {
       detail: "summary" as const,
       dataTruncated: inventory.includes.length > DEFAULT_INSPECT_SAMPLE_SIZE
         || inventory.externals.length > DEFAULT_INSPECT_SAMPLE_SIZE
         || inventory.knots.length > DEFAULT_INSPECT_SAMPLE_SIZE
-        || inventory.variables.length > DEFAULT_INSPECT_SAMPLE_SIZE,
+        || inventory.variables.length > DEFAULT_INSPECT_SAMPLE_SIZE
+        || inventory.gates.length > DEFAULT_INSPECT_SAMPLE_SIZE,
       sampleLimit: DEFAULT_INSPECT_SAMPLE_SIZE,
       drillDown: {
         tool: "inspect_story" as const,
-        sections: ["includes", "externals", "knots", "variables"] as const,
-        note: "Request one section for stable source-bound pages. Variable pages explicitly reveal initial values/expressions and locations.",
+        sections: ["includes", "externals", "knots", "variables", "gates"] as const,
+        note: "Request one section for stable source-bound pages. Variable and gate pages explicitly reveal source expressions and locations.",
       },
-      contentPolicy: "Counts and small name/location samples only; variable initial values, expressions, and full read/write locations are omitted.",
+      contentPolicy: "Counts and small name/location samples only; variable values, gate expressions, and full read/write locations are omitted.",
     },
     recommendedNextOperation: "compile_story" as const,
   };
@@ -458,7 +634,7 @@ function boundedName(value: string): string {
   return value.length <= 128 ? value : `${value.slice(0, 125)}...`;
 }
 
-export type InspectionSection = "includes" | "externals" | "knots" | "variables";
+export type InspectionSection = "includes" | "externals" | "knots" | "variables" | "gates";
 
 function inspectionCursor(fingerprint: string, section: InspectionSection, offset: number): string {
   return `inspection-cursor-${Buffer.from(JSON.stringify({ v: 1, fingerprint, section, offset }), "utf8").toString("base64url")}`;
@@ -512,6 +688,8 @@ export function inspectProjectSection(
     },
     contentPolicy: section === "variables"
       ? "Variable names, initial values/expressions, and bounded read/write locations are included because this section was explicitly requested."
+      : section === "gates"
+        ? "Gate expressions, supported-grammar status, referenced variables, and factual assignment sites are included because this section was explicitly requested. Assignment sites are not proof that a gate is reachable."
       : "Only the explicitly requested source-inventory section is included.",
     recommendedNextOperation: "compile_story" as const,
   };
@@ -532,7 +710,7 @@ export function renderCapabilitiesHuman(value: InkcheckCapabilities): string {
 export function renderInspectionHuman(value: ProjectInspection): string {
   return [
     `Ink project: ${value.entrypoint}`,
-    `${value.includes.length} include(s), ${value.shape.knots} knot(s), ${value.shape.functions} function(s), ${value.variables.length} variable(s)`,
+    `${value.includes.length} include(s), ${value.shape.knots} knot(s), ${value.shape.functions} function(s), ${value.variables.length} variable(s), ${value.gates.length} gate(s)`,
     `Choices: ${value.shape.choiceLines}; turns: ${value.semantics.usesTurns ? "yes" : "no"}; randomness: ${value.semantics.usesRandomness ? "yes" : "no"}`,
     `External functions: ${value.externals.length ? value.externals.join(", ") : "none"}`,
     "Next: compile the story before exploring it.",

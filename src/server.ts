@@ -162,10 +162,10 @@ server.registerTool(
   "inspect_story",
   {
     description:
-      "Inspect an Ink project from source without compiling or exploring it. Returns a bounded project map with includes, shape, semantics, externals, knots, variables, and the recommended next operation.",
+      "Inspect an Ink project from source without compiling or exploring it. Returns a bounded project map with includes, shape, semantics, externals, knots, variables, static condition gates, and the recommended next operation.",
     inputSchema: {
       file: z.string().describe("Path to the root .ink file"),
-      section: z.enum(["includes", "externals", "knots", "variables"]).optional()
+      section: z.enum(["includes", "externals", "knots", "variables", "gates"]).optional()
         .describe("Optional inventory section for stable paged drill-down; omit for the bounded overview"),
       limit: z.number().int().min(1).max(MAX_INSPECT_PAGE_SIZE).optional()
         .describe(`Section page size (default ${DEFAULT_INSPECT_PAGE_SIZE}, max ${MAX_INSPECT_PAGE_SIZE})`),

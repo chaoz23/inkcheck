@@ -6,7 +6,7 @@
     "schemas": {
       "report": 1,
       "config": 1,
-      "projectInspection": 2,
+      "projectInspection": 3,
       "artifact": 1,
       "checkpointArtifact": 1,
       "searchSession": 5,

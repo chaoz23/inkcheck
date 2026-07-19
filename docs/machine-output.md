@@ -8,7 +8,7 @@ Inkcheck separates the amount of search performed from the amount of report data
 
 | MCP surface | Default | Bound | Deliberate drill-down |
 | --- | --- | --- | --- |
-| `inspect_story` | shape/semantic counts plus ten-item inventory samples | 16 KiB | request one `section` page, up to 100 items |
+| `inspect_story` | shape/semantic counts plus ten-item inventory samples | 16 KiB | request one `section` page (`includes`, `externals`, `knots`, `variables`, or `gates`), up to 100 items |
 | `compile_story` | counts plus 20 bounded diagnostic summaries | 32 KiB | raise `findingLimit` to 100 or request `detail: full` |
 | `story_stats` | counts plus 20 bounded knot locations | 32 KiB | page `inspect_story`'s `knots` section or request `detail: full` |
 | `explore_story` | counts, limits, next action, and 20 privacy-minimal findings | 32 KiB | prefer `start_search` for stable pages/fetch-by-ID; use `detail: full` deliberately |
