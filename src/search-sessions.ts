@@ -32,6 +32,7 @@ import {
 import { explorePortfolioPilotHandoffConcurrent } from "./concurrent-portfolio";
 import { parseAssertionDefinitions, type AssertionDefinition, type AssertionResult } from "./assertions";
 import { parseGoalDefinitions, type GoalDefinition, type GoalResult } from "./goals";
+import { selectGateProbe, type GateProbePlan } from "./discovery";
 import {
   compile,
   DEFAULT_MAX_DEPTH,
@@ -370,6 +371,22 @@ export interface AddGoalResponse {
   disclosure: string;
   semantics: string;
   nextOperation: { tool: "inspect_search"; reason: string };
+}
+
+export interface ProbeGateInput {
+  file: string;
+  sessionCapability: string;
+  revision: number;
+  gate: { file: string; line: number };
+  maxStates: number;
+}
+
+export interface ProbeGateResponse extends AddGoalResponse {
+  gate: GateProbePlan["gate"];
+  probe: {
+    source: "static_gate_inspection";
+    disclosure: string;
+  };
 }
 
 export interface AddAssertionsInput {
@@ -1927,6 +1944,31 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
       tool: "inspect_search",
       reason: "Inspect the committed revision and separate base/directed totals before choosing the next bounded operation.",
     },
+  };
+}
+
+/**
+ * Convert one explicitly selected source gate into the existing additive goal
+ * probe. The selected source condition and its assignment sites are disclosed
+ * in the response; neither is treated as a proof of reachability.
+ */
+export async function probeSessionGate(input: ProbeGateInput): Promise<ProbeGateResponse> {
+  const plan = selectGateProbe(input.file, input.gate);
+  const result = await addSessionGoal({
+    file: input.file,
+    sessionCapability: input.sessionCapability,
+    revision: input.revision,
+    maxStates: input.maxStates,
+    goal: plan.goal,
+  });
+  return {
+    ...result,
+    gate: plan.gate,
+    probe: {
+      source: "static_gate_inspection",
+      disclosure: plan.disclosure,
+    },
+    semantics: "This explicit gate probe started from the story root and was additive. It did not resume, reduce, reorder, or mutate the exact base-search frontier. Its static source hints do not prove the gate is reachable.",
   };
 }
 

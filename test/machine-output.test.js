@@ -265,6 +265,27 @@ test("MCP explore_story defaults to compact standard detail and requires explici
     assert.strictEqual(gates.items[0].supported, true);
     assert.deepStrictEqual(gates.items[0].referencedVariables, ["gold"]);
     assert.match(gates.contentPolicy, /not proof that a gate is reachable/);
+    const startedGateSearch = await client.callTool({
+      name: "start_search",
+      arguments: { file: gatedStory, maxStates: 10, maxDepth: 10 },
+    });
+    const gateSearch = JSON.parse(startedGateSearch.content[0].text);
+    const gateProbeCall = await client.callTool({
+      name: "inkcheck_workflow",
+      arguments: {
+        operation: "probe_gate",
+        request: {
+          file: gatedStory,
+          sessionCapability: gateSearch.sessionCapability,
+          revision: gateSearch.session.revision,
+          gate: { file: "gated.ink", line: 3 },
+          maxStates: 10,
+        },
+      },
+    });
+    const gateProbe = JSON.parse(gateProbeCall.content[0].text);
+    assert.strictEqual(gateProbe.probe.source, "static_gate_inspection");
+    assert.match(gateProbe.semantics, /did not resume, reduce, reorder, or mutate/i);
 
     const compileCall = await client.callTool({ name: "compile_story", arguments: { file: story } });
     const compiled = JSON.parse(compileCall.content[0].text);

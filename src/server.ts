@@ -37,6 +37,7 @@ import {
 import {
   addCampaignAssertions,
   addSessionGoal,
+  probeSessionGate,
   cancelSearchSession,
   checkSessionRegression,
   continueSearchSession,
@@ -82,6 +83,7 @@ const WORKFLOW_OPERATIONS = {
   pin_regression: { required: ["file", "sessionCapability", "revision", "findingId"], optional: [] },
   check_regression: { required: ["file", "sessionCapability", "revision", "pinId"], optional: [] },
   add_goal: { required: ["file", "sessionCapability", "revision", "goal", "maxStates"], optional: [] },
+  probe_gate: { required: ["file", "sessionCapability", "revision", "gate", "maxStates"], optional: [] },
   add_assertions: { required: ["file", "sessionCapability", "revision", "assertions", "maxStates"], optional: [] },
   cancel_search: { required: ["file", "sessionCapability", "revision"], optional: ["discard"] },
   playtest_story: { required: ["file", "choices"], optional: ["storySeed"] },
@@ -642,6 +644,32 @@ server.registerTool(
 );
 
 server.registerTool(
+  "probe_gate",
+  {
+    description:
+      "Turn one explicitly selected, statically supported source gate into an additive bounded goal probe. Select gate.file and gate.line from inspect_story section=gates. The probe starts at the root, preserves the exact base frontier, and reports source assignment sites as hints rather than reachability proof.",
+    inputSchema: {
+      file: z.string().describe("The same root .ink file used to start the session"),
+      sessionCapability: z.string().describe("Opaque bearer capability returned by start_search"),
+      revision: z.number().int().min(1).describe("Last observed session revision"),
+      gate: z.object({
+        file: z.string().min(1).describe("Project-relative source file reported by inspect_story section=gates"),
+        line: z.number().int().min(1).describe("Source line reported by inspect_story section=gates"),
+      }),
+      maxStates: z.number().int().min(1).max(MAX_MCP_SESSION_WINDOW_STATES)
+        .describe("Explicit additional directed grant for this root-started probe (max 5000000)"),
+    },
+  },
+  async (input) => {
+    try {
+      return json(await probeSessionGate(input));
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
+  }
+);
+
+server.registerTool(
   "add_assertions",
   {
     description:
@@ -723,6 +751,7 @@ rawServer.registerTool(
         "pin_regression",
         "check_regression",
         "add_goal",
+        "probe_gate",
         "add_assertions",
         "cancel_search",
         "playtest_story",
@@ -756,6 +785,8 @@ rawServer.registerTool(
           return json(await checkSessionRegression(request as unknown as Parameters<typeof checkSessionRegression>[0]));
         case "add_goal":
           return json(await addSessionGoal(request as unknown as Parameters<typeof addSessionGoal>[0]));
+        case "probe_gate":
+          return json(await probeSessionGate(request as unknown as Parameters<typeof probeSessionGate>[0]));
         case "add_assertions":
           return json(await addCampaignAssertions(request as unknown as Parameters<typeof addCampaignAssertions>[0]));
         case "cancel_search":
