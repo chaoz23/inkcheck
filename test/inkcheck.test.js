@@ -1081,6 +1081,30 @@ test("project gate sections reveal explicit static hints without leaking express
   );
 });
 
+test("project gate inspection translates Ink word-form boolean operators losslessly", () => {
+  const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-word-gates-"));
+  try {
+    const file = path.join(tmp, "story.ink");
+    fs.writeFileSync(file, [
+      "VAR has_key = false",
+      "VAR gold = 0",
+      "* {not has_key or gold >= 10} [Open the gate] -> END",
+    ].join("\n"));
+    const gate = inspectProject(file).gates[0];
+    assert.ok(gate);
+    assert.strictEqual(gate.supported, true);
+    assert.strictEqual(gate.isCompound, true);
+    assert.deepStrictEqual(gate.probeCondition, {
+      any: [
+        { not: { left: { variable: "has_key" }, operator: "==", right: { literal: true } } },
+        { left: { variable: "gold" }, operator: ">=", right: { literal: 10 } },
+      ],
+    });
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("CLI capabilities and inspect provide concise human and JSON output", () => {
   const caps = spawnSync(process.execPath, [CLI, "capabilities", "--json"], { encoding: "utf8" });
   assert.strictEqual(caps.status, 0, caps.stderr);

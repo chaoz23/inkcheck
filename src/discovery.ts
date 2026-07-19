@@ -270,7 +270,10 @@ function tokenizeGate(expression: string): { tokens?: GateToken[]; error?: strin
     const identifier = rest.match(/^[A-Za-z_][A-Za-z0-9_]*/);
     if (identifier) {
       const value = identifier[0];
-      tokens.push({ type: value === "true" || value === "false" ? "boolean" : value === "null" ? "null" : "identifier", value });
+      if (value === "and") tokens.push({ type: "operator", value: "&&" });
+      else if (value === "or") tokens.push({ type: "operator", value: "||" });
+      else if (value === "not") tokens.push({ type: "operator", value: "!" });
+      else tokens.push({ type: value === "true" || value === "false" ? "boolean" : value === "null" ? "null" : "identifier", value });
       index += value.length;
       continue;
     }
@@ -457,7 +460,7 @@ function extractGateCandidates(code: string): string[] {
   for (const match of code.matchAll(/\{([^{}]*)(?:\}|$)/g)) {
     const raw = match[1].trim();
     const expression = raw.endsWith(":") ? raw.slice(0, -1).trim() : raw;
-    if (expression && (raw.endsWith(":") || /(?:&&|\|\||==|!=|<=|>=|[<>!]|\w\s*\()/.test(expression))) candidates.push(expression);
+    if (expression && (raw.endsWith(":") || /(?:&&|\|\||==|!=|<=|>=|[<>!]|\b(?:and|or|not)\b|\w\s*\()/.test(expression))) candidates.push(expression);
   }
   return candidates;
 }
