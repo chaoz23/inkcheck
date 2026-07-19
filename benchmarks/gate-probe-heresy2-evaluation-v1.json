@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "kind": "gate_probe_evaluation",
+  "description": "Predeclared matched evaluation of a real compound gate in the pinned, consent-safe Heresy II corpus.",
+  "cells": [
+    {
+      "id": "heresy2-apollo-power-plate-5m",
+      "tier": "required",
+      "file": "benchmarks/authored/heresy2/heresy2.ink",
+      "gate": { "file": "apollo.ink", "line": 28 },
+      "maxStates": 5000000,
+      "maxMemoryMb": 1536,
+      "maxDepth": 100,
+      "seed": 7,
+      "storySeed": 1
+    }
+  ]
+}

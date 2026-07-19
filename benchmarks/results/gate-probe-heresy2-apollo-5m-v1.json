@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "kind": "gate_probe_evaluation",
+  "manifest": "benchmarks/gate-probe-heresy2-evaluation-v1.json",
+  "cells": [
+    {
+      "id": "heresy2-apollo-power-plate-5m",
+      "status": "completed",
+      "configuration": {
+        "id": "heresy2-apollo-power-plate-5m",
+        "tier": "required",
+        "file": "benchmarks/authored/heresy2/heresy2.ink",
+        "gate": { "file": "apollo.ink", "line": 28 },
+        "maxStates": 5000000,
+        "maxMemoryMb": 1536,
+        "maxDepth": 100,
+        "seed": 7,
+        "storySeed": 1
+      },
+      "baseline": {
+        "arm": "baseline",
+        "gate": {
+          "location": { "file": "apollo.ink", "line": 28 },
+          "expression": "exo_power > 10 and sunbeam_plate == 0",
+          "condition": {
+            "all": [
+              { "left": { "variable": "exo_power" }, "operator": ">", "right": { "literal": 10 } },
+              { "left": { "variable": "sunbeam_plate" }, "operator": "==", "right": { "literal": 0 } }
+            ]
+          },
+          "assignmentSites": [
+            { "name": "exo_power", "declaration": { "file": "item_globals.ink", "line": 42 }, "writes": [{ "file": "heresy2.ink", "line": 70, "operation": "+=" }, { "file": "heresy2.ink", "line": 72, "operation": "=" }, { "file": "heresy2.ink", "line": 75, "operation": "=" }], "writeCount": 3 },
+            { "name": "sunbeam_plate", "declaration": { "file": "item_globals.ink", "line": 11 }, "writes": [{ "file": "apollo.ink", "line": 46, "operation": "=" }], "writeCount": 1 }
+          ]
+        },
+        "result": {
+          "storyFingerprint": "75b0d8b1d8710f50a2e5da94facd3b5086c633ffef17e920d34bb9b8e2202661",
+          "statesExplored": 211455,
+          "elapsedMs": 86112.547209,
+          "target": { "id": "gate-bc9014c9ab31adbc4d86ecbf", "status": "reached", "witness": true, "closestDistance": null },
+          "evidence": { "runtimeErrors": 0, "assertionViolations": 0, "endings": 1, "visibleOutcomes": 1, "visitedKnots": 14, "unvisitedKnots": 16 },
+          "bindingLimit": "maxDepth",
+          "exhaustive": false
+        }
+      },
+      "gateProbe": {
+        "arm": "gate-probe",
+        "gate": {
+          "location": { "file": "apollo.ink", "line": 28 },
+          "expression": "exo_power > 10 and sunbeam_plate == 0",
+          "condition": {
+            "all": [
+              { "left": { "variable": "exo_power" }, "operator": ">", "right": { "literal": 10 } },
+              { "left": { "variable": "sunbeam_plate" }, "operator": "==", "right": { "literal": 0 } }
+            ]
+          },
+          "assignmentSites": [
+            { "name": "exo_power", "declaration": { "file": "item_globals.ink", "line": 42 }, "writes": [{ "file": "heresy2.ink", "line": 70, "operation": "+=" }, { "file": "heresy2.ink", "line": 72, "operation": "=" }, { "file": "heresy2.ink", "line": 75, "operation": "=" }], "writeCount": 3 },
+            { "name": "sunbeam_plate", "declaration": { "file": "item_globals.ink", "line": 11 }, "writes": [{ "file": "apollo.ink", "line": 46, "operation": "=" }], "writeCount": 1 }
+          ]
+        },
+        "result": {
+          "storyFingerprint": "75b0d8b1d8710f50a2e5da94facd3b5086c633ffef17e920d34bb9b8e2202661",
+          "statesExplored": 333311,
+          "elapsedMs": 167771.250292,
+          "target": { "id": "gate-bc9014c9ab31adbc4d86ecbf", "status": "reached", "witness": true, "closestDistance": null },
+          "evidence": { "runtimeErrors": 0, "assertionViolations": 0, "endings": 1, "visibleOutcomes": 1, "visitedKnots": 14, "unvisitedKnots": 16 },
+          "bindingLimit": "maxDepth",
+          "exhaustive": false
+        }
+      },
+      "comparison": {
+        "targetReached": { "baseline": true, "gateProbe": true },
+        "targetWitness": { "baseline": true, "gateProbe": true },
+        "deltas": { "statesExplored": 121856, "elapsedMs": 81658.70308300001, "runtimeErrors": 0, "assertionViolations": 0, "endings": 0, "visibleOutcomes": 0, "visitedKnots": 0 },
+        "interpretation": "Matched bounded observations only. Gate reach is an intent signal, not coverage proof; terminal count and resource measurements are not defect counts or portable performance promises."
+      }
+    }
+  ],
+  "omittedRequiredCells": [],
+  "disclosure": "Each arm invokes the public CLI in a fresh process with the same declared configuration. Progress events are production NDJSON events tagged by evaluation arm. Results are bounded observations, not coverage proof or a promotion decision."
+}
