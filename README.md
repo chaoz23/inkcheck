@@ -231,7 +231,7 @@ Tools for AI agents working on ink stories:
 | Tool or logical operation | What it does |
 | --- | --- |
 | `inkcheck_capabilities` | Versioned schemas, limits, search modes, and explicit feature availability |
-| `inspect_story` | Source-only project map: includes, shape, semantics, externals, knots, and variables |
+| `inspect_story` | Source-only project map: includes, shape, semantics, externals, knots, variables, and static condition gates |
 | `compile_story` | Structured compile issues (severity, file, line) |
 | `start_search` | Start one durable exact shared-search result window and receive a bearer capability |
 | `inkcheck_workflow` | Route post-discovery search, campaign, finding, replay, regression, assertion, goal, cancellation, and playtest operations through one bounded schema |
@@ -275,7 +275,7 @@ inkcheck resume <checkpoint-id> --max-states N [--json]
 inkcheck mcp    # start the MCP server on stdio
 ```
 
-`inkcheck capabilities --json` lets agents check schema versions, limits, search modes, and explicit supported or unavailable features before relying on them. `inkcheck inspect story.ink --json` performs deterministic source-only discovery without compiling or exploring: it follows project-local includes and returns a bounded map of story shape, semantics, externals, knots/functions, and variable declarations/reads/writes. See the [agent discovery contract](docs/agent-discovery.md).
+`inkcheck capabilities --json` lets agents check schema versions, limits, search modes, and explicit supported or unavailable features before relying on them. `inkcheck inspect story.ink --json` performs deterministic source-only discovery without compiling or exploring: it follows project-local includes and returns a bounded map of story shape, semantics, externals, knots/functions, variable declarations/reads/writes, and static condition gates with factual assignment sites. Gate inspection is a prerequisite map, not reachability proof or automatic steering. See the [compound gate inspection contract](docs/compound-gate-inspection.md) and [agent discovery contract](docs/agent-discovery.md).
 
 JSON checks use the versioned [report schema](docs/report-schema-v1.md). Findings have stable IDs and normalized kinds; ending and runtime-error witnesses carry both human choice text and zero-based choice indices, so duplicate labels remain exactly replayable through `playtest_story`. The envelope records the Inkcheck version, compiled-story fingerprint, effective configuration, binding limit, and an observation-only `shadowDecision` while retaining the established `compile`, `stats`, `explore`, and `nextRun` sections.
 

@@ -914,6 +914,17 @@ test("project inspection follows includes and returns a bounded deterministic ma
   assert.deepStrictEqual(gold.initialValue, 10);
   assert.ok(gold.readCount >= 1);
   assert.ok(gold.writeCount >= 1);
+  const compoundGate = first.gates.find((gate) => gate.expression === "gold >= 10 && has_key && trust > 3");
+  assert.ok(compoundGate);
+  assert.strictEqual(compoundGate.supported, true);
+  assert.strictEqual(compoundGate.isCompound, true);
+  assert.deepStrictEqual(compoundGate.referencedVariables, ["gold", "has_key", "trust"]);
+  assert.deepStrictEqual(compoundGate.assignmentSites.map((site) => site.name), ["gold", "has_key", "trust"]);
+  assert.ok(compoundGate.assignmentSites.every((site) => site.writeCount >= 1));
+  const dynamicGate = first.gates.find((gate) => gate.expression === "TURNS() > 2");
+  assert.ok(dynamicGate);
+  assert.strictEqual(dynamicGate.supported, false);
+  assert.match(dynamicGate.unsupportedReason, /function calls/);
   assert.strictEqual(first.recommendedNextOperation, "compile_story");
 });
 
@@ -1007,6 +1018,20 @@ test("project inspection overview stays token-bounded and omits variable values"
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("project gate sections reveal explicit static hints without leaking expressions into the overview", () => {
+  const overview = inspectProjectOverview(INSPECT_PROJECT);
+  assert.ok(overview.inventory.gates >= 3);
+  assert.ok(overview.samples.gates.some((gate) => gate.isCompound && gate.supported));
+  assert.deepStrictEqual(overview.response.drillDown.sections, ["includes", "externals", "knots", "variables", "gates"]);
+  assert.strictEqual(JSON.stringify(overview).includes("gold >= 10"), false);
+
+  const page = inspectProjectSection(INSPECT_PROJECT, "gates", { limit: 100 });
+  const compoundGate = page.items.find((gate) => gate.expression === "gold >= 10 && has_key && trust > 3");
+  assert.ok(compoundGate);
+  assert.match(page.contentPolicy, /not proof that a gate is reachable/);
+  assert.strictEqual(page.page.nextCursor, null);
 });
 
 test("CLI capabilities and inspect provide concise human and JSON output", () => {

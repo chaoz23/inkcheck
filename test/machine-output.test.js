@@ -257,6 +257,15 @@ test("MCP explore_story defaults to compact standard detail and requires explici
     assert.strictEqual(inspection.response.detail, "summary");
     assert.strictEqual(inspection.recommendedNextOperation, "compile_story");
 
+    const gatedStory = path.join(root, "gated.ink");
+    fs.writeFileSync(gatedStory, "VAR gold = 0\n~ gold += 1\n{ gold >= 1:\n  Reached.\n}\n-> END\n");
+    const gateCall = await client.callTool({ name: "inspect_story", arguments: { file: gatedStory, section: "gates" } });
+    const gates = JSON.parse(gateCall.content[0].text);
+    assert.strictEqual(gates.section, "gates");
+    assert.strictEqual(gates.items[0].supported, true);
+    assert.deepStrictEqual(gates.items[0].referencedVariables, ["gold"]);
+    assert.match(gates.contentPolicy, /not proof that a gate is reachable/);
+
     const compileCall = await client.callTool({ name: "compile_story", arguments: { file: story } });
     const compiled = JSON.parse(compileCall.content[0].text);
     assert.strictEqual(compiled.response.detail, "standard");
