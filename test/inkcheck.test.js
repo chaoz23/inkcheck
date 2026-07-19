@@ -768,6 +768,39 @@ test("CLI project goals return bounded allocation and replayable witnesses witho
   }
 });
 
+test("CLI goal-only runs the public directed probe with normal progress and report metadata", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-goal-only-cli-"));
+  try {
+    fs.copyFileSync(ASSERTION_STORY, path.join(tmp, "story.ink"));
+    fs.writeFileSync(path.join(tmp, "inkcheck.yml"), require("yaml").stringify({
+      schemaVersion: 1,
+      entrypoint: "story.ink",
+      goals: [{
+        id: "negative-gold",
+        condition: { left: { variable: "gold" }, operator: "<", right: { literal: 0 } },
+      }],
+    }));
+    const checked = spawnSync(process.execPath, [
+      CLI, "--goal-only", "--max-states", "25", "--json", "--progress=ndjson",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(checked.status, 0, checked.stderr);
+    const report = JSON.parse(checked.stdout);
+    assert.strictEqual(report.effectiveConfiguration.executionScope, "goal-probe");
+    assert.strictEqual(report.effectiveConfiguration.goalMaxStates, 25);
+    assert.deepStrictEqual(report.explore.goalBudget, {
+      generalGranted: 0,
+      generalConsumed: 0,
+      directedGranted: 25,
+      directedConsumed: report.explore.statesExplored,
+    });
+    assert.strictEqual(report.explore.goalResults[0].status, "reached");
+    assert.match(checked.stderr, /"type":"progress"/);
+    assert.match(checked.stderr, /"type":"run_end"/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("config loader resolves a project-local entrypoint and reports missing files", () => {
   const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "inkcheck-config-"));
   try {

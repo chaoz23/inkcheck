@@ -19,6 +19,7 @@
       "file": "benchmarks/authored/the-intercept/TheIntercept.ink",
       "gate": { "file": "TheIntercept.ink", "line": 150 },
       "maxStates": 5000000,
+      "maxMemoryMb": 1536,
       "maxDepth": 100,
       "seed": 7,
       "storySeed": 1
