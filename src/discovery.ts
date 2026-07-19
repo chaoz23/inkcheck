@@ -30,9 +30,11 @@ import {
   DEFAULT_AUTO_CONCURRENCY_CEILING,
   MAX_PORTFOLIO_CONCURRENCY,
 } from "./concurrency-policy";
+import type { AssertionCondition, AssertionOperand, AssertionOperator } from "./assertions";
+import type { GoalDefinition } from "./goals";
 
 export const CAPABILITIES_SCHEMA_VERSION = 1;
-export const PROJECT_INSPECTION_SCHEMA_VERSION = 3;
+export const PROJECT_INSPECTION_SCHEMA_VERSION = 4;
 export const REPORT_SCHEMA_VERSION = 1;
 export const ARTIFACT_SCHEMA_VERSION = 1;
 export const DEFAULT_MAX_REPORT_BYTES = 256 * 1024 * 1024;
@@ -200,7 +202,7 @@ interface VariableRecord {
   writeCount: number;
 }
 
-interface GateRecord {
+export interface GateRecord {
   expression: string;
   location: SourceLocation;
   supported: boolean;
@@ -214,6 +216,17 @@ interface GateRecord {
     writeCount: number;
   }>;
   unsupportedReason?: string;
+  /** Present only when this source condition maps losslessly to Inkcheck's typed goal grammar. */
+  probeCondition?: AssertionCondition;
+  /** Why a statically supported Ink condition cannot yet become a bounded goal probe. */
+  probeUnsupportedReason?: string;
+}
+
+export interface GateProbePlan {
+  gate: GateRecord;
+  goal: GoalDefinition;
+  semantics: "additive_goal_probe";
+  disclosure: string;
 }
 
 type GateToken =
@@ -330,6 +343,113 @@ function inspectGateExpression(expression: string, declaredVariables: Set<string
     return { supported: false, isCompound, referencedVariables, operators, unsupportedReason: "expression is outside the supported boolean comparison grammar" };
   }
   return { supported: true, isCompound, referencedVariables, operators };
+}
+
+function gateProbeCondition(
+  expression: string,
+  variables: Map<string, VariableRecord>
+): { condition?: AssertionCondition; reason?: string } {
+  const tokenized = tokenizeGate(expression);
+  if (!tokenized.tokens) return { reason: tokenized.error };
+  const tokens = tokenized.tokens;
+  let position = 0;
+  let reason: string | undefined;
+  const peek = () => tokens[position];
+  const consume = (value: string): boolean => {
+    if (!peek() || peek().value !== value) return false;
+    position++;
+    return true;
+  };
+  const operand = (): AssertionOperand | undefined => {
+    const token = peek();
+    if (!token) return undefined;
+    if (token.type === "identifier") {
+      const record = variables.get(token.value);
+      if (!record) {
+        reason ??= `unknown or dynamic identifier \`${token.value}\``;
+        return undefined;
+      }
+      position++;
+      return { variable: token.value };
+    }
+    if (token.type === "number") {
+      position++;
+      return { literal: Number(token.value) };
+    }
+    if (token.type === "string") {
+      position++;
+      return { literal: JSON.parse(token.value) as string };
+    }
+    if (token.type === "boolean") {
+      position++;
+      return { literal: token.value === "true" };
+    }
+    if (token.type === "null") {
+      position++;
+      return { literal: null };
+    }
+    return undefined;
+  };
+  const primary = (): AssertionCondition | undefined => {
+    if (consume("(")) {
+      const nested = orExpression();
+      if (!nested || !consume(")")) {
+        reason ??= "expression is outside the supported boolean comparison grammar";
+        return undefined;
+      }
+      return nested;
+    }
+    const left = operand();
+    if (!left) {
+      reason ??= "expression is outside the supported boolean comparison grammar";
+      return undefined;
+    }
+    const operator = peek()?.value;
+    if (operator && ["==", "!=", "<", "<=", ">", ">="].includes(operator)) {
+      position++;
+      const right = operand();
+      if (!right) {
+        reason ??= "comparison is missing a supported variable or literal";
+        return undefined;
+      }
+      return { left, operator: operator as AssertionOperator, right };
+    }
+    if ("variable" in left && typeof variables.get(left.variable)?.initialValue === "boolean") {
+      return { left, operator: "==", right: { literal: true } };
+    }
+    reason ??= "bare conditions require a declared boolean variable";
+    return undefined;
+  };
+  const unary = (): AssertionCondition | undefined => {
+    if (consume("!")) {
+      const nested = unary();
+      return nested ? { not: nested } : undefined;
+    }
+    return primary();
+  };
+  const andExpression = (): AssertionCondition | undefined => {
+    let result = unary();
+    if (!result) return undefined;
+    while (consume("&&")) {
+      const right = unary();
+      if (!right) return undefined;
+      result = "all" in result ? { all: [...result.all, right] } : { all: [result, right] };
+    }
+    return result;
+  };
+  const orExpression = (): AssertionCondition | undefined => {
+    let result = andExpression();
+    if (!result) return undefined;
+    while (consume("||")) {
+      const right = andExpression();
+      if (!right) return undefined;
+      result = "any" in result ? { any: [...result.any, right] } : { any: [result, right] };
+    }
+    return result;
+  };
+  const condition = orExpression();
+  if (!condition || position !== tokens.length) return { reason: reason ?? "expression is outside the supported boolean comparison grammar" };
+  return { condition };
 }
 
 function extractGateCandidates(code: string): string[] {
@@ -500,10 +620,13 @@ function inspectProjectInventory(entryFile: string): ProjectInspection {
   const declaredVariables = new Set(variables.keys());
   const gates = gateCandidates.map(({ expression, location }) => {
     const inspected = inspectGateExpression(expression, declaredVariables);
+    const probe = inspected.supported ? gateProbeCondition(expression, variables) : undefined;
     return {
       expression,
       location,
       ...inspected,
+      ...(probe?.condition ? { probeCondition: probe.condition } : {}),
+      ...(inspected.supported && probe?.reason ? { probeUnsupportedReason: probe.reason } : {}),
       assignmentSites: inspected.referencedVariables.map((name) => {
         const record = variables.get(name)!;
         return {
@@ -548,6 +671,31 @@ export function inspectProject(entryFile: string): ProjectInspection {
     knots: inventory.knots.slice(0, MAX_INSPECT_KNOTS),
     variables: inventory.variables.slice(0, MAX_INSPECT_VARIABLES),
     gates: inventory.gates.slice(0, MAX_INSPECT_GATES),
+  };
+}
+
+/**
+ * Select one source-stable, losslessly translatable condition for an explicit
+ * additive goal probe. Source assignments remain evidence, never reachability proof.
+ */
+export function selectGateProbe(entryFile: string, location: SourceLocation): GateProbePlan {
+  const inventory = inspectProjectInventory(entryFile);
+  const gate = inventory.gates.find((item) => item.location.file === location.file && item.location.line === location.line);
+  if (!gate) throw new Error(`No static condition gate found at ${location.file}:${location.line}`);
+  if (!gate.supported) throw new Error(`Gate at ${location.file}:${location.line} is not supported: ${gate.unsupportedReason ?? "unknown reason"}`);
+  if (!gate.probeCondition) {
+    throw new Error(`Gate at ${location.file}:${location.line} cannot become a bounded probe: ${gate.probeUnsupportedReason ?? "unsupported condition"}`);
+  }
+  const id = `gate-${createHash("sha256").update(`${gate.location.file}\0${gate.location.line}\0${gate.expression}`).digest("hex").slice(0, 24)}`;
+  return {
+    gate,
+    goal: {
+      id,
+      description: `Static gate at ${gate.location.file}:${gate.location.line}`,
+      condition: gate.probeCondition,
+    },
+    semantics: "additive_goal_probe",
+    disclosure: "The condition came from static source inspection. Assignment sites are factual source references, not proof that the condition is reachable or causally enabled by a particular path.",
   };
 }
 

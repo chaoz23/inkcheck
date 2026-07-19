@@ -10,6 +10,7 @@ const { compile } = require("../dist/inklecate");
 const {
   addCampaignAssertions,
   addSessionGoal,
+  probeSessionGate,
   cancelSearchSession,
   checkSessionRegression,
   continueSearchSession,
@@ -22,6 +23,7 @@ const {
   startSearchSession,
   startCampaign,
 } = require("../dist/search-sessions");
+const { inspectProject } = require("../dist/discovery");
 const { campaignLedgerDigest } = require("../dist/campaign-policy");
 const { MAX_MCP_SESSION_RESPONSE_BYTES } = require("../dist/search-session-contract");
 
@@ -890,6 +892,49 @@ test("add_goal spends additive directed work while preserving the exact base ses
     for (const sensitive of ["reach_depth", '"depth"', '"condition"', '"observedValues"', '"choiceIndices"']) {
       assert.strictEqual(raw.includes(sensitive), false, `session metadata leaked ${sensitive}`);
     }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("probe_gate converts one supported source gate into additive directed work", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-gate-probe-"));
+  const file = path.join(root, "story.ink");
+  fs.writeFileSync(file, [
+    "VAR has_key = false",
+    "VAR gold = 0",
+    "* [Prepare]",
+    "  ~ has_key = true",
+    "  ~ gold = 10",
+    "  -> gate",
+    "== gate ==",
+    "{ has_key && gold >= 10:",
+    "  Reached.",
+    "  -> END",
+    "- else:",
+    "  -> END",
+    "}",
+  ].join("\n"));
+  try {
+    const inspection = inspectProject(file);
+    const gate = inspection.gates.find((item) => item.isCompound);
+    assert.ok(gate && gate.probeCondition);
+    const started = await startSearchSession({ file, maxStates: 10, maxDepth: 10, seed: 7 });
+    const baseReportId = started.session.latestReportId;
+    const added = await probeSessionGate({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: started.session.revision,
+      gate: gate.location,
+      maxStates: 20,
+    });
+    assert.strictEqual(added.result.status, "reached");
+    assert.strictEqual(added.session.latestReportId, baseReportId);
+    assert.strictEqual(added.gate.expression, "has_key && gold >= 10");
+    assert.deepStrictEqual(added.gate.assignmentSites.map((item) => item.name), ["gold", "has_key"]);
+    assert.strictEqual(added.probe.source, "static_gate_inspection");
+    assert.match(added.probe.disclosure, /not proof/i);
+    assert.match(added.semantics, /did not resume, reduce, reorder, or mutate/i);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

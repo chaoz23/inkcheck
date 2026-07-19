@@ -45,6 +45,7 @@ const {
   inspectProject,
   inspectProjectOverview,
   inspectProjectSection,
+  selectGateProbe,
   MAX_INSPECTION_OVERVIEW_BYTES,
   PROJECT_INSPECTION_SCHEMA_VERSION,
 } = require("../dist/discovery");
@@ -1032,6 +1033,19 @@ test("project gate sections reveal explicit static hints without leaking express
   assert.ok(compoundGate);
   assert.match(page.contentPolicy, /not proof that a gate is reachable/);
   assert.strictEqual(page.page.nextCursor, null);
+  const plan = selectGateProbe(INSPECT_PROJECT, { file: "chapters/market.ink", line: 9 });
+  assert.strictEqual(plan.semantics, "additive_goal_probe");
+  assert.deepStrictEqual(plan.goal.condition, {
+    all: [
+      { left: { variable: "gold" }, operator: ">=", right: { literal: 10 } },
+      { left: { variable: "has_key" }, operator: "==", right: { literal: true } },
+      { left: { variable: "trust" }, operator: ">", right: { literal: 3 } },
+    ],
+  });
+  assert.throws(
+    () => selectGateProbe(INSPECT_PROJECT, { file: "chapters/market.ink", line: 12 }),
+    /not supported: function calls/
+  );
 });
 
 test("CLI capabilities and inspect provide concise human and JSON output", () => {
