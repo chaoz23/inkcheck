@@ -1,0 +1,221 @@
+{
+  "schemaVersion": 1,
+  "kind": "gate_probe_evaluation",
+  "manifest": "benchmarks/gate-probe-evaluation-v1.json",
+  "cells": [
+    {
+      "id": "the-intercept-teacup-5m",
+      "status": "completed",
+      "configuration": {
+        "id": "the-intercept-teacup-5m",
+        "tier": "required",
+        "file": "benchmarks/authored/the-intercept/TheIntercept.ink",
+        "gate": {
+          "file": "TheIntercept.ink",
+          "line": 150
+        },
+        "maxStates": 5000000,
+        "maxMemoryMb": 1536,
+        "maxDepth": 100,
+        "seed": 7,
+        "storySeed": 1
+      },
+      "baseline": {
+        "arm": "baseline",
+        "gate": {
+          "location": {
+            "file": "TheIntercept.ink",
+            "line": 150
+          },
+          "expression": "teacup",
+          "condition": {
+            "left": {
+              "variable": "teacup"
+            },
+            "operator": "==",
+            "right": {
+              "literal": true
+            }
+          },
+          "assignmentSites": [
+            {
+              "name": "teacup",
+              "declaration": {
+                "file": "TheIntercept.ink",
+                "line": 7
+              },
+              "writes": [
+                {
+                  "file": "TheIntercept.ink",
+                  "line": 114,
+                  "operation": "="
+                },
+                {
+                  "file": "TheIntercept.ink",
+                  "line": 127,
+                  "operation": "="
+                },
+                {
+                  "file": "TheIntercept.ink",
+                  "line": 228,
+                  "operation": "="
+                },
+                {
+                  "file": "TheIntercept.ink",
+                  "line": 232,
+                  "operation": "="
+                },
+                {
+                  "file": "TheIntercept.ink",
+                  "line": 251,
+                  "operation": "="
+                },
+                {
+                  "file": "TheIntercept.ink",
+                  "line": 297,
+                  "operation": "="
+                },
+                {
+                  "file": "TheIntercept.ink",
+                  "line": 304,
+                  "operation": "="
+                }
+              ],
+              "writeCount": 7
+            }
+          ]
+        },
+        "result": {
+          "storyFingerprint": "9d1a3aa2919419377e4ed4eb25b3ff05ad40f1790e8973049ca592d441e8d6ad",
+          "statesExplored": 514559,
+          "elapsedMs": 169913.685708,
+          "target": {
+            "id": "gate-21a7fa9ed2844a19d6017ff8",
+            "status": "reached",
+            "witness": true,
+            "closestDistance": null
+          },
+          "evidence": {
+            "runtimeErrors": 0,
+            "assertionViolations": 0,
+            "endings": 1194,
+            "visibleOutcomes": 12,
+            "visitedKnots": 29,
+            "unvisitedKnots": 1
+          },
+          "bindingLimit": "memory",
+          "exhaustive": false
+        }
+      },
+      "gateProbe": {
+        "arm": "gate-probe",
+        "gate": {
+          "location": {
+            "file": "TheIntercept.ink",
+            "line": 150
+          },
+          "expression": "teacup",
+          "condition": {
+            "left": {
+              "variable": "teacup"
+            },
+            "operator": "==",
+            "right": {
+              "literal": true
+            }
+          },
+          "assignmentSites": [
+            {
+              "name": "teacup",
+              "declaration": {
+                "file": "TheIntercept.ink",
+                "line": 7
+              },
+              "writes": [
+                {
+                  "file": "TheIntercept.ink",
+                  "line": 114,
+                  "operation": "="
+                },
+                {
+                  "file": "TheIntercept.ink",
+                  "line": 127,
+                  "operation": "="
+                },
+                {
+                  "file": "TheIntercept.ink",
+                  "line": 228,
+                  "operation": "="
+                },
+                {
+                  "file": "TheIntercept.ink",
+                  "line": 232,
+                  "operation": "="
+                },
+                {
+                  "file": "TheIntercept.ink",
+                  "line": 251,
+                  "operation": "="
+                },
+                {
+                  "file": "TheIntercept.ink",
+                  "line": 297,
+                  "operation": "="
+                },
+                {
+                  "file": "TheIntercept.ink",
+                  "line": 304,
+                  "operation": "="
+                }
+              ],
+              "writeCount": 7
+            }
+          ]
+        },
+        "result": {
+          "storyFingerprint": "9d1a3aa2919419377e4ed4eb25b3ff05ad40f1790e8973049ca592d441e8d6ad",
+          "statesExplored": 388095,
+          "elapsedMs": 119507.552959,
+          "target": {
+            "id": "gate-21a7fa9ed2844a19d6017ff8",
+            "status": "reached",
+            "witness": true,
+            "closestDistance": null
+          },
+          "evidence": {
+            "runtimeErrors": 0,
+            "assertionViolations": 0,
+            "endings": 298,
+            "visibleOutcomes": 12,
+            "visitedKnots": 29,
+            "unvisitedKnots": 1
+          },
+          "bindingLimit": "memory",
+          "exhaustive": false
+        }
+      },
+      "comparison": {
+        "targetReached": {
+          "baseline": true,
+          "gateProbe": true
+        },
+        "targetWitness": {
+          "baseline": true,
+          "gateProbe": true
+        },
+        "deltas": {
+          "statesExplored": -126464,
+          "elapsedMs": -50406.13274900001,
+          "runtimeErrors": 0,
+          "assertionViolations": 0,
+          "endings": -896,
+          "visibleOutcomes": 0,
+          "visitedKnots": 0
+        },
+        "interpretation": "Matched bounded observations only. Gate reach is an intent signal, not coverage proof; terminal count and resource measurements are not defect counts or portable performance promises."
+      }
+    }
+  ],
+  "omittedRequiredCells": [],
+  "disclosure": "Each arm invokes the public CLI in a fresh process with the same declared configuration. Progress events are production NDJSON events tagged by evaluation arm. Results are bounded observations, not coverage proof or a promotion decision."
+}

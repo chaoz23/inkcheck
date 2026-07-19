@@ -23,6 +23,7 @@ import {
   UnvisitedKnotReport,
   classifyUnvisitedKnots,
   explore,
+  exploreGoalProbe,
   exploreSharedResumable,
   exploreWithGoals,
   mergeMinRepro,
@@ -115,6 +116,7 @@ Options:
   --max-depth <n>    Max choices deep to explore, 1–1000 (default 100)
   --max-states <n>   Max story states to visit, 1–100000000 (default 10000000)
   --goal-states <n>  Additional directed-goal states, 1–100000000 (default 0)
+  --goal-only        Run only the configured directed-goal probe using --max-states as its budget
   --seed <n>         Seed for the random-sampling slice, 1–4294967295 (default 1)
   --story-seed <n>   Initial Ink runtime RNG seed, 1–2147483646 (default 1)
   --search <mode>    Search: portfolio (default), shared, or shared-variable
@@ -459,6 +461,7 @@ async function main() {
   let maxDepth: number | undefined;
   let maxStates: number | undefined;
   let goalMaxStates: number | undefined;
+  let goalOnly = false;
   let seed: number | undefined;
   let storySeed: number | undefined;
   let search: "portfolio" | "shared" | "shared-variable" = "portfolio";
@@ -497,6 +500,7 @@ async function main() {
       maxStates = boundedInt(arg, args[++i], 100_000_000);
     }
     else if (arg === "--goal-states") goalMaxStates = boundedInt(arg, args[++i], 100_000_000);
+    else if (arg === "--goal-only") goalOnly = true;
     else if (arg === "--seed") seed = boundedInt(arg, args[++i], 4_294_967_295);
     else if (arg === "--story-seed") storySeed = boundedInt(arg, args[++i], MAX_STORY_SEED);
     else if (arg === "--search" || arg.startsWith("--search=")) {
@@ -582,7 +586,7 @@ async function main() {
   }
 
   if (inspectMode) {
-    if (asMarkdown || asHuman || profileOnly || auto || followNext || strict || !minRepro ||
+    if (asMarkdown || asHuman || profileOnly || auto || followNext || goalOnly || strict || !minRepro ||
         maxDepth !== undefined || maxStates !== undefined || goalMaxStates !== undefined || seed !== undefined || storySeed !== undefined ||
         concurrency !== undefined || maxMemoryMb !== undefined || maxTimeSec !== undefined || maxFrontierStates !== undefined || maxFrontierMb !== undefined || search !== "portfolio" ||
         progressSpecified || saveReport || saveCheckpoint || resumeCheckpointId !== undefined) {
@@ -612,6 +616,15 @@ async function main() {
   if (!resumeCheckpointId && !searchSpecified && configDefaults?.search) search = configDefaults.search;
   if (!strict && configDefaults?.strict) strict = true;
   if (!resumeCheckpointId && !minReproSpecified && configDefaults?.minRepro !== undefined) minRepro = configDefaults.minRepro;
+  if (goalOnly) {
+    if (resumeCheckpointId || saveCheckpoint || followNext || auto) {
+      usage("--goal-only does not support resume, checkpoints, --next, or --auto");
+    }
+    if (goalMaxStates !== undefined) usage("--goal-only uses --max-states as its directed budget; omit --goal-states");
+    if (searchSpecified && search !== "shared") usage("--goal-only uses root-started shared search; omit --search or use --search=shared");
+    search = "shared";
+    minRepro = false;
+  }
   if ((maxFrontierStates !== undefined || maxFrontierMb !== undefined) && search === "portfolio") {
     usage("--max-frontier-states/--max-frontier-memory require --search shared or shared-variable");
   }
@@ -666,7 +679,8 @@ async function main() {
     maxTimeSec: maxTimeSec ?? null,
     maxFrontierStates: maxFrontierStates ?? null,
     maxFrontierMb: maxFrontierMb ?? null,
-    goalMaxStates: additionalGoalStates,
+    goalMaxStates: goalOnly ? baselineMaxStates : additionalGoalStates,
+    ...(goalOnly ? { executionScope: "goal-probe" as const } : {}),
     storySeed,
     ...(projectConfig?.config.assertions?.length ? { assertions: projectConfig.config.assertions } : {}),
     ...(projectConfig?.config.goals?.length ? { goals: projectConfig.config.goals } : {}),
@@ -813,8 +827,8 @@ async function main() {
   if (saveCheckpoint && (configuredAssertions.length > 0 || configuredGoals.length > 0)) {
     usage("checkpoint persistence does not yet support configured assertions or goals");
   }
-  if (additionalGoalStates > 0 && configuredGoals.length === 0) {
-    usage("--goal-states requires at least one configured goal");
+  if ((additionalGoalStates > 0 || goalOnly) && configuredGoals.length === 0) {
+    usage(goalOnly ? "--goal-only requires at least one configured goal" : "--goal-states requires at least one configured goal");
   }
   try {
     validateAssertionsForStory(compiled.storyJson!, knots, externals, configuredAssertions);
@@ -927,13 +941,18 @@ async function main() {
         goals: configuredGoals,
         goalMaxStates: additionalGoalStates,
       };
-      checked = resolvedConcurrency.executor === "auto-handoff"
-        ? explorePortfolioPilotHandoffConcurrent(compiled.storyJson!, knots, externals, {
+      checked = goalOnly
+        ? exploreGoalProbe(compiled.storyJson!, knots, externals, {
+            ...configuredOptions,
+            goalMaxStates: runStates,
+          })
+        : resolvedConcurrency.executor === "auto-handoff"
+          ? explorePortfolioPilotHandoffConcurrent(compiled.storyJson!, knots, externals, {
             ...configuredOptions,
             concurrency: resolvedConcurrency.ceiling,
             memoryCapBytes,
             deadlineMs,
-          })
+            })
         : resolvedConcurrency.executor === "fixed-concurrent"
           ? explorePortfolioConcurrent(compiled.storyJson!, knots, externals, {
               ...configuredOptions,
