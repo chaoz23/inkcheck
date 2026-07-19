@@ -13,6 +13,7 @@
     "evaluate-long-tail": "node dist/long-tail-evaluation-cli.js",
     "evaluate-agent-readiness": "node dist/agent-readiness-benchmark-cli.js",
     "evaluate-loop-specialist": "node scripts/loop-specialist-evaluation.js",
+    "evaluate-gate-probe": "node scripts/gate-probe-evaluation.js",
     "release-preflight": "node scripts/release-preflight.js",
     "web": "node dist/web.js",
     "usage-report": "node dist/usage-report.js"
@@ -77,6 +78,7 @@
     "docs/rules-that-matter-0.7.md",
     "docs/loop-specialist-evaluation.md",
     "docs/compound-gate-inspection.md",
+    "docs/gate-probe-evaluation.md",
     "docs/shadow-policy-evaluation.md",
     "docs/promotion-benchmark.md",
     "docs/promotion-policy-v2-evaluation.md",

@@ -1,0 +1,221 @@
+{
+  "schemaVersion": 1,
+  "kind": "gate_probe_evaluation",
+  "manifest": "benchmarks/gate-probe-evaluation-v1.json",
+  "cells": [
+    {
+      "id": "early-choice-grid-combination-lock",
+      "status": "completed",
+      "configuration": {
+        "id": "early-choice-grid-combination-lock",
+        "tier": "smoke",
+        "file": "examples/early-choice-grid.ink",
+        "gate": {
+          "file": "early-choice-grid.ink",
+          "line": 103
+        },
+        "maxStates": 20,
+        "maxDepth": 100,
+        "seed": 7,
+        "storySeed": 1
+      },
+      "baseline": {
+        "arm": "baseline",
+        "gate": {
+          "location": {
+            "file": "early-choice-grid.ink",
+            "line": 103
+          },
+          "expression": "one && four",
+          "condition": {
+            "all": [
+              {
+                "left": {
+                  "variable": "one"
+                },
+                "operator": "==",
+                "right": {
+                  "literal": true
+                }
+              },
+              {
+                "left": {
+                  "variable": "four"
+                },
+                "operator": "==",
+                "right": {
+                  "literal": true
+                }
+              }
+            ]
+          },
+          "assignmentSites": [
+            {
+              "name": "four",
+              "declaration": {
+                "file": "early-choice-grid.ink",
+                "line": 4
+              },
+              "writes": [
+                {
+                  "file": "early-choice-grid.ink",
+                  "line": 26,
+                  "operation": "="
+                }
+              ],
+              "writeCount": 1
+            },
+            {
+              "name": "one",
+              "declaration": {
+                "file": "early-choice-grid.ink",
+                "line": 1
+              },
+              "writes": [
+                {
+                  "file": "early-choice-grid.ink",
+                  "line": 15,
+                  "operation": "="
+                }
+              ],
+              "writeCount": 1
+            }
+          ]
+        },
+        "result": {
+          "storyFingerprint": "2a7adc431fe8cdee8a28d45745089aa346bd48e44fdc078ef472587f561999f0",
+          "statesExplored": 20,
+          "elapsedMs": 17.252167,
+          "rssBytes": 68239360,
+          "target": {
+            "id": "gate-e09c6fa6453c2a176fbf04a8",
+            "status": "not_reached_within_limits",
+            "witness": false,
+            "closestDistance": 1
+          },
+          "evidence": {
+            "runtimeErrors": 0,
+            "assertionViolations": 0,
+            "endings": 0,
+            "visibleOutcomes": 0,
+            "visitedKnots": 7,
+            "unvisitedKnots": 15
+          },
+          "bindingLimit": "maxStates",
+          "exhaustive": false
+        }
+      },
+      "gateProbe": {
+        "arm": "gate-probe",
+        "gate": {
+          "location": {
+            "file": "early-choice-grid.ink",
+            "line": 103
+          },
+          "expression": "one && four",
+          "condition": {
+            "all": [
+              {
+                "left": {
+                  "variable": "one"
+                },
+                "operator": "==",
+                "right": {
+                  "literal": true
+                }
+              },
+              {
+                "left": {
+                  "variable": "four"
+                },
+                "operator": "==",
+                "right": {
+                  "literal": true
+                }
+              }
+            ]
+          },
+          "assignmentSites": [
+            {
+              "name": "four",
+              "declaration": {
+                "file": "early-choice-grid.ink",
+                "line": 4
+              },
+              "writes": [
+                {
+                  "file": "early-choice-grid.ink",
+                  "line": 26,
+                  "operation": "="
+                }
+              ],
+              "writeCount": 1
+            },
+            {
+              "name": "one",
+              "declaration": {
+                "file": "early-choice-grid.ink",
+                "line": 1
+              },
+              "writes": [
+                {
+                  "file": "early-choice-grid.ink",
+                  "line": 15,
+                  "operation": "="
+                }
+              ],
+              "writeCount": 1
+            }
+          ]
+        },
+        "result": {
+          "storyFingerprint": "2a7adc431fe8cdee8a28d45745089aa346bd48e44fdc078ef472587f561999f0",
+          "statesExplored": 20,
+          "elapsedMs": 19.566,
+          "rssBytes": 68288512,
+          "target": {
+            "id": "gate-e09c6fa6453c2a176fbf04a8",
+            "status": "reached",
+            "witness": true,
+            "closestDistance": null
+          },
+          "evidence": {
+            "runtimeErrors": 0,
+            "assertionViolations": 0,
+            "endings": 0,
+            "visibleOutcomes": 0,
+            "visitedKnots": 6,
+            "unvisitedKnots": 16
+          },
+          "bindingLimit": "maxStates",
+          "exhaustive": false
+        }
+      },
+      "comparison": {
+        "targetReached": {
+          "baseline": false,
+          "gateProbe": true
+        },
+        "targetWitness": {
+          "baseline": false,
+          "gateProbe": true
+        },
+        "deltas": {
+          "statesExplored": 0,
+          "elapsedMs": 2.313832999999999,
+          "rssBytes": 49152,
+          "runtimeErrors": 0,
+          "assertionViolations": 0,
+          "endings": 0,
+          "visibleOutcomes": 0,
+          "visitedKnots": -1
+        },
+        "interpretation": "Matched bounded observations only. Gate reach is an intent signal, not coverage proof; terminal count and resource measurements are not defect counts or portable performance promises."
+      }
+    }
+  ],
+  "omittedRequiredCells": [
+    "the-intercept-teacup-5m"
+  ],
+  "disclosure": "Each arm runs in a fresh process with the same declared configuration. Results are bounded observations, not coverage proof or a promotion decision."
+}

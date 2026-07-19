@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "kind": "gate_probe_evaluation",
+  "description": "Matched broad-shared versus explicit gate-probe cells. Required authored cells are opt-in because they are resource observations, not CI work.",
+  "cells": [
+    {
+      "id": "early-choice-grid-combination-lock",
+      "tier": "smoke",
+      "file": "examples/early-choice-grid.ink",
+      "gate": { "file": "early-choice-grid.ink", "line": 103 },
+      "maxStates": 20,
+      "maxDepth": 100,
+      "seed": 7,
+      "storySeed": 1
+    },
+    {
+      "id": "the-intercept-teacup-5m",
+      "tier": "required",
+      "file": "benchmarks/authored/the-intercept/TheIntercept.ink",
+      "gate": { "file": "TheIntercept.ink", "line": 150 },
+      "maxStates": 5000000,
+      "maxDepth": 100,
+      "seed": 7,
+      "storySeed": 1
+    }
+  ]
+}
