@@ -10,6 +10,17 @@ No. inkcheck itself does not use AI, machine learning, LLMs, or generative model
 
 It is designed so humans, CI systems, and optional AI coding agents can all drive the same mechanical QA checks. The actual checking is deterministic code: the official ink compiler, the ink runtime, bounded branch exploration, and structured reports.
 
+## Try it in two minutes
+
+With Node.js 18 or newer:
+
+```sh
+npx -y inkcheck path/to/main.ink
+```
+
+Want to see the failure-path report before trying your own story? Run the
+[two-minute synthetic demo](docs/two-minute-demo.md).
+
 ## Product promise
 
 Inkcheck is bounded mechanical QA for ink stories. It does not prove that every path works in a large story. It deterministically explores reachable story states within explicit limits, reports exact repro paths for the issues it finds, and shows where — and why — coverage was partial, so authors can use it as cheap, repeatable regression insurance.
@@ -75,8 +86,6 @@ npx -y inkcheck path/to/main.ink
 ```
 
 No global install is required. The first run downloads the pinned official ink compiler, verifies its SHA-256 hash, and processes the story locally.
-
-Want to see the failure-path report before trying your own story? Run the [two-minute synthetic demo](docs/two-minute-demo.md).
 
 ### Project configuration
 
