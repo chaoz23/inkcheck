@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.2 — 2026-07-20
+
+- Add private, source-bound QA evidence pins for runtime errors, assertion violations, and approved goal witnesses. Humans and agents can recheck one exact indexed witness after an edit without another search run; pins intentionally retain no story prose, choice labels, observed values, or report content. A pin is evidence memory, not a replacement for a new broad bounded check after meaningful edits.
+- Make hosted progress preserve the last measured work window while the checker moves through later phases or reconnects. The page now updates that evidence in place when newer work arrives instead of replacing it with a generic interstitial; cancellation and uploaded-file deletion language remain explicit.
+
 ## 0.7.1 — 2026-07-18
 
 - Add a conservative forced-choice-cycle specialist. It reports an exact replay path when the only offered choice returns to the same author-visible control state, prunes that branch across sequential DFS, beam, and random passes, and stops a whole portfolio only for the proven direct root-cycle case. Turn, visit-count, random, and EXTERNAL-sensitive stories remain outside this specialist's claim; changing counters and optional exits remain unflagged.
