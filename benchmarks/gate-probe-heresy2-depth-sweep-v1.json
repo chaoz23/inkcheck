@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "kind": "gate_probe_evaluation",
+  "description": "Matched depth sweep of the same real Heresy II compound gate. State ceiling, memory guard, search seed, and story seed are fixed; only maxDepth changes.",
+  "cells": [
+    {
+      "id": "heresy2-apollo-power-plate-depth-100-5m",
+      "tier": "required",
+      "file": "benchmarks/authored/heresy2/heresy2.ink",
+      "gate": { "file": "apollo.ink", "line": 28 },
+      "maxStates": 5000000,
+      "maxMemoryMb": 1536,
+      "maxDepth": 100,
+      "seed": 7,
+      "storySeed": 1
+    },
+    {
+      "id": "heresy2-apollo-power-plate-depth-200-5m",
+      "tier": "required",
+      "file": "benchmarks/authored/heresy2/heresy2.ink",
+      "gate": { "file": "apollo.ink", "line": 28 },
+      "maxStates": 5000000,
+      "maxMemoryMb": 1536,
+      "maxDepth": 200,
+      "seed": 7,
+      "storySeed": 1
+    },
+    {
+      "id": "heresy2-apollo-power-plate-depth-300-5m",
+      "tier": "required",
+      "file": "benchmarks/authored/heresy2/heresy2.ink",
+      "gate": { "file": "apollo.ink", "line": 28 },
+      "maxStates": 5000000,
+      "maxMemoryMb": 1536,
+      "maxDepth": 300,
+      "seed": 7,
+      "storySeed": 1
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "kind": "gate_probe_depth_sweep_summary",
+  "sourceManifest": "benchmarks/gate-probe-heresy2-depth-sweep-v1.json",
+  "sourceGate": {
+    "location": { "file": "apollo.ink", "line": 28 },
+    "expression": "exo_power > 10 and sunbeam_plate == 0",
+    "condition": {
+      "all": [
+        { "left": { "variable": "exo_power" }, "operator": ">", "right": { "literal": 10 } },
+        { "left": { "variable": "sunbeam_plate" }, "operator": "==", "right": { "literal": 0 } }
+      ]
+    }
+  },
+  "environment": {
+    "maxStates": 5000000,
+    "maxMemoryMb": 1536,
+    "seed": 7,
+    "storySeed": 1,
+    "storyFingerprint": "75b0d8b1d8710f50a2e5da94facd3b5086c633ffef17e920d34bb9b8e2202661"
+  },
+  "cells": [
+    {
+      "maxDepth": 100,
+      "baseline": { "statesExplored": 211967, "elapsedMs": 82976.023625, "target": "reached", "runtimeErrors": 0, "assertionViolations": 0, "endings": 1, "visibleOutcomes": 1, "visitedKnots": 14, "unvisitedKnots": 16, "bindingLimit": "maxDepth" },
+      "goalOnly": { "statesExplored": 337919, "elapsedMs": 168481.210042, "target": "reached", "runtimeErrors": 0, "assertionViolations": 0, "endings": 1, "visibleOutcomes": 1, "visitedKnots": 14, "unvisitedKnots": 16, "bindingLimit": "maxDepth" }
+    },
+    {
+      "maxDepth": 200,
+      "baseline": { "statesExplored": 229887, "elapsedMs": 108457.164375, "target": "reached", "runtimeErrors": 0, "assertionViolations": 0, "endings": 881, "visibleOutcomes": 7, "visitedKnots": 15, "unvisitedKnots": 15, "bindingLimit": "maxDepth" },
+      "goalOnly": { "statesExplored": 326655, "elapsedMs": 167433.399, "target": "reached", "runtimeErrors": 0, "assertionViolations": 0, "endings": 1, "visibleOutcomes": 1, "visitedKnots": 14, "unvisitedKnots": 16, "bindingLimit": "maxDepth" }
+    },
+    {
+      "maxDepth": 300,
+      "baseline": { "statesExplored": 226303, "elapsedMs": 102072.800667, "target": "reached", "runtimeErrors": 0, "assertionViolations": 0, "endings": 883, "visibleOutcomes": 7, "visitedKnots": 15, "unvisitedKnots": 15, "bindingLimit": "memory" },
+      "goalOnly": { "statesExplored": 338943, "elapsedMs": 168263.532833, "target": "reached", "runtimeErrors": 0, "assertionViolations": 0, "endings": 12, "visibleOutcomes": 3, "visitedKnots": 15, "unvisitedKnots": 15, "bindingLimit": "maxDepth" }
+    }
+  ],
+  "interpretation": "All matched arms reached the selected gate. In this story and configuration, deeper broad shared search earned more coverage-relevant evidence while goal-only search used more resources and found fewer outcomes. This rejects automatic gate-directed allocation as a default on this evidence; it does not reject explicit author or agent goal probes."
+}
