@@ -6,7 +6,7 @@ import { createServer, IncomingMessage, Server, ServerResponse } from "http";
 import * as os from "os";
 import * as path from "path";
 import { VERSION } from "./version";
-import { BrowserUsageEvent, FileUsageStore, UsageRecorder } from "./usage";
+import { BrowserUsageEvent, FileUsageStore, UsageDetails, UsageRecorder } from "./usage";
 import { buildHumanFindings, HumanFinding } from "./human-report";
 import { FileHostedJobStore, PersistedHostedJob } from "./hosted-job-store";
 import type { ProgressOutcome, ProgressStopReason } from "./terminal-progress";
@@ -35,6 +35,8 @@ export interface WebConfig extends HostedLimits {
   trustProxy: boolean;
   staticDir: string;
   usageFile?: string;
+  /** Secret key for daily, non-recoverable unique-browser estimates. */
+  usageBrowserKey?: string;
   jobStoreDir?: string;
   jobTtlMs: number;
 }
@@ -163,6 +165,13 @@ function allowedOriginsFromEnv(): string[] {
   });
 }
 
+function usageBrowserKeyFromEnv(): string | undefined {
+  const value = process.env.INKCHECK_WEB_USAGE_BROWSER_KEY;
+  if (!value) return undefined;
+  if (value.length < 32) throw new Error("INKCHECK_WEB_USAGE_BROWSER_KEY must be at least 32 characters");
+  return value;
+}
+
 export function webConfigFromEnv(): WebConfig {
   return {
     host: process.env.HOST ?? "127.0.0.1",
@@ -184,6 +193,7 @@ export function webConfigFromEnv(): WebConfig {
     trustProxy: process.env.INKCHECK_WEB_TRUST_PROXY === "1",
     staticDir: process.env.INKCHECK_WEB_STATIC_DIR ?? path.join(__dirname, "..", "web"),
     usageFile: process.env.INKCHECK_WEB_USAGE_FILE || undefined,
+    usageBrowserKey: usageBrowserKeyFromEnv(),
     jobStoreDir: process.env.INKCHECK_WEB_JOB_STORE_DIR || undefined,
     jobTtlMs: integerEnv("INKCHECK_WEB_JOB_TTL_MS", 900_000, 60_000, 3_600_000),
   };
@@ -832,25 +842,33 @@ async function readMultipart(req: IncomingMessage, limit: number): Promise<unkno
   return parseMultipartBody(contentType, body);
 }
 
-async function readBrowserUsageEvent(req: IncomingMessage): Promise<BrowserUsageEvent> {
+interface BrowserUsagePayload {
+  event: BrowserUsageEvent;
+  browserToken?: string;
+  internal: boolean;
+}
+
+async function readBrowserUsageEvent(req: IncomingMessage): Promise<BrowserUsagePayload> {
   const contentType = req.headers["content-type"];
   if (typeof contentType !== "string" || !contentType.toLowerCase().startsWith("application/json")) {
     throw new SubmissionError("Content-Type must be application/json", 415);
   }
-  const body = await readRequestBody(req, 256);
+  const body = await readRequestBody(req, 512);
   let value: unknown;
   try {
     value = JSON.parse(body.toString("utf8"));
   } catch {
     throw new SubmissionError("Usage event must be valid JSON", 400);
   }
-  const event = value && typeof value === "object"
-    ? (value as { event?: unknown }).event
-    : undefined;
+  const payload = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const event = payload.event;
   if (event !== "page_view" && event !== "support_click") {
     throw new SubmissionError("Usage event is not supported", 400);
   }
-  return event;
+  const browserToken = typeof payload.browserToken === "string" && /^[A-Za-z0-9_-]{22,128}$/.test(payload.browserToken)
+    ? payload.browserToken
+    : undefined;
+  return { event, browserToken, internal: payload.internal === true };
 }
 
 export async function parseMultipartBody(contentType: string, body: Buffer): Promise<unknown> {
@@ -971,12 +989,12 @@ export function createInkcheckWebServer(options: {
 } = {}): Server {
   const config = options.config ?? webConfigFromEnv();
   const runner = options.runner ?? runSubmission;
-  const usage = options.usage ?? (config.usageFile ? new FileUsageStore(config.usageFile) : undefined);
+  const usage = options.usage ?? (config.usageFile ? new FileUsageStore(config.usageFile, config.usageBrowserKey) : undefined);
   const limiter = new RateLimiter(config.rateLimit, config.rateWindowMs);
   const globalLimiter = new RateLimiter(config.globalRateLimit, config.rateWindowMs);
   const browserEventLimiter = new RateLimiter(120, config.rateWindowMs);
 
-  const recordUsage = (event: Parameters<UsageRecorder["record"]>[0], details?: { durationMs?: number }) => {
+  const recordUsage = (event: Parameters<UsageRecorder["record"]>[0], details?: UsageDetails) => {
     try {
       usage?.record(event, details);
     } catch {
@@ -1035,7 +1053,13 @@ export function createInkcheckWebServer(options: {
           sendNoContent(res);
           return;
         }
-        recordUsage(await readBrowserUsageEvent(req));
+        const usageEvent = await readBrowserUsageEvent(req);
+        recordUsage(
+          usageEvent.event,
+          usageEvent.browserToken || usageEvent.internal
+            ? { browserToken: usageEvent.browserToken, internal: usageEvent.internal }
+            : undefined
+        );
         sendNoContent(res);
         return;
       }

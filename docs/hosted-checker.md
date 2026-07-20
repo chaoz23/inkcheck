@@ -13,7 +13,7 @@ The hosted checker lowers the terminal barrier, but it changes the privacy bound
 - Support a runtime-only pilot access code and a global hourly capacity ceiling.
 - Return reports only in the request that created them.
 - Never log request bodies, story text, report contents, or final story prose.
-- Keep only daily aggregate visit, support-click, completion, rejection, hosted-limit-hit, and duration totals; never persist IP addresses, user agents, request IDs, or visitor profiles.
+- Keep only daily aggregate visit, support-click, completion, rejection, hosted-limit-hit, and duration totals. With `INKCHECK_WEB_USAGE_BROWSER_KEY`, retain compact daily cardinality sketches for approximate unique-browser counts; never persist IP addresses, user agents, request IDs, browser tokens, or visitor profiles.
 - Delete the temporary job directory in a `finally` block. Docker stores `/tmp` in memory so a crash cannot create durable story storage.
 
 The report can contain authored choice text, final text, variable names, and values. Treat the report itself as story material.
@@ -67,7 +67,7 @@ Alternatively, copy `.env.example` to `.env` and replace both values. `.env` fil
 
 Caddy obtains and renews TLS certificates automatically. Do not expose the Inkcheck container's port directly. Permit inbound TCP 80/443 and UDP 443; keep administrative SSH restricted by key and source address where possible.
 
-The Compose deployment keeps aggregate counters and short-lived progress metadata in the `inkcheck_usage` volume. Usage data contains only daily totals and is pruned to 400 days. Job progress expires after 15 minutes by default. Both survive container rebuilds; neither contains uploaded story source or reports. Caddy access logging is disabled so source addresses and user agents are not retained; bounded application and operational logs remain available through Docker.
+The Compose deployment keeps aggregate counters and short-lived progress metadata in the `inkcheck_usage` volume. With a configured browser-metrics key, each browser sends a local random token on a page view; the server immediately folds it into one bit of that UTC day's keyed 2,048-bit cardinality sketch and never writes the token, an IP address, or a user agent. The report unions sketches within a calendar month to estimate unique browsers, which is intentionally approximate; the keyed digest changes monthly, so it cannot become a long-lived profile. `?internal=1` marks a browser as internal for the estimate; use it in your own and automated QA browsers, and `?internal=0` clears the mark. Usage data is pruned to 400 days. Job progress expires after 15 minutes by default. Both survive container rebuilds; neither contains uploaded story source or reports. Caddy access logging is disabled so source addresses and user agents are not retained; bounded application and operational logs remain available through Docker.
 
 Update with:
 
@@ -95,6 +95,8 @@ To generate an arbitrary window without changing the timer:
 ```sh
 docker compose exec -T inkcheck node dist/usage-report.js --days 30
 ```
+
+Before validating the hosted checker from your own browser, open `https://secondlandings.com/inkcheck/?internal=1` once. It stores only that browser-local internal marker. Open the same URL with `?internal=0` to remove it.
 
 ## Default limits
 

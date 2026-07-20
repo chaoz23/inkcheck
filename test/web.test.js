@@ -491,7 +491,7 @@ test("web API validates input and returns a no-retention report", async (t) => {
       Origin: "https://secondlandings.com",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ event: "page_view" }),
+    body: JSON.stringify({ event: "page_view", browserToken: "browser-token-aaaaaaaaaa", internal: true }),
   });
   assert.strictEqual(pageView.status, 204);
   assert.strictEqual(
@@ -583,7 +583,7 @@ test("web API validates input and returns a no-retention report", async (t) => {
   assert.match(streamText, /"stopReason":"completed"/);
   assert.strictEqual(calls, 1);
   assert.deepStrictEqual(usageEvents, [
-    { event: "page_view", details: undefined },
+    { event: "page_view", details: { browserToken: "browser-token-aaaaaaaaaa", internal: true } },
     { event: "check_rejected", details: undefined },
     { event: "check_rejected", details: undefined },
     { event: "check_limit_hit", details: undefined },

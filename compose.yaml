@@ -29,6 +29,7 @@ services:
       INKCHECK_WEB_ACCESS_CODE: ${INKCHECK_WEB_ACCESS_CODE:-}
       INKCHECK_WEB_ALLOWED_ORIGINS: ${INKCHECK_WEB_ALLOWED_ORIGINS:-https://secondlandings.com}
       INKCHECK_WEB_USAGE_FILE: /var/lib/inkcheck/usage.json
+      INKCHECK_WEB_USAGE_BROWSER_KEY: ${INKCHECK_WEB_USAGE_BROWSER_KEY:-}
       INKCHECK_WEB_JOB_STORE_DIR: /var/lib/inkcheck/jobs
     volumes:
       - inkcheck_usage:/var/lib/inkcheck
