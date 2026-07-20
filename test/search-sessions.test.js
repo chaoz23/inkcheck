@@ -1188,6 +1188,66 @@ test("MCP runtime regression pins classify still failing, fixed, and path change
   }
 });
 
+test("goal witness pins replay one approved witness without spending more search states", async () => {
+  const { root, file } = project();
+  try {
+    const started = await startSearchSession({ file, maxStates: 73, maxDepth: 150, seed: 7 });
+    const added = await addSessionGoal({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: started.session.revision,
+      maxStates: 20,
+      goal: { id: "reach_depth", condition: { left: { variable: "depth" }, operator: ">=", right: { literal: 2 } } },
+    });
+    const report = await openReportArtifact(root, added.goalReportId);
+    const findingId = report.report.explore.goalResults[0].witness.id;
+    const pinned = await pinSessionRegression({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: added.session.revision,
+      reportId: added.goalReportId,
+      findingId,
+    });
+    assert.strictEqual(pinned.pin.artifactType, "goal-witness-pin");
+    const checked = await checkSessionRegression({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: pinned.session.revision,
+      pinId: pinned.pin.id,
+    });
+    assert.strictEqual(checked.check.status, "still_reached");
+    assert.strictEqual(checked.check.reason, "goal_witness_reproduced");
+    assert.strictEqual(checked.session.statesExplored, started.session.statesExplored);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("assertion pins preserve a private typed rule and reproduce one violation", async () => {
+  const { root, file } = project();
+  try {
+    const started = await startCampaign({ file, mode: "fixed", valuePreference: "runtime_assertions", totalStates: 100, windowStates: 73, maxElapsedSeconds: 60, maxDiskMb: 100, longTailShare: 0, minLongTailProbes: 0, regressionReserveStates: 0 });
+    const added = await addCampaignAssertions({
+      file,
+      sessionCapability: started.sessionCapability,
+      revision: started.session.revision,
+      maxStates: 20,
+      assertions: [{ id: "depth_stays_zero", when: "always", condition: { left: { variable: "depth" }, operator: "==", right: { literal: 0 } } }],
+    });
+    const report = await openReportArtifact(root, added.assertionReportId);
+    const findingId = report.report.explore.assertionResults[0].violations[0].id;
+    const pinned = await pinSessionRegression({ file, sessionCapability: started.sessionCapability, revision: added.session.revision, reportId: added.assertionReportId, findingId });
+    assert.strictEqual(pinned.pin.artifactType, "assertion-regression-pin");
+    const raw = fs.readFileSync(path.join(root, ".inkcheck", "regressions", `${pinned.pin.id}.json`), "utf8");
+    assert.strictEqual(raw.includes("observedValues"), false);
+    const checked = await checkSessionRegression({ file, sessionCapability: started.sessionCapability, revision: pinned.session.revision, pinId: pinned.pin.id });
+    assert.strictEqual(checked.check.status, "still_failing");
+    assert.strictEqual(checked.check.reason, "assertion_violation_reproduced");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("regression pins are idempotent, private, session-bound, and contain no replay prose", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-mcp-regression-private-"));
   const file = path.join(root, "story.ink");
@@ -1252,7 +1312,7 @@ test("regression pinning fails closed for stale source, unsupported findings, co
     const endingId = ending.savedFindings.findings.find((finding) => finding.kind === "ending.reached").id;
     await assert.rejects(
       () => pinSessionRegression({ file: endingFile, sessionCapability: ending.sessionCapability, revision: 1, findingId: endingId }),
-      /currently support runtime findings only/
+      /runtime errors, assertion violations, and goal witnesses only/
     );
 
     const pinnedFile = path.join(root, "pinned.ink");

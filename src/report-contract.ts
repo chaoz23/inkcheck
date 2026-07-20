@@ -112,6 +112,7 @@ function enrichGoalResult(result: GoalResult, storySeed?: number) {
     replay: { operation: "playtest_story" as const, choices: witness.choiceIndices, storySeed },
     suggestedAction: "inspect_goal_witness" as const,
     documentation: "inkcheck://findings/goal.reached",
+    ...identity,
   });
   return {
     ...result,

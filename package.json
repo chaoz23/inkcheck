@@ -65,6 +65,7 @@
     "docs/hosted-checker.md",
     "docs/agent-discovery.md",
     "docs/agent-directed-qa-contracts.md",
+    "docs/qa-evidence-pins.md",
     "docs/agent-readiness-benchmark.md",
     "docs/config-schema-v1.json",
     "docs/report-schema-v1.md",

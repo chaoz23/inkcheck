@@ -17,7 +17,7 @@ This skill targets Inkcheck 0.6.x, capabilities schema 1, report schema 1, searc
 4. **Explore in a result window.** Prefer typed `start_search` for agent work. Its response is bounded, durable, source-bound, and paginated. Use `inkcheck_workflow` with `operation: "start_campaign"` only when the user has chosen a campaign posture or deadline. Avoid loading a full one-shot report merely to find the first action.
 5. **Select and replay.** Inspect privacy-minimal finding summaries. Through `inkcheck_workflow`, fetch one finding with `operation: "get_finding"`, then use `operation: "replay_witness"` before editing a runtime defect. Keep the search seed and Ink `storySeed` fixed.
 6. **Repair narrowly.** Change mechanical logic only when the intended behavior is unambiguous. Ask before changing story prose, choice wording, narrative outcomes, puzzle difficulty, or which branch should be canonical.
-7. **Verify.** Compile again. For a runtime defect, pin it before editing when useful, then route `check_regression` through `inkcheck_workflow`. Otherwise replay the same indexed witness and continue or repeat the same source/config/seed window. State whether the result is fixed, still failing, path changed, partial, or exhaustive.
+7. **Verify.** Compile again. For a runtime defect, assertion violation, or approved goal witness, pin it before editing when useful, then route `check_regression` through `inkcheck_workflow`. A pin checks one exact witness, so run broad QA again after meaningful edits. Otherwise replay the same indexed witness and continue or repeat the same source/config/seed window. State whether the result is fixed, still failing, still reached, lost, path changed, partial, or exhaustive.
 
 ## Evidence Rules
 
@@ -39,7 +39,7 @@ Use the smallest content-revealing call that answers the question. Names below a
 - Need bounded mechanical QA: `start_search`, then `inspect_search`.
 - Need one finding: `get_finding`, not `open_report`.
 - Need exact observed behavior: `replay_witness`.
-- Need post-edit runtime regression status: `pin_regression`, then `check_regression`.
+- Need post-edit evidence status: `pin_regression`, then `check_regression`.
 - Need an author-approved invariant such as `gold >= 0`: add a typed assertion through project config or an explicit `runtime_assertions` campaign child. Never execute arbitrary expressions.
 - Need an author-approved target condition: use `add_goal` with an explicit additive budget. Goal work starts at the root and does not replace baseline QA.
 - Need full report internals: call `open_report` deliberately and acknowledge that it may contain prose, variables, and complete witnesses.

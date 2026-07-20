@@ -42,6 +42,15 @@ export interface PlaytestResult {
   externalFunctionsStubbed: string[];
   /** Whether an indexed witness still follows the same shape. */
   replayStatus: "completed" | "runtime_error" | "path_changed";
+  /** Private replay checkpoints for deterministic contract-pin checks. */
+  checkpoints: ReplayCheckpoint[];
+}
+
+export interface ReplayCheckpoint {
+  choiceIndices: number[];
+  variables: Record<string, unknown>;
+  terminal: boolean;
+  knots: string[];
 }
 
 export interface EndingReport {
@@ -577,13 +586,30 @@ export function playtest(
   storyJson: string,
   choices: number[],
   externals: string[] = [],
-  storySeed = DEFAULT_STORY_SEED
+  storySeed = DEFAULT_STORY_SEED,
+  knots: KnotInfo[] = []
 ): PlaytestResult {
   const normalizedStorySeed = normalizeStorySeed(storySeed);
   const s = makeStory(storyJson, externals, normalizedStorySeed);
   const steps: PlaytestStep[] = [];
+  const checkpoints: ReplayCheckpoint[] = [];
   let pathChanged = false;
   let step = continueMaximally(s);
+  const visitedKnots = () => knots.filter((knot) => {
+    try {
+      return s.story.state.VisitCountAtPathString(knot.name) > 0;
+    } catch {
+      return false;
+    }
+  }).map((knot) => knot.name);
+  const checkpoint = (choiceIndices: number[]) => checkpoints.push({
+    choiceIndices: [...choiceIndices],
+    variables: extractVariables(s.story),
+    terminal: s.errors.length === 0 && !s.story.canContinue && s.story.currentChoices.length === 0,
+    knots: visitedKnots(),
+  });
+  checkpoint([]);
+  const taken: number[] = [];
   for (const idx of choices) {
     if (idx < 0 || idx >= s.story.currentChoices.length) {
       pathChanged = true;
@@ -594,6 +620,7 @@ export function playtest(
     }
     step.choiceTaken = idx;
     steps.push(step);
+    taken.push(idx);
     try {
       s.story.ChooseChoiceIndex(idx);
     } catch (e) {
@@ -601,6 +628,7 @@ export function playtest(
       break;
     }
     step = continueMaximally(s);
+    checkpoint(taken);
   }
   steps.push(step);
   const ended =
@@ -615,6 +643,7 @@ export function playtest(
     runtimeWarnings: s.warnings,
     externalFunctionsStubbed: [...externals],
     replayStatus: pathChanged ? "path_changed" : s.errors.length > 0 ? "runtime_error" : "completed",
+    checkpoints,
   };
 }
 

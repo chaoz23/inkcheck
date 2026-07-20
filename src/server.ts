@@ -82,7 +82,7 @@ const WORKFLOW_OPERATIONS = {
   get_finding: { required: ["file", "sessionCapability", "reportId", "findingId"], optional: [] },
   open_report: { required: ["file", "sessionCapability", "reportId"], optional: [] },
   replay_witness: { required: ["file", "sessionCapability", "revision", "findingId"], optional: [] },
-  pin_regression: { required: ["file", "sessionCapability", "revision", "findingId"], optional: [] },
+  pin_regression: { required: ["file", "sessionCapability", "revision", "findingId"], optional: ["reportId"] },
   check_regression: { required: ["file", "sessionCapability", "revision", "pinId"], optional: [] },
   add_goal: { required: ["file", "sessionCapability", "revision", "goal", "maxStates"], optional: [] },
   probe_gate: { required: ["file", "sessionCapability", "revision", "gate", "maxStates"], optional: [] },
@@ -136,7 +136,7 @@ async function reviewContract(request: { file: string; assertions?: unknown; goa
       "Show the proposed contract to the author and obtain approval before writing inkcheck.yml.",
       "Run broad shared QA with the approved assertions during ordinary exploration.",
       ...(goals.length ? ["Use a separately budgeted goal probe only when the author or agent explicitly needs a witness."] : []),
-      "Pin confirmed runtime findings before editing, then recheck regression pins after the fix.",
+      "Pin confirmed runtime errors, assertion violations, or goal witnesses before editing, then replay the private pin after the change.",
     ],
   };
 }
@@ -174,12 +174,13 @@ server.registerTool(
   "pin_regression",
   {
     description:
-      "Pin one confirmed runtime-error finding from the session's latest current report for deterministic post-edit rechecks. Saves a private bounded artifact with indexed choices, story seed, and hashed expected errors; endings and assertion findings are rejected in this first slice.",
+      "Pin one confirmed runtime error, assertion violation, or goal witness from the latest current report for deterministic post-edit checks. The private bounded artifact stores indexed choices, story seed, and typed rule data without story prose or observed variable values; a pin checks one witness, not the entire story-wide result.",
     inputSchema: {
       file: z.string().describe("The same root .ink file used to start the session"),
       sessionCapability: z.string().describe("Opaque bearer capability returned by start_search"),
       revision: z.number().int().min(1).describe("Last observed session revision"),
-      findingId: z.string().min(1).max(256).describe("Stable runtime finding ID returned by inspect_search.savedFindings"),
+      findingId: z.string().min(1).max(256).describe("Stable runtime, assertion, or goal witness ID returned by inspect_search.savedFindings"),
+      reportId: z.string().regex(/^report-[0-9a-f]{24}$/).optional().describe("Optional report ID from this session's directed goal work; omit for the latest base report"),
     },
   },
   async (input) => {
@@ -195,7 +196,7 @@ server.registerTool(
   "check_regression",
   {
     description:
-      "After editing current source, replay one private runtime regression pin without spending search states. Returns fixed, still_failing, or path_changed and advances the session revision; compile failures remain explicit prerequisite errors.",
+      "After editing current source, replay one private evidence pin without spending search states. Runtime and assertion pins return fixed, still_failing, or path_changed; goal witness pins return still_reached, lost, or path_changed. This rechecks one exact witness, not broad coverage.",
     inputSchema: {
       file: z.string().describe("The same root .ink file used to create the pin"),
       sessionCapability: z.string().describe("Opaque bearer capability for the pin's originating session"),

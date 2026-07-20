@@ -30,6 +30,6 @@ The response is read-only. It never writes `inkcheck.yml`, starts a search, cons
 
 Run ordinary broad QA first. Approved assertions run during that base search. An approved goal may be observed during broad QA, but a goal-only probe is separate, explicitly budgeted work used only when an author or agent needs a particular witness. It never replaces general QA.
 
-When Inkcheck finds a runtime error, replay its witness, pin the confirmed finding before editing, and check the pin after the repair. This keeps the evidence chain stable across agent sessions and CI: source/config/seed, observed witness, fix, and regression verdict.
+When Inkcheck finds a runtime error, assertion violation, or approved goal witness, pin the confirmed finding before editing and check the pin after the repair. This keeps the evidence chain stable across agent sessions and CI: source/config/seed, observed witness, fix, and regression verdict. A pin rechecks one exact witness; it never substitutes for a new broad search. See [QA evidence pins](qa-evidence-pins.md).
 
 Bounded clean results remain bounded: say "no violation observed within this run" unless the report explicitly establishes exhaustive verification.
