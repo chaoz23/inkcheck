@@ -128,7 +128,7 @@ interface SearchSessionEvent {
   findingId?: string;
   replayStatus?: "completed" | "runtime_error" | "path_changed";
   pinId?: string;
-  regressionStatus?: "fixed" | "still_failing" | "path_changed";
+  regressionStatus?: "fixed" | "still_failing" | "still_reached" | "lost" | "path_changed";
   goalHandle?: string;
   goalStatus?: GoalResult["status"];
   directedGranted?: number;
@@ -337,6 +337,8 @@ export interface PinRegressionInput {
   sessionCapability: string;
   revision: number;
   findingId: string;
+  /** Optional session-owned directed report containing an assertion or goal witness. */
+  reportId?: string;
 }
 
 export interface CheckRegressionInput {
@@ -518,7 +520,7 @@ function parseRecord(raw: string, expectedHash?: string): SearchSessionRecord {
         : checkEvent
           ? (sourceSchema === 3 || sourceSchema === SEARCH_SESSION_SCHEMA_VERSION)
             && typeof item.pinId === "string" && /^regression-[0-9a-f]{24}$/.test(item.pinId)
-            && ["fixed", "still_failing", "path_changed"].includes(String(item.regressionStatus))
+            && ["fixed", "still_failing", "still_reached", "lost", "path_changed"].includes(String(item.regressionStatus))
             && item.findingId === undefined && item.replayStatus === undefined && noGoalDetails
           : goalEvent
             ? (sourceSchema === 4 || sourceSchema === SEARCH_SESSION_SCHEMA_VERSION)
@@ -2225,11 +2227,18 @@ export async function pinSessionRegression(input: PinRegressionInput): Promise<P
   if (!/^[A-Za-z0-9._:-]{1,256}$/.test(input.findingId)) {
     throw new Error("findingId must be a stable Inkcheck finding ID");
   }
+  const reportId = input.reportId ?? record.latestReportId;
+  if (input.reportId) {
+    const report = await openReportArtifact(projectRoot, reportId);
+    if (report.artifact.entrypoint !== relativeEntrypoint(projectRoot, input.file) || report.artifact.freshness !== "current") {
+      throw new Error("regression pin report must be current and belong to this story entrypoint");
+    }
+  }
   const pin = await createRegressionPin(
     projectRoot,
     input.file,
     record.capabilityHash,
-    record.latestReportId,
+    reportId,
     input.findingId
   );
   const nextRevision = record.revision + 1;
@@ -2243,7 +2252,7 @@ export async function pinSessionRegression(input: PinRegressionInput): Promise<P
     revision: nextRevision,
     totalGranted: updated.totalGranted,
     statesExplored: updated.statesExplored,
-    reportId: updated.latestReportId,
+    reportId,
     ...(updated.latestCheckpointId ? { checkpointId: updated.latestCheckpointId } : {}),
     findingId: pin.findingId,
     pinId: pin.id,
@@ -2284,14 +2293,14 @@ export async function checkSessionRegression(input: CheckRegressionInput): Promi
     regressionStatus: check.status,
   });
   writeRecord(projectRoot, updated, record.revision);
-  const fixed = check.status === "fixed";
+  const resolved = check.status === "fixed" || check.status === "lost";
   return {
     schemaVersion: SEARCH_SESSION_SCHEMA_VERSION,
     inkcheckVersion: VERSION,
     session: responseSession(updated),
     check,
-    nextOperation: fixed
-      ? { tool: "cancel_search", reason: "The pinned failure is fixed. Discard this now-stale session, then start a fresh broader search on edited source." }
-      : { tool: "check_regression", reason: "The pin is not fixed. Edit the story again, then recheck this same pin without spending search states." },
+    nextOperation: resolved
+      ? { tool: "cancel_search", reason: "The pinned witness changed as expected. Discard this now-stale session, then start a fresh broader search on edited source." }
+      : { tool: "check_regression", reason: "The pinned witness still has the prior outcome. Edit the story again, then recheck this same pin without spending search states." },
   };
 }

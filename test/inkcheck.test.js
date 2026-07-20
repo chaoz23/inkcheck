@@ -247,7 +247,7 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.limits.maxReportPrunePerRun, MAX_REPORT_PRUNE_PER_RUN);
   assert.strictEqual(value.schemas.searchSession, 5);
   assert.strictEqual(value.schemas.campaignPolicy, 1);
-  assert.strictEqual(value.schemas.regressionArtifact, 1);
+  assert.strictEqual(value.schemas.regressionArtifact, 2);
   assert.strictEqual(value.limits.defaultMcpSessionWindowStates, 1_000_000);
   assert.strictEqual(value.limits.maxMcpSessionWindowStates, 5_000_000);
   assert.strictEqual(value.limits.maxMcpSessionTotalStates, 100_000_000);

@@ -10,7 +10,7 @@
       "artifact": 1,
       "checkpointArtifact": 1,
       "searchSession": 5,
-      "regressionArtifact": 1,
+      "regressionArtifact": 2,
       "campaignPolicy": 1
     }
   },
