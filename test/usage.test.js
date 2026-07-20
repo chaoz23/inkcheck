@@ -32,6 +32,8 @@ test("usage store persists only daily aggregate counters", (t) => {
         externalPageViews: 2,
         internalPageViews: 1,
         browserTaggedPageViews: 3,
+        externalBrowserTaggedPageViews: 2,
+        internalBrowserTaggedPageViews: 1,
         externalBrowserSketch: loadUsageData(file).days["2026-07-08"].externalBrowserSketch,
         internalBrowserSketch: loadUsageData(file).days["2026-07-08"].internalBrowserSketch,
         supportClicks: 1,
@@ -45,8 +47,8 @@ test("usage store persists only daily aggregate counters", (t) => {
   const serialized = fs.readFileSync(file, "utf8");
   assert.doesNotMatch(serialized, /request|address|agent|story|file|browser-token/i);
   const report = renderUsageReport(loadUsageData(file), 1, now);
-  assert.match(report, /Estimated external unique browsers: 1 \(calendar-month estimate; 3 tagged visits\)/);
-  assert.match(report, /Estimated internal unique browsers: 1 \(calendar-month estimate\)/);
+  assert.match(report, /Estimated external unique browsers: 1 \(calendar-month estimate; 2 tagged visits\)/);
+  assert.match(report, /Estimated internal unique browsers: 1 \(calendar-month estimate; 1 tagged visits\)/);
 });
 
 test("usage report covers a fixed UTC window and handles quiet days", () => {
@@ -58,6 +60,8 @@ test("usage report covers a fixed UTC window and handles quiet days", () => {
         externalPageViews: 0,
         internalPageViews: 0,
         browserTaggedPageViews: 0,
+        externalBrowserTaggedPageViews: 0,
+        internalBrowserTaggedPageViews: 0,
         externalBrowserSketch: "",
         internalBrowserSketch: "",
         supportClicks: 1,

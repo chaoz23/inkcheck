@@ -10,6 +10,8 @@ export interface DailyUsage {
   externalPageViews: number;
   internalPageViews: number;
   browserTaggedPageViews: number;
+  externalBrowserTaggedPageViews: number;
+  internalBrowserTaggedPageViews: number;
   externalBrowserSketch: string;
   internalBrowserSketch: string;
   supportClicks: number;
@@ -40,6 +42,8 @@ const EMPTY_DAY: DailyUsage = {
   externalPageViews: 0,
   internalPageViews: 0,
   browserTaggedPageViews: 0,
+  externalBrowserTaggedPageViews: 0,
+  internalBrowserTaggedPageViews: 0,
   externalBrowserSketch: "",
   internalBrowserSketch: "",
   supportClicks: 0,
@@ -83,10 +87,22 @@ function readUsageData(file: string): UsageData {
     candidate.externalPageViews ??= 0;
     candidate.internalPageViews ??= 0;
     candidate.browserTaggedPageViews ??= 0;
+    candidate.externalBrowserTaggedPageViews ??= candidate.internalPageViews > 0 && candidate.externalPageViews === 0
+      ? 0
+      : candidate.browserTaggedPageViews;
+    candidate.internalBrowserTaggedPageViews ??= candidate.internalPageViews > 0 && candidate.externalPageViews === 0
+      ? candidate.browserTaggedPageViews
+      : 0;
     candidate.externalBrowserSketch ??= "";
     candidate.internalBrowserSketch ??= "";
     if (
-      ![candidate.externalPageViews, candidate.internalPageViews, candidate.browserTaggedPageViews].every(isNonNegativeInteger) ||
+      ![
+        candidate.externalPageViews,
+        candidate.internalPageViews,
+        candidate.browserTaggedPageViews,
+        candidate.externalBrowserTaggedPageViews,
+        candidate.internalBrowserTaggedPageViews,
+      ].every(isNonNegativeInteger) ||
       ![candidate.externalBrowserSketch, candidate.internalBrowserSketch].every((sketch) =>
         typeof sketch === "string" && (sketch === "" || Buffer.from(sketch, "base64").length === SKETCH_BYTES)
       )
@@ -161,6 +177,8 @@ export class FileUsageStore implements UsageRecorder {
         if (details.internal) day.internalBrowserSketch = markSketch(day.internalBrowserSketch, fingerprint);
         else day.externalBrowserSketch = markSketch(day.externalBrowserSketch, fingerprint);
         day.browserTaggedPageViews++;
+        if (details.internal) day.internalBrowserTaggedPageViews++;
+        else day.externalBrowserTaggedPageViews++;
       }
     }
     else if (event === "support_click") day.supportClicks++;
@@ -206,6 +224,8 @@ export function renderUsageReport(data: UsageData, days = 7, now = new Date()): 
     externalPageViews: sum.externalPageViews + day.externalPageViews,
     internalPageViews: sum.internalPageViews + day.internalPageViews,
     browserTaggedPageViews: sum.browserTaggedPageViews + day.browserTaggedPageViews,
+    externalBrowserTaggedPageViews: sum.externalBrowserTaggedPageViews + day.externalBrowserTaggedPageViews,
+    internalBrowserTaggedPageViews: sum.internalBrowserTaggedPageViews + day.internalBrowserTaggedPageViews,
     externalBrowserSketch: "",
     internalBrowserSketch: "",
     supportClicks: sum.supportClicks + day.supportClicks,
@@ -235,8 +255,8 @@ export function renderUsageReport(data: UsageData, days = 7, now = new Date()): 
     `Page visits: ${total.pageViews}`,
     `External page visits: ${total.externalPageViews}`,
     `Internal page visits: ${total.internalPageViews}`,
-    `Estimated external unique browsers: ${externalEstimate} (calendar-month estimate; ${total.browserTaggedPageViews} tagged visits)`,
-    `Estimated internal unique browsers: ${internalEstimate} (calendar-month estimate)`,
+    `Estimated external unique browsers: ${externalEstimate} (calendar-month estimate; ${total.externalBrowserTaggedPageViews} tagged visits)`,
+    `Estimated internal unique browsers: ${internalEstimate} (calendar-month estimate; ${total.internalBrowserTaggedPageViews} tagged visits)`,
     `Checks completed: ${total.checksCompleted}`,
     `Checks rejected: ${total.checksRejected}`,
     `Hosted limit hits: ${total.checkLimitHits}`,
