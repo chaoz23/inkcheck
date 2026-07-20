@@ -21,6 +21,7 @@ import {
 } from "./report-contract";
 import { parseAssertionDefinitions } from "./assertions";
 import { parseGoalDefinitions } from "./goals";
+import { findDefaultProjectConfig } from "./config";
 import { createResourceGuards } from "./resource-guards";
 import {
   explorePortfolioConcurrent,
@@ -73,6 +74,7 @@ const server = new Proxy(rawServer, {
 }) as McpServer;
 
 const WORKFLOW_OPERATIONS = {
+  review_contract: { required: ["file"], optional: ["assertions", "goals"] },
   inspect_search: { required: ["file", "sessionCapability"], optional: ["findingLimit", "findingCursor", "since"] },
   continue_search: { required: ["file", "sessionCapability", "revision", "maxStates"], optional: ["findingLimit", "findingCursor", "since"] },
   start_campaign: { required: ["file"], optional: ["mode", "resourcePreference", "valuePreference", "stopPolicy", "totalStates", "windowStates", "maxElapsedSeconds", "maxMemoryMb", "maxDiskMb", "deadlineAt", "longTailShare", "minLongTailProbes", "regressionReserveStates", "maxDepth", "seed", "storySeed", "maxFrontierStates", "maxFrontierMb", "findingLimit"] },
@@ -88,6 +90,56 @@ const WORKFLOW_OPERATIONS = {
   cancel_search: { required: ["file", "sessionCapability", "revision"], optional: ["discard"] },
   playtest_story: { required: ["file", "choices"], optional: ["storySeed"] },
 } as const;
+
+async function reviewContract(request: { file: string; assertions?: unknown; goals?: unknown }) {
+  const assertionIssues: string[] = [];
+  const assertions = parseAssertionDefinitions(request.assertions, "assertions", assertionIssues) ?? [];
+  const goalIssues: string[] = [];
+  const goals = parseGoalDefinitions(request.goals, "goals", goalIssues) ?? [];
+  if (assertionIssues.length || goalIssues.length) {
+    throw new Error([...assertionIssues, ...goalIssues].map((issue) => `- ${issue}`).join("\n"));
+  }
+  if (!assertions.length && !goals.length) {
+    throw new Error("review_contract requires at least one proposed assertion or goal");
+  }
+  const compiled = await compile(request.file);
+  if (!compiled.success || !compiled.storyJson) {
+    throw new Error(`Compilation failed:\n${compiled.issues.map((issue) => `- ${issue.raw}`).join("\n")}`);
+  }
+  const knots = scanKnots(request.file);
+  const externals = scanExternals(request.file);
+  validateAssertionsForStory(compiled.storyJson, knots, externals, assertions);
+  validateGoalsForStory(compiled.storyJson, knots, externals, goals);
+  const inspection = inspectProjectOverview(request.file);
+  const existing = findDefaultProjectConfig(require("node:path").dirname(request.file))?.config;
+  return {
+    schemaVersion: 1,
+    kind: "agent_directed_qa_contract_review",
+    authorApprovalRequired: true,
+    source: {
+      entrypoint: inspection.entrypoint,
+      variables: inspection.inventory.variables,
+      gates: inspection.inventory.gates,
+      knots: inspection.inventory.knots,
+    },
+    existingContract: {
+      assertions: existing?.assertions?.length ?? 0,
+      goals: existing?.goals?.length ?? 0,
+    },
+    proposedContract: { assertions, goals },
+    recommendedRun: {
+      search: "portfolio",
+      goalMaxStates: 0,
+      rationale: "Run broad shared QA first. A goal-only probe is optional, separately budgeted work for an explicitly approved witness; it does not replace general QA.",
+    },
+    nextSteps: [
+      "Show the proposed contract to the author and obtain approval before writing inkcheck.yml.",
+      "Run broad shared QA with the approved assertions during ordinary exploration.",
+      ...(goals.length ? ["Use a separately budgeted goal probe only when the author or agent explicitly needs a witness."] : []),
+      "Pin confirmed runtime findings before editing, then recheck regression pins after the fix.",
+    ],
+  };
+}
 
 function json(result: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
@@ -741,6 +793,7 @@ rawServer.registerTool(
       "Run one post-discovery Inkcheck operation through the compact agent surface. Call inkcheck_capabilities first for required/optional fields, then pass the exact operation and request object.",
     inputSchema: {
       operation: z.enum([
+        "review_contract",
         "inspect_search",
         "continue_search",
         "start_campaign",
@@ -765,6 +818,8 @@ rawServer.registerTool(
       const missing = contract.required.filter((field) => request[field] === undefined);
       if (missing.length) return err(`${operation} requires: ${missing.join(", ")}`);
       switch (operation) {
+        case "review_contract":
+          return json(await reviewContract(request as { file: string; assertions?: unknown; goals?: unknown }));
         case "inspect_search":
           return json(await inspectSearchSession(request as unknown as Parameters<typeof inspectSearchSession>[0]));
         case "continue_search":

@@ -183,7 +183,7 @@ test("large compile diagnostics remain actionable without exceeding the standard
 test("MCP compact profile stays below the agent bootstrap target and routes later workflow operations", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-compact-mcp-"));
   const story = path.join(root, "story.ink");
-  fs.writeFileSync(story, "A bounded opening.\n* [Continue] A bounded ending.\n  -> END\n");
+  fs.writeFileSync(story, "VAR score = 0\nA bounded opening.\n* [Continue] A bounded ending.\n  -> END\n");
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(__dirname, "..", "dist", "server.js")],
@@ -208,7 +208,27 @@ test("MCP compact profile stays below the agent bootstrap target and routes late
     const discovered = JSON.parse(capabilitiesCall.content[0].text);
     assert.strictEqual(discovered.mcp.profile, "compact");
     assert.deepStrictEqual(discovered.mcp.fullProfileEnvironment, { INKCHECK_MCP_PROFILE: "full" });
+    assert.deepStrictEqual(discovered.mcp.workflowOperations.review_contract.required, ["file"]);
     assert.deepStrictEqual(discovered.mcp.workflowOperations.inspect_search.required, ["file", "sessionCapability"]);
+
+    const contractCall = await client.callTool({
+      name: "inkcheck_workflow",
+      arguments: {
+        operation: "review_contract",
+        request: {
+          file: story,
+          assertions: [{
+            id: "score_nonnegative",
+            when: "always",
+            condition: { left: { variable: "score" }, operator: ">=", right: { literal: 0 } },
+          }],
+        },
+      },
+    });
+    const contract = JSON.parse(contractCall.content[0].text);
+    assert.strictEqual(contract.authorApprovalRequired, true);
+    assert.strictEqual(contract.recommendedRun.search, "portfolio");
+    assert.strictEqual(contract.recommendedRun.goalMaxStates, 0);
 
     const startedCall = await client.callTool({ name: "start_search", arguments: { file: story, maxStates: 100 } });
     const started = JSON.parse(startedCall.content[0].text);
