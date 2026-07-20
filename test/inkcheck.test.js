@@ -225,7 +225,7 @@ test("compile succeeds and returns story JSON for a valid story", async () => {
 test("capabilities explicitly reports supported and unavailable features", () => {
   const value = capabilities();
   assert.strictEqual(value.schemaVersion, 1);
-  assert.strictEqual(value.inkcheckVersion, "0.7.1");
+  assert.strictEqual(value.inkcheckVersion, "0.7.2");
   assert.deepStrictEqual(value.searchModes, ["portfolio", "shared", "shared-variable"]);
   assert.deepStrictEqual(value.resumableSearchSurfaces, ["cli", "mcp"]);
   assert.strictEqual(value.limits.maxStates, 100_000_000);
@@ -1180,7 +1180,7 @@ test("versioned JSON reports have stable identities and exact replay instruction
   const first = JSON.parse(run().stdout);
   const second = JSON.parse(run().stdout);
   assert.strictEqual(first.schemaVersion, 1);
-  assert.strictEqual(first.inkcheckVersion, "0.7.1");
+  assert.strictEqual(first.inkcheckVersion, "0.7.2");
   assert.strictEqual(first.storyFingerprint.value, second.storyFingerprint.value);
   assert.strictEqual(first.explore.runtimeErrors[0].id, second.explore.runtimeErrors[0].id);
   assert.strictEqual(first.explore.runtimeErrors[0].kind, "runtime.content_exhaustion");
@@ -3922,7 +3922,7 @@ test("release version stays synchronized across package and manifests", () => {
   const tool = readJson("tool.json");
   const server = readJson("server.json");
   const { VERSION } = require("../dist/version");
-  assert.strictEqual(pkg.version, "0.7.1");
+  assert.strictEqual(pkg.version, "0.7.2");
   assert.strictEqual(lock.version, pkg.version);
   assert.strictEqual(lock.packages[""].version, pkg.version);
   assert.strictEqual(tool.version, pkg.version);
