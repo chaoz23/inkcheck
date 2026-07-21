@@ -16,6 +16,10 @@ const { capabilities } = require("../dist/discovery");
 
 const ROOT = path.join(__dirname, "..", "skills", "inkcheck");
 const EXERCISES = path.join(ROOT, "exercises");
+const PACKAGE_VERSION = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")
+).version;
+const PACKAGE_MINOR_CONTRACT = `${PACKAGE_VERSION.split(".").slice(0, 2).join(".")}.x`;
 
 function story(name) {
   return path.join(EXERCISES, name);
@@ -27,7 +31,10 @@ test("bundled agent skill is compact, versioned, progressively linked, and packa
   assert.match(skill, /inspect.*compile.*explore.*replay.*fix.*verify/is);
   assert.match(skill, /does not prove complete coverage/i);
   assert.match(skill, /ask before changing story prose/i);
-  assert.match(skill, /Inkcheck 0\.6\.x, capabilities schema 1, report schema 1, search-session schema 5/);
+  assert.match(
+    skill,
+    new RegExp(`Inkcheck ${PACKAGE_MINOR_CONTRACT.replace(".", "\\.")}, capabilities schema 1, report schema 1, search-session schema 5`)
+  );
   for (const linked of [
     "references/ink-qa-primer.md",
     "references/finding-workflows.md",
@@ -51,7 +58,7 @@ test("bundled agent skill is compact, versioned, progressively linked, and packa
 test("ten golden exercises cover the declared agent QA curriculum and reproduce their signals", async () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(EXERCISES, "manifest.json"), "utf8"));
   assert.strictEqual(manifest.schemaVersion, 1);
-  assert.match(manifest.inkcheckContract, /^0\.6\.x\//);
+  assert.match(manifest.inkcheckContract, new RegExp(`^${PACKAGE_MINOR_CONTRACT.replace(".", "\\.")}/`));
   assert.strictEqual(manifest.exercises.length, 10);
   assert.deepStrictEqual(new Set(manifest.exercises.map((entry) => entry.category)), new Set([
     "compilation",

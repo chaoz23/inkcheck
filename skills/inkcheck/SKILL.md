@@ -7,7 +7,7 @@ description: Use Inkcheck to inspect, compile, mechanically explore, replay, rep
 
 Use this skill when a project contains `.ink` files or asks for Ink compile checks, runtime-path reproduction, assertions, unreachable-content review, or repeatable narrative CI. Inkcheck is a deterministic, non-AI QA engine. It does not generate prose, judge story quality, or model a human player. It does not prove complete coverage unless its systematic pass explicitly reports `exhaustive: true`.
 
-This skill targets Inkcheck 0.6.x, capabilities schema 1, report schema 1, search-session schema 5, and campaign-policy schema 1. Begin with `inkcheck_capabilities`; use reported feature flags and schema versions rather than assuming optional behavior. The default compact MCP profile exposes typed `inkcheck_capabilities`, `inspect_story`, `compile_story`, and `start_search` entry calls plus `inkcheck_workflow` for later operations. If the installed contract differs, prefer its bundled docs and avoid unsupported operations.
+This skill targets Inkcheck 0.7.x, capabilities schema 1, report schema 1, search-session schema 5, and campaign-policy schema 1. Begin with `inkcheck_capabilities`; use reported feature flags and schema versions rather than assuming optional behavior. The default compact MCP profile exposes typed `inkcheck_capabilities`, `inspect_story`, `compile_story`, and `start_search` entry calls plus `inkcheck_workflow` for later operations. If the installed contract differs, prefer its bundled docs and avoid unsupported operations.
 
 ## Default Loop
 
