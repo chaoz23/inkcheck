@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "inkcheckContract": "0.6.x/capabilities-1/report-1/search-session-5",
+  "inkcheckContract": "0.7.x/capabilities-1/report-1/search-session-5",
   "exercises": [
     {
       "id": "compile-missing-divert",
