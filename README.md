@@ -2,6 +2,8 @@
 
 **CI for [ink](https://github.com/inkle/ink) stories.** Compile checks, exhaustive branch playtesting, runtime-error repro paths, and dead-content detection — as an MCP server for AI coding agents and as a standalone CLI for your pipeline.
 
+**Agents start here → [SKILL.md](SKILL.md)** — when to call this, worked examples, MUST/MUST NOTs. Family contract: [FAMILY.md](https://github.com/chaoz23/srdcheck/blob/main/FAMILY.md).
+
 inkcheck is a QA tool, not a writing tool. It doesn't generate a word of prose. It exists so that the story *you* wrote can be verified the way code is: every branch compiled, every reachable path played, every dead end and broken divert caught before a player finds it.
 
 ## What it catches
