@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add an opt-in bounded NDJSON evidence stream for marathon-scale external consumers. It emits replayable numeric ending/runtime witnesses with global elapsed timestamps as they are retained, then a compact terminal summary without constructing the monolithic full-report JSON string.
+- Treat `--max-time` as a total CLI deadline and retain bounded time/heap headroom for clean report finalization. Explicit heap caps now expose the lower search watermark separately from the full process envelope.
+
 ## 0.7.2 — 2026-07-20
 
 - Add private, source-bound QA evidence pins for runtime errors, assertion violations, and approved goal witnesses. Humans and agents can recheck one exact indexed witness after an edit without another search run; pins intentionally retain no story prose, choice labels, observed values, or report content. A pin is evidence memory, not a replacement for a new broad bounded check after meaningful edits.
