@@ -103,6 +103,7 @@ function sanitizedOptions(options: AdaptiveConcurrentOptions): ExploreOptions {
     activationPilotStatesForTest: _activationPilotStatesForTest,
     onProgress: _onProgress,
     onSnapshot: _onSnapshot,
+    onEvidence: _onEvidence,
     memoryGuard: _memoryGuard,
     timeGuard: _timeGuard,
     loopRiskRegistry: _loopRiskRegistry,

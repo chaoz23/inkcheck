@@ -70,6 +70,7 @@
     "docs/config-schema-v1.json",
     "docs/report-schema-v1.md",
     "docs/machine-output.md",
+    "docs/evidence-ndjson.md",
     "docs/local-artifacts.md",
     "docs/local-checkpoints.md",
     "docs/shared-checkpoint-schema-v1.md",
