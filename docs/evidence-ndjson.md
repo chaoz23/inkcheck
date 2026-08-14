@@ -16,7 +16,7 @@ The stream deduplicates endings by numeric replay path and runtime errors by mes
 
 The reserved InkBench tags are a scoring transport, not a search input. The portfolio does not score, prioritize, hash, or retain tags in ending identity. InkBench removes planted oracle variables and assignments before invoking Inkcheck, replaces a triggering assignment with one numeric signal tag, and replays only those signaled paths against its separately pinned instrumented story. Ordinary stories should not use the reserved `INKBENCH_SIGNAL_` prefix.
 
-`--json-stream` currently requires `--concurrency 1`, supports one bounded run (no `--next`), and cannot be combined with `--save-report`. These constraints prevent a function callback from crossing worker isolates and prevent a supposedly bounded transport from invoking the monolithic artifact writer.
+`--json-stream` currently requires `--concurrency 1`, supports one bounded exploration run (no `--next` or `--profile`), and cannot be combined with `--save-report`. These constraints prevent a function callback from crossing worker isolates, keep profile-only output from masquerading as an evidence stream, and prevent a supposedly bounded transport from invoking the monolithic artifact writer.
 
 For a declared `--max-time`, exploration retains 10% of the total grant, with a 250 ms minimum and 60-second maximum, to merge the already-retained internal evidence and flush `run_end`. This reserve is part of the total wall budget, not extra search time.
 

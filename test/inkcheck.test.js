@@ -3469,6 +3469,14 @@ test("--json-stream requires a single worker and rejects monolithic report persi
   );
   assert.strictEqual(persisted.status, 2);
   assert.match(persisted.stderr, /cannot be combined with --save-report/);
+  const profiled = spawnSync(
+    process.execPath,
+    [CLI, CLEAN_BRANCH, "--profile", "--concurrency", "1", "--json-stream"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(profiled.status, 2);
+  assert.match(profiled.stderr, /--profile cannot be combined with --json-stream/);
+  assert.strictEqual(profiled.stdout, "");
 });
 
 test("--json-stream stays discoverable across machine and agent front doors", () => {

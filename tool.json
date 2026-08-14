@@ -60,7 +60,7 @@
       },
       {
         "flag": "--json-stream",
-        "description": "Emit schema-versioned replayable numeric ending/runtime witnesses as NDJSON when retained, followed by a bounded run_end summary. Requires --concurrency 1, supports one run without --next, and cannot be combined with --save-report."
+        "description": "Emit schema-versioned replayable numeric ending/runtime witnesses as NDJSON when retained, followed by a bounded run_end summary. Requires --concurrency 1, supports one exploration run without --next or --profile, and cannot be combined with --save-report."
       },
       {
         "flag": "--human",

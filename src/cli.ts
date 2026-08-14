@@ -644,6 +644,7 @@ async function main() {
   }
 
   if (profileOnly) {
+    if (asJsonStream) usage("--profile cannot be combined with --json-stream");
     if (saveCheckpoint) usage("--profile cannot save or resume a checkpoint");
     const profile = scanShapeProfile(file);
     if (asJson) {
