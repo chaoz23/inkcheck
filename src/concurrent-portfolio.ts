@@ -32,6 +32,8 @@ export interface ConcurrentPortfolioOptions extends ExploreOptions {
   failPassForTest?: PortfolioPassKind;
   /** Deterministic failure injection for worker initialization contract tests. */
   failWorkerInitializationForTest?: boolean;
+  /** Deterministic synchronous worker-construction failure injection for contract tests. */
+  failWorkerConstructionForTest?: boolean;
   /** Deterministic aggregate-memory injection for resource contract tests. */
   aggregateMemoryUsedForTest?: () => number;
   /** Internal-only smaller activation pilot for scheduler contract tests. */
@@ -146,7 +148,6 @@ function finalizePilot(
     discoveryEvents: result.discoverySummary?.discoveryEvents ?? 0,
     statesSinceLastDiscovery: result.discoverySummary?.statesSinceLastDiscovery ?? null,
   });
-  options.onSnapshot?.(result);
   return result;
 }
 
@@ -336,9 +337,11 @@ export function explorePortfolioPilotHandoffConcurrent(
     ? "activate_concurrent"
     : "stay_sequential";
   let result: ExploreResult;
+  let snapshotFinalizedPilot = false;
 
   if (pilotTerminalReason) {
     result = finalizePilot(engine, pilotBudget, consumed, maxStates, options, pilotTerminalReason, pilotStopCause);
+    snapshotFinalizedPilot = true;
   } else if (activationReason !== "pilot_open_frontier") {
     result = explorePortfolioFromPilot(storyJson, knots, externals, options, pilot);
     result.execution = {
@@ -393,6 +396,7 @@ export function explorePortfolioPilotHandoffConcurrent(
         activationReason = "worker_initialization_deadline";
         activationDecision = "stay_sequential";
         result = finalizePilot(engine, pilotBudget, consumed, maxStates, options, activationReason, "time");
+        snapshotFinalizedPilot = true;
       }
     }
   }
@@ -408,6 +412,7 @@ export function explorePortfolioPilotHandoffConcurrent(
     uncertainty: "high",
     productionEligible: true,
   };
+  if (snapshotFinalizedPilot) options.onSnapshot?.(result);
   return result;
 }
 

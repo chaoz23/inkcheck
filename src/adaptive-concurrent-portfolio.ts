@@ -39,6 +39,7 @@ export interface AdaptiveConcurrentOptions extends ExploreOptions {
   deadlineMs?: number;
   failPassForTest?: PortfolioPassKind;
   failWorkerInitializationForTest?: boolean;
+  failWorkerConstructionForTest?: boolean;
   aggregateMemoryUsedForTest?: () => number;
   activationPilotStatesForTest?: number;
   /** Deterministic clock injection for executor deadline contract tests. */
@@ -111,6 +112,7 @@ function sanitizedOptions(options: AdaptiveConcurrentOptions): ExploreOptions {
     deadlineMs: _deadlineMs,
     failPassForTest: _failPassForTest,
     failWorkerInitializationForTest: _failWorkerInitializationForTest,
+    failWorkerConstructionForTest: _failWorkerConstructionForTest,
     aggregateMemoryUsedForTest: _aggregateMemoryUsedForTest,
     activationPilotStatesForTest: _activationPilotStatesForTest,
     nowForTest: _nowForTest,
@@ -134,6 +136,9 @@ function startSlot(
   options: AdaptiveConcurrentOptions,
   perWorkerMemory: number
 ): WorkerSlot {
+  if (options.failWorkerConstructionForTest) {
+    throw new Error("injected synchronous worker construction failure");
+  }
   const controlBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * CONTROL_WORDS);
   const channel = new MessageChannel();
   const data: AdaptivePortfolioWorkerData = {
@@ -271,6 +276,10 @@ export function explorePortfolioAdaptiveConcurrent(
     : -1;
   if (initialPilot && pilotIndex < 0) {
     throw new Error(`pilot pass ${initialPilot.pass} is disabled by the effective portfolio weights`);
+  }
+  if (initialPilot && options.deadlineMs !== undefined
+    && (options.nowForTest ?? Date.now)() >= options.deadlineMs) {
+    throw new PortfolioWorkerInitializationDeadlineError();
   }
   const assignments = Array.from({ length: effectiveConcurrency }, () => [] as AdaptivePassAssignment[]);
   for (const spec of specs) {

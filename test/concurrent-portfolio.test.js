@@ -443,7 +443,7 @@ test("an already-expired pilot deadline returns time-bound partial evidence", as
     memoryCapBytes: ONE_GIB,
     deadlineMs: 0,
     timeGuard: () => false,
-    onSnapshot: (snapshot) => snapshots.push(snapshot),
+    onSnapshot: (snapshot) => snapshots.push(JSON.parse(JSON.stringify(snapshot))),
   });
   assert.strictEqual(result.execution.mode, "sequential");
   assert.strictEqual(result.execution.fallbackReason, "pilot_time_limit");
@@ -460,6 +460,8 @@ test("an already-expired pilot deadline returns time-bound partial evidence", as
   assert.strictEqual(result.schedule.length, 1);
   assert.strictEqual(snapshots.length, 1);
   assert.strictEqual(snapshots[0].truncatedBy.time, true);
+  assert.strictEqual(snapshots[0].execution.activation.reason, "pilot_time_limit");
+  assert.deepStrictEqual(snapshots[0].execution.activation, result.execution.activation);
 });
 
 test("a pilot memory stop returns memory-bound partial evidence", async () => {
@@ -485,8 +487,9 @@ test("a pilot memory stop returns memory-bound partial evidence", async () => {
   assert.strictEqual(result.limits.maxStates, 100_000);
 });
 
-test("a deadline reached while workers initialize finalizes the live pilot", async () => {
+test("an expired handoff deadline finalizes the live pilot before constructing workers", async () => {
   const compiled = await story(SUSTAINED_GRID);
+  const snapshots = [];
   const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
     maxStates: 2_000,
     maxDepth: 100,
@@ -498,6 +501,10 @@ test("a deadline reached while workers initialize finalizes the live pilot", asy
     timeGuard: () => true,
     deadlineMs: 1,
     nowForTest: () => 1,
+    // startSlot throws synchronously at its first test seam. Returning the
+    // pilot proves the expired-deadline path never invoked it or new Worker.
+    failWorkerConstructionForTest: true,
+    onSnapshot: (snapshot) => snapshots.push(structuredClone(snapshot)),
   });
   assert.strictEqual(result.execution.mode, "sequential");
   assert.strictEqual(result.execution.fallbackReason, "worker_initialization_deadline");
@@ -512,6 +519,29 @@ test("a deadline reached while workers initialize finalizes the live pilot", asy
   assert.strictEqual(result.truncatedBy.maxStates, false);
   assert.strictEqual(result.limits.maxStates, 2_000);
   assert.deepStrictEqual(result.passes[0].truncatedBy, result.truncatedBy);
+  assert.strictEqual(snapshots.length, 1);
+  assert.strictEqual(snapshots[0].execution.activation.reason, "worker_initialization_deadline");
+  assert.deepStrictEqual(snapshots[0].execution.activation, result.execution.activation);
+});
+
+test("synchronous worker construction failures before a live deadline still throw", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  assert.throws(
+    () => explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
+      maxStates: 2_000,
+      maxDepth: 100,
+      seed: 7,
+      storySeed: 1,
+      concurrency: 4,
+      memoryCapBytes: ONE_GIB,
+      activationPilotStatesForTest: TEST_HANDOFF_PILOT,
+      timeGuard: () => true,
+      deadlineMs: 2,
+      nowForTest: () => 1,
+      failWorkerConstructionForTest: true,
+    }),
+    /injected synchronous worker construction failure/
+  );
 });
 
 test("genuine worker initialization failures are not downgraded to deadline fallbacks", async () => {
