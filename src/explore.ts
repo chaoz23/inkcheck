@@ -569,16 +569,17 @@ function emitBenchmarkSignals(
   firstDiscoveredAtState: number,
   onEvidence?: ExploreOptions["onEvidence"]
 ): void {
+  if (!onEvidence) return;
   for (const tag of tags) {
     if (tag.trim() === "INKBENCH_SIGNAL_MODE") {
-      onEvidence?.({ kind: "benchmark-mode" });
+      onEvidence({ kind: "benchmark-mode" });
       continue;
     }
     const match = /^INKBENCH_SIGNAL:(\d+)$/.exec(tag.trim());
     if (!match) continue;
     const signal = Number(match[1]);
     if (!Number.isSafeInteger(signal)) continue;
-    onEvidence?.({ kind: "benchmark-signal", signal, choiceIndices: [...choiceIndices], firstDiscoveredAtState });
+    onEvidence({ kind: "benchmark-signal", signal, choiceIndices: [...choiceIndices], firstDiscoveredAtState });
   }
 }
 

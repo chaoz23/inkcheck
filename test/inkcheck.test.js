@@ -3495,6 +3495,42 @@ test("--json-stream stays discoverable across machine and agent front doors", ()
   assert.match(rootSkill, /--json-stream --concurrency 1/);
 });
 
+test("ordinary CLI runs bypass benchmark evidence extraction", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-no-evidence-callback-"));
+  const story = path.join(directory, "story.ink");
+  const preload = path.join(directory, "reject-evidence-scan.cjs");
+  fs.writeFileSync(story, `# INKBENCH_SIGNAL_MODE
+-> start
+
+=== start ===
++ [Finish]
+    # INKBENCH_SIGNAL:0
+    -> END
+`);
+  fs.writeFileSync(preload, `const originalTrim = String.prototype.trim;
+String.prototype.trim = function (...args) {
+  const value = String(this);
+  if (value === "INKBENCH_SIGNAL_MODE" || /^INKBENCH_SIGNAL:\\d+$/.test(value)) {
+    throw new Error("ordinary run scanned benchmark evidence tags");
+  }
+  return Reflect.apply(originalTrim, this, args);
+};
+`);
+  try {
+    const proc = spawnSync(
+      process.execPath,
+      ["--require", preload, CLI, story, "--max-states", "100", "--no-min-repro", "--concurrency", "1", "--json", "--progress=off"],
+      { encoding: "utf8" }
+    );
+    assert.strictEqual(proc.status, 0, proc.stderr);
+    const report = JSON.parse(proc.stdout);
+    assert.strictEqual(report.compile.success, true);
+    assert.strictEqual(report.explore.endingsFound.length, 1);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("reserved InkBench tags emit only numeric benchmark witnesses", () => {
   const fs = require("node:fs");
   const os = require("node:os");

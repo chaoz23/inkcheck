@@ -981,7 +981,7 @@ async function main() {
       preserveRandomState: semantics.usesRandomness,
       detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
       randomnessDetected: semantics.usesRandomness,
-      onEvidence: streamEvidence,
+      ...(asJsonStream ? { onEvidence: streamEvidence } : {}),
       onProgress: (progress: ExploreProgress) => {
         statesExplored = saveCheckpoint ? progress.statesExplored : statesBase + progress.statesExplored;
         const progressDetails = {
@@ -1088,7 +1088,7 @@ async function main() {
         detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
         randomnessDetected: semantics.usesRandomness,
         assertions: configuredAssertions,
-        onEvidence: streamEvidence,
+        ...(asJsonStream ? { onEvidence: streamEvidence } : {}),
       });
       checked = mergeMinRepro(checked, bfs);
       statesExplored = statesBase + checked.statesExplored;
