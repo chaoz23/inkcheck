@@ -130,15 +130,33 @@ export interface ConcurrentWorkerEvidence {
   error?: string;
 }
 
+export type PortfolioActivationReason =
+  | "budget_below_pilot"
+  | "pilot_exhaustive"
+  | "pilot_consumed_budget"
+  | "pilot_forced_cycle"
+  | "pilot_depth_bound"
+  | "pilot_authored_frontier_saturated"
+  | "pilot_memory_limit"
+  | "pilot_time_limit"
+  | "worker_initialization_deadline"
+  | "pilot_open_frontier";
+
+export type PortfolioFallbackReason =
+  | "single_core"
+  | "memory_headroom"
+  | "single_pass"
+  | Exclude<PortfolioActivationReason, "pilot_open_frontier">;
+
 export interface PortfolioExecutionEvidence {
   mode: "sequential" | "concurrent";
   requestedConcurrency: number;
   effectiveConcurrency: number;
-  fallbackReason?: "single_core" | "memory_headroom" | "single_pass" | "budget_below_pilot" | "pilot_exhaustive" | "pilot_consumed_budget" | "pilot_forced_cycle" | "pilot_depth_bound" | "pilot_authored_frontier_saturated";
+  fallbackReason?: PortfolioFallbackReason;
   activation?: {
     policyVersion: "pilot-frontier-v2" | "single-pass-frontier-v3";
     decision: "stay_sequential" | "activate_concurrent";
-    reason: "budget_below_pilot" | "pilot_exhaustive" | "pilot_consumed_budget" | "pilot_forced_cycle" | "pilot_depth_bound" | "pilot_authored_frontier_saturated" | "pilot_open_frontier";
+    reason: PortfolioActivationReason;
     pilotBudget: number;
     pilotStatesExplored: number;
     pilotExhaustive: boolean;

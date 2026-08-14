@@ -7,11 +7,19 @@ import {
   explorePortfolioFromPilot,
   type ExploreOptions,
   type ExploreResult,
+  type PassEngine,
+  type PortfolioActivationReason,
+  type PortfolioFallbackReason,
   type PortfolioPassKind,
   type PortfolioWeights,
 } from "./explore";
 import type { KnotInfo } from "./inklecate";
-import { explorePortfolioAdaptiveConcurrent, portfolioPassSpecs, splitBudget } from "./adaptive-concurrent-portfolio";
+import {
+  PortfolioWorkerInitializationDeadlineError,
+  explorePortfolioAdaptiveConcurrent,
+  portfolioPassSpecs,
+  splitBudget,
+} from "./adaptive-concurrent-portfolio";
 
 const MAX_PORTFOLIO_CONCURRENCY = 16;
 const MIN_WORKER_HEAP_BYTES = 64 * 1024 * 1024;
@@ -22,10 +30,14 @@ export interface ConcurrentPortfolioOptions extends ExploreOptions {
   deadlineMs?: number;
   /** Deterministic failure injection for worker-loss contract tests. */
   failPassForTest?: PortfolioPassKind;
+  /** Deterministic failure injection for worker initialization contract tests. */
+  failWorkerInitializationForTest?: boolean;
   /** Deterministic aggregate-memory injection for resource contract tests. */
   aggregateMemoryUsedForTest?: () => number;
   /** Internal-only smaller activation pilot for scheduler contract tests. */
   activationPilotStatesForTest?: number;
+  /** Deterministic clock injection for executor deadline contract tests. */
+  nowForTest?: () => number;
 }
 
 function availableCpus(): number {
@@ -53,7 +65,7 @@ function sequential(
   knots: KnotInfo[],
   externals: string[],
   options: ConcurrentPortfolioOptions,
-  fallbackReason?: "single_core" | "memory_headroom" | "single_pass" | "pilot_forced_cycle" | "pilot_depth_bound" | "pilot_authored_frontier_saturated"
+  fallbackReason?: PortfolioFallbackReason
 ): ExploreResult {
   const result = explorePortfolio(storyJson, knots, externals, options);
   result.execution = {
@@ -72,6 +84,71 @@ function sequential(
 }
 
 export const CONCURRENCY_ACTIVATION_PILOT_STATES = 1_024;
+
+function finalizePilot(
+  engine: PassEngine,
+  pilotBudget: number,
+  consumed: number,
+  maxStates: number,
+  options: ConcurrentPortfolioOptions,
+  fallbackReason: PortfolioFallbackReason,
+  forcedCause?: "memory" | "time"
+): ExploreResult {
+  const result = engine.finalize();
+  const telemetry = engine.telemetry();
+  if (forcedCause && !result.exhaustive) {
+    // A resource boundary can be external to the pass engine (notably while
+    // workers initialize). Never let finalize() mistake the pilot grant for
+    // the binding state ceiling when the real cause is already known.
+    result.truncated = true;
+    result.truncatedBy[forcedCause] = true;
+    result.truncatedBy.maxStates = false;
+    telemetry.truncatedBy[forcedCause] = true;
+    telemetry.truncatedBy.maxStates = false;
+    telemetry.exhaustive = false;
+  }
+  result.limits.maxStates = maxStates;
+  result.passes = [telemetry];
+  result.schedule = [{
+    round: 1,
+    entries: [{
+      pass: telemetry.pass,
+      granted: pilotBudget,
+      consumed,
+      newEndings: telemetry.endingsFound,
+      newKnots: telemetry.knotsVisited,
+      newRuntimeErrors: telemetry.runtimeErrorsFound,
+    }],
+  }];
+  result.execution = {
+    mode: "sequential",
+    requestedConcurrency: options.concurrency,
+    effectiveConcurrency: 1,
+    fallbackReason,
+    workers: [{
+      pass: engine.label,
+      granted: pilotBudget,
+      consumed,
+      status: forcedCause ?? (engine.stoppedForMemory() ? "memory" : engine.stoppedForTime() ? "time" : "completed"),
+      location: "parent",
+    }],
+  };
+  options.onProgress?.({
+    pass: engine.label,
+    statesExplored: result.statesExplored,
+    endingsFound: result.endingsFound.length,
+    runtimeErrorsFound: result.runtimeErrors.length,
+    unvisitedKnots: result.unvisitedKnots.length,
+    visibleOutcomes: new Set(result.endingsFound.map((ending) => ending.finalText.trim().replace(/\s+/g, " "))).size,
+    assertionViolations: result.assertionResults.filter((assertion) => assertion.status === "violated").length,
+    goalsReached: (result.goalResults ?? []).filter((goal) => goal.status === "reached").length,
+    stagesReached: (result.goalResults ?? []).reduce((total, goal) => total + (goal.stages ?? []).filter((stage) => stage.status === "reached").length, 0),
+    discoveryEvents: result.discoverySummary?.discoveryEvents ?? 0,
+    statesSinceLastDiscovery: result.discoverySummary?.statesSinceLastDiscovery ?? null,
+  });
+  options.onSnapshot?.(result);
+  return result;
+}
 
 /**
  * Research-only activation candidate for issue #169. A bounded sequential
@@ -233,69 +310,42 @@ export function explorePortfolioPilotHandoffConcurrent(
   const forcedRootCycle = hasForcedRootCycle(snapshot);
   const authoredKnots = knots.filter((knot) => !knot.isFunction).length;
   const pilotConsumedBudget = consumed >= maxStates;
-  const reason = forcedRootCycle
-    ? "pilot_forced_cycle"
-    : engine.exhaustive()
-    ? "pilot_exhaustive"
-    : pilotConsumedBudget
-      ? "pilot_consumed_budget"
-      : snapshot.truncatedBy.maxDepth
-        ? "pilot_depth_bound"
-        : authoredKnots > 0 && snapshot.visitedKnots.length >= authoredKnots
-          ? "pilot_authored_frontier_saturated"
-          : "pilot_open_frontier";
-  const requestedDecision = reason === "pilot_open_frontier" ? "activate_concurrent" : "stay_sequential";
+  const pilotStopCause = engine.stoppedForMemory()
+    ? "memory" as const
+    : engine.stoppedForTime()
+      ? "time" as const
+      : undefined;
+  const pilotTerminalReason = pilotStopCause === "memory"
+    ? "pilot_memory_limit" as const
+    : pilotStopCause === "time"
+      ? "pilot_time_limit" as const
+      : forcedRootCycle
+        ? "pilot_forced_cycle" as const
+        : engine.exhaustive()
+          ? "pilot_exhaustive" as const
+          : pilotConsumedBudget
+            ? "pilot_consumed_budget" as const
+            : undefined;
+  let activationReason: PortfolioActivationReason = pilotTerminalReason
+    ?? (snapshot.truncatedBy.maxDepth
+      ? "pilot_depth_bound"
+      : authoredKnots > 0 && snapshot.visitedKnots.length >= authoredKnots
+        ? "pilot_authored_frontier_saturated"
+        : "pilot_open_frontier");
+  let activationDecision: "stay_sequential" | "activate_concurrent" = activationReason === "pilot_open_frontier"
+    ? "activate_concurrent"
+    : "stay_sequential";
   let result: ExploreResult;
 
-  if (engine.exhaustive() || pilotConsumedBudget || forcedRootCycle) {
-    result = engine.finalize();
-    const telemetry = engine.telemetry();
-    result.passes = [telemetry];
-    result.schedule = [{
-      round: 1,
-      entries: [{
-        pass: telemetry.pass,
-        granted: pilotBudget,
-        consumed,
-        newEndings: telemetry.endingsFound,
-        newKnots: telemetry.knotsVisited,
-        newRuntimeErrors: telemetry.runtimeErrorsFound,
-      }],
-    }];
-    result.execution = {
-      mode: "sequential",
-      requestedConcurrency: options.concurrency,
-      effectiveConcurrency: 1,
-      ...(reason === "pilot_open_frontier" ? {} : { fallbackReason: reason }),
-      workers: [{
-        pass: engine.label,
-        granted: pilotBudget,
-        consumed,
-        status: engine.stoppedForMemory() ? "memory" : engine.stoppedForTime() ? "time" : "completed",
-        location: "parent",
-      }],
-    };
-    options.onProgress?.({
-      pass: engine.label,
-      statesExplored: result.statesExplored,
-      endingsFound: result.endingsFound.length,
-      runtimeErrorsFound: result.runtimeErrors.length,
-      unvisitedKnots: result.unvisitedKnots.length,
-      visibleOutcomes: new Set(result.endingsFound.map((ending) => ending.finalText.trim().replace(/\s+/g, " "))).size,
-      assertionViolations: result.assertionResults.filter((assertion) => assertion.status === "violated").length,
-      goalsReached: (result.goalResults ?? []).filter((goal) => goal.status === "reached").length,
-      stagesReached: (result.goalResults ?? []).reduce((total, goal) => total + (goal.stages ?? []).filter((stage) => stage.status === "reached").length, 0),
-      discoveryEvents: result.discoverySummary?.discoveryEvents ?? 0,
-      statesSinceLastDiscovery: result.discoverySummary?.statesSinceLastDiscovery ?? null,
-    });
-    options.onSnapshot?.(result);
-  } else if (requestedDecision === "stay_sequential") {
+  if (pilotTerminalReason) {
+    result = finalizePilot(engine, pilotBudget, consumed, maxStates, options, pilotTerminalReason, pilotStopCause);
+  } else if (activationReason !== "pilot_open_frontier") {
     result = explorePortfolioFromPilot(storyJson, knots, externals, options, pilot);
     result.execution = {
       mode: "sequential",
       requestedConcurrency: options.concurrency,
       effectiveConcurrency: 1,
-      ...(reason === "pilot_open_frontier" ? {} : { fallbackReason: reason }),
+      fallbackReason: activationReason,
       workers: (result.passes ?? []).map((pass) => ({
         pass: pass.pass,
         granted: pass.granted,
@@ -327,22 +377,29 @@ export function explorePortfolioPilotHandoffConcurrent(
       };
     } else {
       const perWorkerMemory = Math.floor((globalMemoryCap - parentReserve) / workerCount);
-      result = explorePortfolioAdaptiveConcurrent(
-        storyJson,
-        knots,
-        externals,
-        { ...options, memoryCapBytes: globalMemoryCap },
-        workerCount,
-        perWorkerMemory,
-        globalMemoryCap - perWorkerMemory * workerCount,
-        pilot
-      );
+      try {
+        result = explorePortfolioAdaptiveConcurrent(
+          storyJson,
+          knots,
+          externals,
+          { ...options, memoryCapBytes: globalMemoryCap },
+          workerCount,
+          perWorkerMemory,
+          globalMemoryCap - perWorkerMemory * workerCount,
+          pilot
+        );
+      } catch (error) {
+        if (!(error instanceof PortfolioWorkerInitializationDeadlineError)) throw error;
+        activationReason = "worker_initialization_deadline";
+        activationDecision = "stay_sequential";
+        result = finalizePilot(engine, pilotBudget, consumed, maxStates, options, activationReason, "time");
+      }
     }
   }
   result.execution!.activation = {
     policyVersion: "single-pass-frontier-v3",
-    decision: requestedDecision,
-    reason,
+    decision: activationDecision,
+    reason: activationReason,
     pilotBudget,
     pilotStatesExplored: consumed,
     pilotExhaustive: engine.exhaustive(),

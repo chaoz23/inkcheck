@@ -433,6 +433,104 @@ test("an exhaustive live pilot retains pass telemetry and its executed schedule"
   assert.strictEqual(result.exhaustive, true);
 });
 
+test("an already-expired pilot deadline returns time-bound partial evidence", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  const snapshots = [];
+  const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
+    maxStates: 100_000,
+    maxDepth: 100,
+    concurrency: 4,
+    memoryCapBytes: ONE_GIB,
+    deadlineMs: 0,
+    timeGuard: () => false,
+    onSnapshot: (snapshot) => snapshots.push(snapshot),
+  });
+  assert.strictEqual(result.execution.mode, "sequential");
+  assert.strictEqual(result.execution.fallbackReason, "pilot_time_limit");
+  assert.strictEqual(result.execution.activation.decision, "stay_sequential");
+  assert.strictEqual(result.execution.activation.reason, "pilot_time_limit");
+  assert.strictEqual(result.execution.workers[0].status, "time");
+  assert.strictEqual(result.truncated, true);
+  assert.strictEqual(result.truncatedBy.time, true);
+  assert.strictEqual(result.truncatedBy.memory, false);
+  assert.strictEqual(result.truncatedBy.maxStates, false);
+  assert.ok(result.statesExplored > 0);
+  assert.ok(result.statesExplored < result.execution.activation.pilotBudget);
+  assert.strictEqual(result.limits.maxStates, 100_000);
+  assert.strictEqual(result.schedule.length, 1);
+  assert.strictEqual(snapshots.length, 1);
+  assert.strictEqual(snapshots[0].truncatedBy.time, true);
+});
+
+test("a pilot memory stop returns memory-bound partial evidence", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
+    maxStates: 100_000,
+    maxDepth: 100,
+    concurrency: 4,
+    memoryCapBytes: ONE_GIB,
+    memoryGuard: () => false,
+  });
+  assert.strictEqual(result.execution.mode, "sequential");
+  assert.strictEqual(result.execution.fallbackReason, "pilot_memory_limit");
+  assert.strictEqual(result.execution.activation.decision, "stay_sequential");
+  assert.strictEqual(result.execution.activation.reason, "pilot_memory_limit");
+  assert.strictEqual(result.execution.workers[0].status, "memory");
+  assert.strictEqual(result.truncated, true);
+  assert.strictEqual(result.truncatedBy.memory, true);
+  assert.strictEqual(result.truncatedBy.time, false);
+  assert.strictEqual(result.truncatedBy.maxStates, false);
+  assert.ok(result.statesExplored > 0);
+  assert.ok(result.statesExplored < result.execution.activation.pilotBudget);
+  assert.strictEqual(result.limits.maxStates, 100_000);
+});
+
+test("a deadline reached while workers initialize finalizes the live pilot", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
+    maxStates: 2_000,
+    maxDepth: 100,
+    seed: 7,
+    storySeed: 1,
+    concurrency: 4,
+    memoryCapBytes: ONE_GIB,
+    activationPilotStatesForTest: TEST_HANDOFF_PILOT,
+    timeGuard: () => true,
+    deadlineMs: 1,
+    nowForTest: () => 1,
+  });
+  assert.strictEqual(result.execution.mode, "sequential");
+  assert.strictEqual(result.execution.fallbackReason, "worker_initialization_deadline");
+  assert.strictEqual(result.execution.activation.decision, "stay_sequential");
+  assert.strictEqual(result.execution.activation.reason, "worker_initialization_deadline");
+  assert.strictEqual(result.execution.activation.pilotStatesExplored, TEST_HANDOFF_PILOT);
+  assert.strictEqual(result.execution.workers[0].status, "time");
+  assert.strictEqual(result.statesExplored, TEST_HANDOFF_PILOT);
+  assert.strictEqual(result.truncated, true);
+  assert.strictEqual(result.truncatedBy.time, true);
+  assert.strictEqual(result.truncatedBy.memory, false);
+  assert.strictEqual(result.truncatedBy.maxStates, false);
+  assert.strictEqual(result.limits.maxStates, 2_000);
+  assert.deepStrictEqual(result.passes[0].truncatedBy, result.truncatedBy);
+});
+
+test("genuine worker initialization failures are not downgraded to deadline fallbacks", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  assert.throws(
+    () => explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
+      maxStates: 2_000,
+      maxDepth: 100,
+      seed: 7,
+      storySeed: 1,
+      concurrency: 4,
+      memoryCapBytes: ONE_GIB,
+      activationPilotStatesForTest: TEST_HANDOFF_PILOT,
+      failWorkerInitializationForTest: true,
+    }),
+    /all concurrent portfolio workers failed to initialize:.*injected worker initialization failure/
+  );
+});
+
 test("single-pass handoff rejects depth-bound work without restarting the pilot", async () => {
   const compiled = await story(SUSTAINED_GRID);
   const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
