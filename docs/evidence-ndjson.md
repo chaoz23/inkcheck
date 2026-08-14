@@ -18,6 +18,6 @@ The reserved InkBench tags are a scoring transport, not a search input. The port
 
 `--json-stream` currently requires `--concurrency 1`, supports one bounded run (no `--next`), and cannot be combined with `--save-report`. These constraints prevent a function callback from crossing worker isolates and prevent a supposedly bounded transport from invoking the monolithic artifact writer.
 
-For a declared `--max-time`, exploration retains 10% of the total grant, capped at 60 seconds, to merge the already-retained internal evidence and flush `run_end`. This reserve is part of the total wall budget, not extra search time.
+For a declared `--max-time`, exploration retains 10% of the total grant, with a 250 ms minimum and 60-second maximum, to merge the already-retained internal evidence and flush `run_end`. This reserve is part of the total wall budget, not extra search time.
 
 For operational counters without finding content, keep using [`--progress=ndjson`](progress-ndjson.md) on stderr. Evidence output can contain runtime error text and replay paths, so store it with the same privacy controls as an ordinary report.

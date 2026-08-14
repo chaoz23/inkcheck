@@ -3471,6 +3471,22 @@ test("--json-stream requires a single worker and rejects monolithic report persi
   assert.match(persisted.stderr, /cannot be combined with --save-report/);
 });
 
+test("--json-stream stays discoverable across machine and agent front doors", () => {
+  const tool = JSON.parse(fs.readFileSync(path.join(ROOT, "tool.json"), "utf8"));
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  const rootSkill = fs.readFileSync(path.join(ROOT, "SKILL.md"), "utf8");
+  const streamFlag = tool.cli.flags.find((entry) => entry.flag === "--json-stream");
+
+  assert.strictEqual(tool.cli.streamingMachineOutput, "--json-stream");
+  assert.ok(streamFlag);
+  assert.match(streamFlag.description, /--concurrency 1/);
+  assert.match(streamFlag.description, /cannot be combined with --save-report/);
+  assert.match(tool.cli.jsonSchema.evidenceStream, /run_start/);
+  assert.match(tool.cli.jsonSchema.evidenceStream, /run_end/);
+  assert.match(readme, /--human\|--json\|--json-stream\|--markdown/);
+  assert.match(rootSkill, /--json-stream --concurrency 1/);
+});
+
 test("reserved InkBench tags emit only numeric benchmark witnesses", () => {
   const fs = require("node:fs");
   const os = require("node:os");
@@ -4013,6 +4029,7 @@ test("release version stays synchronized across package and manifests", () => {
     "web",
     "docs/hosted-checker.md",
     "docs/agent-discovery.md",
+    "docs/evidence-ndjson.md",
     "docs/report-schema-v1.md",
     "docs/inkjam-qa-guide.md",
     "CHANGELOG.md",
