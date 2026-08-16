@@ -38,8 +38,19 @@ export interface AdaptiveConcurrentOptions extends ExploreOptions {
   memoryCapBytes: number;
   deadlineMs?: number;
   failPassForTest?: PortfolioPassKind;
+  failWorkerInitializationForTest?: boolean;
   aggregateMemoryUsedForTest?: () => number;
   activationPilotStatesForTest?: number;
+  /** Deterministic clock injection for executor deadline contract tests. */
+  nowForTest?: () => number;
+}
+
+/** Internal signal: the parent pilot is usable but no worker initialized before the deadline. */
+export class PortfolioWorkerInitializationDeadlineError extends Error {
+  constructor() {
+    super("all concurrent portfolio workers reached the deadline before initialization");
+    this.name = "PortfolioWorkerInitializationDeadlineError";
+  }
 }
 
 export interface PassSpec {
@@ -99,10 +110,13 @@ function sanitizedOptions(options: AdaptiveConcurrentOptions): ExploreOptions {
     memoryCapBytes: _memoryCapBytes,
     deadlineMs: _deadlineMs,
     failPassForTest: _failPassForTest,
+    failWorkerInitializationForTest: _failWorkerInitializationForTest,
     aggregateMemoryUsedForTest: _aggregateMemoryUsedForTest,
     activationPilotStatesForTest: _activationPilotStatesForTest,
+    nowForTest: _nowForTest,
     onProgress: _onProgress,
     onSnapshot: _onSnapshot,
+    onEvidence: _onEvidence,
     memoryGuard: _memoryGuard,
     timeGuard: _timeGuard,
     loopRiskRegistry: _loopRiskRegistry,
@@ -131,6 +145,7 @@ function startSlot(
     memoryCapBytes: perWorkerMemory,
     ...(options.deadlineMs === undefined ? {} : { deadlineMs: options.deadlineMs }),
     ...(options.failPassForTest ? { failPassForTest: options.failPassForTest } : {}),
+    ...(options.failWorkerInitializationForTest ? { failWorkerInitializationForTest: true } : {}),
     control: controlBuffer,
     port: channel.port2,
   };
@@ -177,7 +192,8 @@ function waitFor(
   resources: AggregateResourceTracker,
   enforceAggregateMemory = true
 ): void {
-  const startedAt = Date.now();
+  const now = options.nowForTest ?? Date.now;
+  const startedAt = now();
   while (slots.some((slot) => !done(slot) && !slot.failed && !slot.timedOut)) {
     for (const slot of slots) drain(slot);
     // Worker-thread heap fields are isolate-local; each slot publishes its
@@ -195,13 +211,13 @@ function waitFor(
       }
     }
     emitProgress();
-    if (options.deadlineMs !== undefined && Date.now() >= options.deadlineMs) {
+    if (options.deadlineMs !== undefined && now() >= options.deadlineMs) {
       for (const slot of slots) {
         if (!done(slot) && !slot.failed) slot.timedOut = true;
       }
       break;
     }
-    if (Date.now() - startedAt >= MAX_WORKER_WAIT_MS) {
+    if (now() - startedAt >= MAX_WORKER_WAIT_MS) {
       for (const slot of slots) {
         if (!done(slot) && !slot.failed) slot.failed = "worker exceeded the seven-day executor watchdog";
       }
@@ -313,9 +329,18 @@ export function explorePortfolioAdaptiveConcurrent(
     });
   };
 
-  waitFor(slots, (slot) => slot.ready, options, emitProgress, resources);
+  // Do not spend the remaining finalization reserve starting workers after a
+  // pilot consumed the search deadline. Checking before the first receive
+  // also makes the exact deadline boundary deterministic.
+  if (options.deadlineMs !== undefined && (options.nowForTest ?? Date.now)() >= options.deadlineMs) {
+    for (const slot of slots) slot.timedOut = true;
+  } else {
+    waitFor(slots, (slot) => slot.ready, options, emitProgress, resources);
+  }
   if (slots.every((slot) => slot.failed || slot.timedOut)) {
+    const deadlineOnly = slots.length > 0 && slots.every((slot) => slot.timedOut && !slot.failed);
     for (const slot of slots) stopSlot(slot);
+    if (initialPilot && deadlineOnly) throw new PortfolioWorkerInitializationDeadlineError();
     throw new Error(`all concurrent portfolio workers failed to initialize: ${slots.map((slot) => slot.failed ?? "deadline elapsed").join("; ")}`);
   }
 

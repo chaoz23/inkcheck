@@ -23,6 +23,7 @@ export interface AdaptivePortfolioWorkerData {
   memoryCapBytes: number;
   deadlineMs?: number;
   failPassForTest?: PortfolioPassKind;
+  failWorkerInitializationForTest?: boolean;
   control: SharedArrayBuffer;
   port: MessagePort;
 }
@@ -77,6 +78,9 @@ function signal(message: AdaptivePortfolioWorkerMessage): void {
 }
 
 try {
+  if (data.failWorkerInitializationForTest) {
+    throw new Error("injected worker initialization failure");
+  }
   for (const assignment of data.assignments) {
     const options: ExploreOptions = {
       ...data.options,

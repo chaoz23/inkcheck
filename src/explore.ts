@@ -76,6 +76,13 @@ export interface RuntimeErrorReport {
   foundBy?: string;
 }
 
+/** Replayable findings emitted as they are first retained by a search pass. */
+export type ExploreEvidence =
+  | { kind: "ending"; finding: EndingReport }
+  | { kind: "runtime-error"; finding: RuntimeErrorReport }
+  | { kind: "benchmark-mode" }
+  | { kind: "benchmark-signal"; signal: number; choiceIndices: number[]; firstDiscoveredAtState: number };
+
 /** A conservatively detected forced choice cycle, for author review. */
 export interface LoopRiskReport {
   kind: "possible_non_terminating_choice_cycle";
@@ -123,15 +130,33 @@ export interface ConcurrentWorkerEvidence {
   error?: string;
 }
 
+export type PortfolioActivationReason =
+  | "budget_below_pilot"
+  | "pilot_exhaustive"
+  | "pilot_consumed_budget"
+  | "pilot_forced_cycle"
+  | "pilot_depth_bound"
+  | "pilot_authored_frontier_saturated"
+  | "pilot_memory_limit"
+  | "pilot_time_limit"
+  | "worker_initialization_deadline"
+  | "pilot_open_frontier";
+
+export type PortfolioFallbackReason =
+  | "single_core"
+  | "memory_headroom"
+  | "single_pass"
+  | Exclude<PortfolioActivationReason, "pilot_open_frontier">;
+
 export interface PortfolioExecutionEvidence {
   mode: "sequential" | "concurrent";
   requestedConcurrency: number;
   effectiveConcurrency: number;
-  fallbackReason?: "single_core" | "memory_headroom" | "single_pass" | "budget_below_pilot" | "pilot_exhaustive" | "pilot_consumed_budget" | "pilot_forced_cycle" | "pilot_depth_bound" | "pilot_authored_frontier_saturated";
+  fallbackReason?: PortfolioFallbackReason;
   activation?: {
     policyVersion: "pilot-frontier-v2" | "single-pass-frontier-v3";
     decision: "stay_sequential" | "activate_concurrent";
-    reason: "budget_below_pilot" | "pilot_exhaustive" | "pilot_consumed_budget" | "pilot_forced_cycle" | "pilot_depth_bound" | "pilot_authored_frontier_saturated" | "pilot_open_frontier";
+    reason: PortfolioActivationReason;
     pilotBudget: number;
     pilotStatesExplored: number;
     pilotExhaustive: boolean;
@@ -556,6 +581,26 @@ function makeStory(
   return { story, errors, warnings };
 }
 
+function emitBenchmarkSignals(
+  tags: string[],
+  choiceIndices: number[],
+  firstDiscoveredAtState: number,
+  onEvidence?: ExploreOptions["onEvidence"]
+): void {
+  if (!onEvidence) return;
+  for (const tag of tags) {
+    if (tag.trim() === "INKBENCH_SIGNAL_MODE") {
+      onEvidence({ kind: "benchmark-mode" });
+      continue;
+    }
+    const match = /^INKBENCH_SIGNAL:(\d+)$/.exec(tag.trim());
+    if (!match) continue;
+    const signal = Number(match[1]);
+    if (!Number.isSafeInteger(signal)) continue;
+    onEvidence({ kind: "benchmark-signal", signal, choiceIndices: [...choiceIndices], firstDiscoveredAtState });
+  }
+}
+
 /** Continue() as far as possible, collecting text and tags; errors go to the session. */
 function continueMaximally(s: StorySession): PlaytestStep {
   const step: PlaytestStep = { text: "", tags: [], choicesOffered: [], choiceTaken: null };
@@ -744,6 +789,8 @@ export interface ExploreOptions {
   onProgress?: (progress: ExploreProgress) => void;
   /** Receive periodic full evidence snapshots for crash-safe evaluation persistence. */
   onSnapshot?: (result: ExploreResult) => void;
+  /** Receive replayable findings without waiting for the final report. */
+  onEvidence?: (evidence: ExploreEvidence) => void;
   /** Internal/test override for the normal 10,000-state progress cadence. */
   progressIntervalStates?: number;
   /** Internal/test override for the normal one-second progress heartbeat. */
@@ -1094,10 +1141,24 @@ function recordEnding(
   endings: Map<string, EndingReport>,
   visibleOutcomes: Set<string>,
   key: string,
-  ending: EndingReport
+  ending: EndingReport,
+  onEvidence?: ExploreOptions["onEvidence"]
 ): void {
+  const retained = !endings.has(key);
   endings.set(key, ending);
   visibleOutcomes.add(visibleOutcomeKey(ending.finalText));
+  if (retained) onEvidence?.({ kind: "ending", finding: ending });
+}
+
+function recordRuntimeError(
+  runtimeErrors: Map<string, RuntimeErrorReport>,
+  key: string,
+  error: RuntimeErrorReport,
+  onEvidence?: ExploreOptions["onEvidence"]
+): void {
+  if (runtimeErrors.has(key)) return;
+  runtimeErrors.set(key, error);
+  onEvidence?.({ kind: "runtime-error", finding: error });
 }
 
 /**
@@ -1254,10 +1315,11 @@ function createSearchEngine(
 
   // Root: continue the fresh story to the first choice point.
   const rootStep = continueMaximally(s);
+  emitBenchmarkSignals(rootStep.tags, [], 0, opts.onEvidence);
   const assertions = assertionTracker(s.story, knots, opts.assertions, foundBy);
   const goals = new GoalTracker(opts.goals ?? [], foundBy);
   s.errors.forEach((e) =>
-    runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
+    recordRuntimeError(runtimeErrors, e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy }, opts.onEvidence)
   );
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
@@ -1282,7 +1344,7 @@ function createSearchEngine(
       finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
       variables: rootVariables,
       foundBy,
-    });
+    }, opts.onEvidence);
   }
   noteDiscoveryProgress();
 
@@ -1327,13 +1389,13 @@ function createSearchEngine(
       try {
         s.story.state.LoadJson(frame.stateJson);
       } catch (e) {
-        runtimeErrors.set(String(e), {
+        recordRuntimeError(runtimeErrors, String(e), {
           message: `State restore failed: ${e instanceof Error ? e.message : e}`,
           path: frame.path,
           choiceIndices: frame.choiceIndices,
           firstDiscoveredAtState: statesExplored,
           foundBy,
-        });
+        }, opts.onEvidence);
         continue;
       }
       const numChoices = s.story.currentChoices.length;
@@ -1362,31 +1424,30 @@ function createSearchEngine(
       s.story.ChooseChoiceIndex(i);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      runtimeErrors.set(msg, {
+      recordRuntimeError(runtimeErrors, msg, {
         message: msg,
         path,
         choiceIndices,
         firstDiscoveredAtState: statesExplored,
         sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
         foundBy,
-      });
+      }, opts.onEvidence);
       noteDiscoveryProgress();
       return true;
     }
     const step = continueMaximally(s);
+    emitBenchmarkSignals(step.tags, choiceIndices, statesExplored + 1, opts.onEvidence);
     statesExplored++;
     if (path.length > maxDepthReached) maxDepthReached = path.length;
     s.errors.forEach((msg) => {
-      if (!runtimeErrors.has(msg)) {
-        runtimeErrors.set(msg, {
-          message: msg,
-          path,
-          choiceIndices,
-          firstDiscoveredAtState: statesExplored,
-          sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
-          foundBy,
-        });
-      }
+      recordRuntimeError(runtimeErrors, msg, {
+        message: msg,
+        path,
+        choiceIndices,
+        firstDiscoveredAtState: statesExplored,
+        sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation,
+        foundBy,
+      }, opts.onEvidence);
     });
     s.warnings.forEach((w) => runtimeWarnings.add(w));
     recordKnotCoverage(s);
@@ -1407,7 +1468,7 @@ function createSearchEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(stateVariables);
       if (!endings.has(key)) {
-        recordEnding(endings, visibleOutcomes, key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy });
+        recordEnding(endings, visibleOutcomes, key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy }, opts.onEvidence);
         noteDiscoveryProgress();
       }
       return true;
@@ -2306,18 +2367,19 @@ function createSharedEngine(
   };
 
   const rootStep = continueMaximally(session);
+  emitBenchmarkSignals(rootStep.tags, [], 0, opts.onEvidence);
   const assertions = assertionTracker(session.story, knots, opts.assertions, foundBy);
   const goals = new GoalTracker(opts.goals ?? [], foundBy);
   if (!restored) {
     session.errors.forEach((message) =>
-      runtimeErrors.set(message, {
+      recordRuntimeError(runtimeErrors, message, {
         message,
         path: [],
         choiceIndices: [],
         firstDiscoveredAtState: 0,
         sourceLocation: sourceLocationForRuntimeError(message, knots),
         foundBy,
-      })
+      }, opts.onEvidence)
     );
     session.warnings.forEach((warning) => runtimeWarnings.add(warning));
     recordKnotCoverage(session);
@@ -2343,7 +2405,7 @@ function createSharedEngine(
           finalText,
           variables: rootVariables,
           foundBy,
-        });
+        }, opts.onEvidence);
       }
       finished = true;
     } else {
@@ -2388,12 +2450,12 @@ function createSharedEngine(
         session.story.state.LoadJson(node.stateJson!);
       } catch (error) {
         const message = `State restore failed: ${error instanceof Error ? error.message : error}`;
-        runtimeErrors.set(message, {
+        recordRuntimeError(runtimeErrors, message, {
           message,
           ...witnessFor(nodeId),
           firstDiscoveredAtState: statesExplored,
           foundBy,
-        });
+        }, opts.onEvidence);
         node.stateJson = undefined;
         node.variables = undefined;
         activeStateBytes = 0;
@@ -2435,33 +2497,32 @@ function createSharedEngine(
       session.story.ChooseChoiceIndex(choice.index);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      runtimeErrors.set(message, {
+      recordRuntimeError(runtimeErrors, message, {
         message,
         path,
         choiceIndices,
         firstDiscoveredAtState: statesExplored,
         sourceLocation: sourceLocationForRuntimeError(message, knots) ?? choiceLocation,
         foundBy,
-      });
+      }, opts.onEvidence);
       noteDiscoveryProgress();
       finishIfLast();
       return true;
     }
 
     const step = continueMaximally(session);
+    emitBenchmarkSignals(step.tags, choiceIndices, statesExplored + 1, opts.onEvidence);
     statesExplored++;
     maxDepthReached = Math.max(maxDepthReached, path.length);
     session.errors.forEach((message) => {
-      if (!runtimeErrors.has(message)) {
-        runtimeErrors.set(message, {
-          message,
-          path,
-          choiceIndices,
-          firstDiscoveredAtState: statesExplored,
-          sourceLocation: sourceLocationForRuntimeError(message, knots) ?? choiceLocation,
-          foundBy,
-        });
-      }
+      recordRuntimeError(runtimeErrors, message, {
+        message,
+        path,
+        choiceIndices,
+        firstDiscoveredAtState: statesExplored,
+        sourceLocation: sourceLocationForRuntimeError(message, knots) ?? choiceLocation,
+        foundBy,
+      }, opts.onEvidence);
     });
     session.warnings.forEach((warning) => runtimeWarnings.add(warning));
     const newKnots = recordKnotCoverage(session);
@@ -2499,7 +2560,7 @@ function createSharedEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = `${finalText}|${JSON.stringify(nextVariables)}`;
       if (!endings.has(key)) {
-        recordEnding(endings, visibleOutcomes, key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: nextVariables, foundBy });
+        recordEnding(endings, visibleOutcomes, key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: nextVariables, foundBy }, opts.onEvidence);
         noteDiscoveryProgress();
       }
       finishIfLast();
@@ -2998,10 +3059,11 @@ function createRandomEngine(
   };
 
   const rootStep = continueMaximally(s);
+  emitBenchmarkSignals(rootStep.tags, [], 0, opts.onEvidence);
   const assertions = assertionTracker(s.story, knots, opts.assertions, foundBy);
   const goals = new GoalTracker(opts.goals ?? [], foundBy);
   s.errors.forEach((e) =>
-    runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
+    recordRuntimeError(runtimeErrors, e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy }, opts.onEvidence)
   );
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
@@ -3027,7 +3089,7 @@ function createRandomEngine(
       finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
       variables: rootVariables,
       foundBy,
-    });
+    }, opts.onEvidence);
   }
   noteDiscoveryProgress();
 
@@ -3087,19 +3149,16 @@ function createRandomEngine(
       s.story.ChooseChoiceIndex(i);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (!runtimeErrors.has(msg)) {
-        runtimeErrors.set(msg, { message: msg, path: [...walkPath], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
-      }
+      recordRuntimeError(runtimeErrors, msg, { message: msg, path: [...walkPath], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy }, opts.onEvidence);
       noteDiscoveryProgress();
       walkPath = null;
       walkChoiceIndices = null;
       return;
     }
     const step = continueMaximally(s);
+    emitBenchmarkSignals(step.tags, [...walkChoiceIndices!], statesExplored, opts.onEvidence);
     s.errors.forEach((msg) => {
-      if (!runtimeErrors.has(msg)) {
-        runtimeErrors.set(msg, { message: msg, path: [...walkPath!], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
-      }
+      recordRuntimeError(runtimeErrors, msg, { message: msg, path: [...walkPath!], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy }, opts.onEvidence);
     });
     s.warnings.forEach((w) => runtimeWarnings.add(w));
     recordKnotCoverage(s);
@@ -3129,7 +3188,7 @@ function createRandomEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(stateVariables);
       if (!endings.has(key)) {
-        recordEnding(endings, visibleOutcomes, key, { path: [...walkPath], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy });
+        recordEnding(endings, visibleOutcomes, key, { path: [...walkPath], choiceIndices: [...walkChoiceIndices!], firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy }, opts.onEvidence);
         noteDiscoveryProgress();
       }
       walkPath = null;
@@ -3367,10 +3426,11 @@ function createBeamEngine(
   };
 
   const rootStep = continueMaximally(s);
+  emitBenchmarkSignals(rootStep.tags, [], 0, opts.onEvidence);
   const assertions = assertionTracker(s.story, knots, opts.assertions, foundBy);
   const goals = new GoalTracker(opts.goals ?? [], foundBy);
   s.errors.forEach((e) =>
-    runtimeErrors.set(e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy })
+    recordRuntimeError(runtimeErrors, e, { message: e, path: [], choiceIndices: [], firstDiscoveredAtState: 0, sourceLocation: sourceLocationForRuntimeError(e, knots), foundBy }, opts.onEvidence)
   );
   s.warnings.forEach((w) => runtimeWarnings.add(w));
   recordKnotCoverage(s);
@@ -3429,7 +3489,7 @@ function createBeamEngine(
         finalText: rootStep.text.trim().split(/\n/).slice(-3).join("\n"),
         variables: rootVariables,
         foundBy,
-      });
+      }, opts.onEvidence);
     }
     finished = true;
   } else {
@@ -3524,20 +3584,17 @@ function createBeamEngine(
       s.story.ChooseChoiceIndex(i);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (!runtimeErrors.has(msg)) {
-        runtimeErrors.set(msg, { message: msg, path, choiceIndices, firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
-      }
+      recordRuntimeError(runtimeErrors, msg, { message: msg, path, choiceIndices, firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy }, opts.onEvidence);
       noteDiscoveryProgress();
       return true;
     }
     const step = continueMaximally(s);
+    emitBenchmarkSignals(step.tags, choiceIndices, statesExplored + 1, opts.onEvidence);
     statesExplored++;
     if (path.length > maxDepthReached) maxDepthReached = path.length;
     const knotsBefore = visitedKnots.size;
     s.errors.forEach((msg) => {
-      if (!runtimeErrors.has(msg)) {
-        runtimeErrors.set(msg, { message: msg, path, choiceIndices, firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy });
-      }
+      recordRuntimeError(runtimeErrors, msg, { message: msg, path, choiceIndices, firstDiscoveredAtState: statesExplored, sourceLocation: sourceLocationForRuntimeError(msg, knots) ?? choiceLocation, foundBy }, opts.onEvidence);
     });
     s.warnings.forEach((w) => runtimeWarnings.add(w));
     recordKnotCoverage(s);
@@ -3560,7 +3617,7 @@ function createBeamEngine(
       const finalText = step.text.trim().split(/\n/).slice(-3).join("\n");
       const key = finalText + "|" + JSON.stringify(stateVariables);
       if (!endings.has(key)) {
-        recordEnding(endings, visibleOutcomes, key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy });
+        recordEnding(endings, visibleOutcomes, key, { path, choiceIndices, firstDiscoveredAtState: statesExplored, finalText, variables: stateVariables, foundBy }, opts.onEvidence);
         noteDiscoveryProgress();
       }
       return true;

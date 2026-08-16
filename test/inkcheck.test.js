@@ -3430,6 +3430,144 @@ test("CLI streams versioned progress to stderr without changing the final JSON r
   assert.strictEqual(final.outcome, "clean");
 });
 
+test("--json-stream emits replayable evidence and a bounded terminal summary", () => {
+  const proc = spawnSync(
+    process.execPath,
+    [CLI, CLEAN_BRANCH, "--max-states", "100", "--max-memory", "96", "--no-min-repro", "--concurrency", "1", "--json-stream", "--progress=off"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(proc.status, 0, proc.stderr);
+  const events = proc.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.strictEqual(events[0].type, "run_start");
+  assert.strictEqual(events.at(-1).type, "run_end");
+  assert.ok(events.every((event) => event.schemaVersion === 1));
+  const endings = events.filter((event) => event.type === "ending");
+  assert.ok(endings.length > 0);
+  assert.ok(endings.every((event) => Array.isArray(event.choiceIndices)));
+  assert.ok(endings.every((event) => Number.isInteger(event.elapsedMs) && event.elapsedMs >= 0));
+  assert.doesNotMatch(JSON.stringify(endings), /finalText|variables|choiceText|path/i);
+  const terminal = events.at(-1);
+  assert.strictEqual(terminal.compile.success, true);
+  assert.strictEqual(terminal.explore.endingsFound, endings.length);
+  assert.strictEqual(terminal.evidence.endingsEmitted, endings.length);
+  assert.ok(terminal.resources.memorySearchLimitBytes < terminal.resources.memoryCapBytes);
+  assert.ok(Buffer.byteLength(JSON.stringify(terminal)) < 16 * 1024);
+});
+
+test("--json-stream requires a single worker and rejects monolithic report persistence", () => {
+  const concurrent = spawnSync(
+    process.execPath,
+    [CLI, CLEAN_BRANCH, "--max-states", "100", "--concurrency", "2", "--json-stream"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(concurrent.status, 2);
+  assert.match(concurrent.stderr, /requires --concurrency 1/);
+  const persisted = spawnSync(
+    process.execPath,
+    [CLI, CLEAN_BRANCH, "--max-states", "100", "--concurrency", "1", "--json-stream", "--save-report"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(persisted.status, 2);
+  assert.match(persisted.stderr, /cannot be combined with --save-report/);
+  const profiled = spawnSync(
+    process.execPath,
+    [CLI, CLEAN_BRANCH, "--profile", "--concurrency", "1", "--json-stream"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(profiled.status, 2);
+  assert.match(profiled.stderr, /--profile cannot be combined with --json-stream/);
+  assert.strictEqual(profiled.stdout, "");
+});
+
+test("--json-stream stays discoverable across machine and agent front doors", () => {
+  const tool = JSON.parse(fs.readFileSync(path.join(ROOT, "tool.json"), "utf8"));
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  const rootSkill = fs.readFileSync(path.join(ROOT, "SKILL.md"), "utf8");
+  const streamFlag = tool.cli.flags.find((entry) => entry.flag === "--json-stream");
+
+  assert.strictEqual(tool.cli.streamingMachineOutput, "--json-stream");
+  assert.ok(streamFlag);
+  assert.match(streamFlag.description, /--concurrency 1/);
+  assert.match(streamFlag.description, /cannot be combined with --save-report/);
+  assert.match(tool.cli.jsonSchema.evidenceStream, /run_start/);
+  assert.match(tool.cli.jsonSchema.evidenceStream, /run_end/);
+  assert.match(readme, /--human\|--json\|--json-stream\|--markdown/);
+  assert.match(rootSkill, /--json-stream --concurrency 1/);
+});
+
+test("ordinary CLI runs bypass benchmark evidence extraction", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-no-evidence-callback-"));
+  const story = path.join(directory, "story.ink");
+  const preload = path.join(directory, "reject-evidence-scan.cjs");
+  fs.writeFileSync(story, `# INKBENCH_SIGNAL_MODE
+-> start
+
+=== start ===
++ [Finish]
+    # INKBENCH_SIGNAL:0
+    -> END
+`);
+  fs.writeFileSync(preload, `const originalTrim = String.prototype.trim;
+String.prototype.trim = function (...args) {
+  const value = String(this);
+  if (value === "INKBENCH_SIGNAL_MODE" || /^INKBENCH_SIGNAL:\\d+$/.test(value)) {
+    throw new Error("ordinary run scanned benchmark evidence tags");
+  }
+  return Reflect.apply(originalTrim, this, args);
+};
+`);
+  try {
+    const proc = spawnSync(
+      process.execPath,
+      ["--require", preload, CLI, story, "--max-states", "100", "--no-min-repro", "--concurrency", "1", "--json", "--progress=off"],
+      { encoding: "utf8" }
+    );
+    assert.strictEqual(proc.status, 0, proc.stderr);
+    const report = JSON.parse(proc.stdout);
+    assert.strictEqual(report.compile.success, true);
+    assert.strictEqual(report.explore.endingsFound.length, 1);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("reserved InkBench tags emit only numeric benchmark witnesses", () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-benchmark-signal-"));
+  const story = path.join(directory, "story.ink");
+  fs.writeFileSync(story, `# INKBENCH_SIGNAL_MODE
+-> start
+
+=== start ===
++ [Signal]
+    # INKBENCH_SIGNAL:0
+    -> END
++ [Safe]
+    -> END
+`);
+  try {
+    const proc = spawnSync(
+      process.execPath,
+      [CLI, story, "--max-states", "100", "--no-min-repro", "--concurrency", "1", "--json-stream", "--progress=off"],
+      { encoding: "utf8" }
+    );
+    assert.strictEqual(proc.status, 0, proc.stderr);
+    const events = proc.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    const signals = events.filter((event) => event.type === "benchmark_signal");
+    assert.strictEqual(signals.length, 1);
+    assert.deepStrictEqual(signals[0].choiceIndices, [0]);
+    assert.strictEqual(signals[0].signal, 0);
+    assert.strictEqual(events.filter((event) => event.type === "ending").length, 0);
+    const terminal = events.at(-1);
+    assert.strictEqual(terminal.explore.endingsFound, 1);
+    assert.strictEqual(terminal.evidence.benchmarkSignalsEmitted, 1);
+    assert.strictEqual(terminal.evidence.endingsEmitted, 0);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("terminal progress separates binding limits from runtime findings", () => {
   const run = (story, states) => spawnSync(
     process.execPath,
@@ -3935,6 +4073,7 @@ test("release version stays synchronized across package and manifests", () => {
     "web",
     "docs/hosted-checker.md",
     "docs/agent-discovery.md",
+    "docs/evidence-ndjson.md",
     "docs/report-schema-v1.md",
     "docs/inkjam-qa-guide.md",
     "CHANGELOG.md",

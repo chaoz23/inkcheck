@@ -247,9 +247,21 @@ test("promotion comparison separates semantic runtime retention from approximate
 test("resource guards expose explicit caps without choosing an efficiency stop", () => {
   const guards = createResourceGuards({ maxMemoryMb: 512, maxTimeMs: 10_000, startedAtMs: 1_000 });
   assert.strictEqual(guards.memoryCapBytes, 512 * 1024 * 1024);
+  assert.strictEqual(guards.memorySearchLimitBytes, 512 * 1024 * 1024);
   assert.strictEqual(guards.deadlineMs, 11_000);
   assert.strictEqual(typeof guards.memoryGuard, "function");
   assert.strictEqual(typeof guards.timeGuard, "function");
+
+  const reserved = createResourceGuards({
+    maxMemoryMb: 512,
+    maxTimeMs: 10_000,
+    startedAtMs: 1_000,
+    finalizationMemoryReserveMb: 128,
+    finalizationTimeReserveMs: 500,
+  });
+  assert.strictEqual(reserved.memoryCapBytes, 512 * 1024 * 1024);
+  assert.strictEqual(reserved.memorySearchLimitBytes, 384 * 1024 * 1024);
+  assert.strictEqual(reserved.deadlineMs, 10_500);
 });
 
 test("shared benchmark summaries retain serialized-frontier high-water evidence", async () => {

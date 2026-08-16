@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "crypto";
 import * as path from "path";
 import {
   CompileResult,
@@ -17,6 +18,7 @@ import {
 import {
   ExploreResult,
   ExploreProgress,
+  ExploreEvidence,
   DEFAULT_STORY_SEED,
   MAX_STORY_SEED,
   PortfolioWeights,
@@ -86,6 +88,7 @@ import {
 } from "./checkpoints";
 import { renderHumanResultWindow, runHumanCampaign } from "./human-campaign";
 import type { CampaignMode } from "./campaign-policy";
+import { VERSION } from "./version";
 
 let activeProgressFailure: (() => void) | undefined;
 
@@ -132,6 +135,7 @@ Options:
   --strict           Also fail on warnings, unvisited knots, truncation, or external stubs
   --human            Emit a prioritized human-readable fix list
   --json             Emit the full report as JSON
+  --json-stream      Emit replay evidence plus a bounded terminal summary as NDJSON
   --markdown         Emit a GitHub-friendly Markdown report
   --save-report      Atomically save a versioned local report artifact
   --save-checkpoint  Save an exact base-shared frontier when work remains
@@ -468,6 +472,7 @@ async function main() {
   let concurrency: PortfolioConcurrencySetting | undefined;
   let strict = false;
   let asJson = false;
+  let asJsonStream = false;
   let asMarkdown = false;
   let asHuman = false;
   let saveReport = false;
@@ -525,6 +530,7 @@ async function main() {
     else if (arg === "--strict") strict = true;
     else if (arg === "--human") asHuman = true;
     else if (arg === "--json") asJson = true;
+    else if (arg === "--json-stream") asJsonStream = true;
     else if (arg === "--markdown") asMarkdown = true;
     else if (arg === "--save-report") saveReport = true;
     else if (arg === "--save-checkpoint") saveCheckpoint = true;
@@ -581,12 +587,12 @@ async function main() {
   }
   if (!file) file = projectConfig?.entrypoint;
   if (!file) usage("missing story file (or inkcheck.yml entrypoint)");
-  if ([asJson, asMarkdown, asHuman].filter(Boolean).length > 1) {
-    usage("--json, --markdown, and --human cannot be used together");
+  if ([asJson, asJsonStream, asMarkdown, asHuman].filter(Boolean).length > 1) {
+    usage("--json, --json-stream, --markdown, and --human cannot be used together");
   }
 
   if (inspectMode) {
-    if (asMarkdown || asHuman || profileOnly || auto || followNext || goalOnly || strict || !minRepro ||
+    if (asJsonStream || asMarkdown || asHuman || profileOnly || auto || followNext || goalOnly || strict || !minRepro ||
         maxDepth !== undefined || maxStates !== undefined || goalMaxStates !== undefined || seed !== undefined || storySeed !== undefined ||
         concurrency !== undefined || maxMemoryMb !== undefined || maxTimeSec !== undefined || maxFrontierStates !== undefined || maxFrontierMb !== undefined || search !== "portfolio" ||
         progressSpecified || saveReport || saveCheckpoint || resumeCheckpointId !== undefined) {
@@ -631,11 +637,14 @@ async function main() {
   if (saveCheckpoint && (search !== "shared" || minRepro || auto || followNext || (goalMaxStates ?? 0) > 0 || saveReport)) {
     usage("checkpoint persistence requires --search=shared --no-min-repro and does not support --auto, --next, --goal-states, or --save-report");
   }
+  if (asJsonStream && saveReport) usage("--json-stream cannot be combined with --save-report");
+  if (asJsonStream && followNext) usage("--json-stream currently supports one bounded run; omit --next");
   if (resumed && maxStates! <= resumed.checkpoint.state.totalGranted) {
     usage(`resume --max-states must be greater than the checkpoint's ${resumed.checkpoint.state.totalGranted}-state total grant`);
   }
 
   if (profileOnly) {
+    if (asJsonStream) usage("--profile cannot be combined with --json-stream");
     if (saveCheckpoint) usage("--profile cannot save or resume a checkpoint");
     const profile = scanShapeProfile(file);
     if (asJson) {
@@ -666,6 +675,9 @@ async function main() {
   } catch (error) {
     usage(error instanceof Error ? error.message : String(error));
   }
+  if (asJsonStream && resolvedConcurrency.ceiling !== 1) {
+    usage("--json-stream currently requires --concurrency 1");
+  }
   const reportConfiguration: EffectiveReportConfiguration = {
     search,
     concurrency: resolvedConcurrency.ceiling,
@@ -686,6 +698,75 @@ async function main() {
     ...(projectConfig?.config.goals?.length ? { goals: projectConfig.config.goals } : {}),
   };
   const startedAt = Date.now();
+  const streamedEvidenceKeys = new Set<string>();
+  let streamedEndings = 0;
+  let streamedRuntimeErrors = 0;
+  let streamedBenchmarkSignals = 0;
+  let benchmarkSignalMode = false;
+  const emitJsonStream = (event: Record<string, unknown>) => {
+    if (asJsonStream) process.stdout.write(JSON.stringify({ schemaVersion: 1, ...event }) + "\n");
+  };
+  const streamEvidence = (evidence: ExploreEvidence) => {
+    if (!asJsonStream) return;
+    if (evidence.kind === "benchmark-mode") {
+      benchmarkSignalMode = true;
+      return;
+    }
+    if (evidence.kind === "benchmark-signal") {
+      benchmarkSignalMode = true;
+      const id = `signal-${evidence.signal}`;
+      if (streamedEvidenceKeys.has(id)) return;
+      streamedEvidenceKeys.add(id);
+      streamedBenchmarkSignals++;
+      emitJsonStream({
+        type: "benchmark_signal",
+        id,
+        signal: evidence.signal,
+        elapsedMs: Date.now() - startedAt,
+        firstDiscoveredAtState: evidence.firstDiscoveredAtState,
+        choiceIndices: evidence.choiceIndices,
+      });
+      return;
+    }
+    if (benchmarkSignalMode) return;
+    const identityInput = evidence.kind === "ending"
+      ? JSON.stringify(evidence.finding.choiceIndices)
+      : `${evidence.finding.message}\0${JSON.stringify(evidence.finding.choiceIndices)}`;
+    const id = createHash("sha256").update(`${evidence.kind}\0${identityInput}`).digest("hex").slice(0, 24);
+    if (streamedEvidenceKeys.has(id)) return;
+    streamedEvidenceKeys.add(id);
+    if (evidence.kind === "ending") {
+      const finding = evidence.finding;
+      streamedEndings++;
+      emitJsonStream({
+        type: "ending",
+        id,
+        elapsedMs: Date.now() - startedAt,
+        firstDiscoveredAtState: finding.firstDiscoveredAtState,
+        choiceIndices: finding.choiceIndices,
+        ...(finding.foundBy ? { foundBy: finding.foundBy } : {}),
+      });
+    } else {
+      const finding = evidence.finding;
+      streamedRuntimeErrors++;
+      emitJsonStream({
+        type: "runtime_error",
+        id,
+        elapsedMs: Date.now() - startedAt,
+        firstDiscoveredAtState: finding.firstDiscoveredAtState,
+        message: finding.message,
+        choiceIndices: finding.choiceIndices,
+        ...(finding.sourceLocation ? { sourceLocation: finding.sourceLocation } : {}),
+        ...(finding.foundBy ? { foundBy: finding.foundBy } : {}),
+      });
+    }
+  };
+  emitJsonStream({
+    type: "run_start",
+    inkcheckVersion: VERSION,
+    stateBudget: totalMaxStates,
+    effectiveConfiguration: reportConfiguration,
+  });
   let sequence = 0;
   let statesExplored = resumed?.checkpoint.state.statesExplored ?? 0;
   const selectedProgressMode = progressMode as "auto" | "human" | "ndjson" | "off";
@@ -788,16 +869,26 @@ async function main() {
 
   if (!compiled.success) {
     emitProgress("phase_start", { phase: "report" });
-    const failureReport = buildCompileFailureEnvelope(
+    const failureReport = asJsonStream ? undefined : buildCompileFailureEnvelope(
       compileReport,
       file,
       reportConfiguration
     );
-    const artifact = saveReport ? persistReport(failureReport) : undefined;
-    if (asJson) {
+    const artifact = saveReport ? persistReport(failureReport!) : undefined;
+    if (asJsonStream) {
+      emitJsonStream({
+        type: "run_end",
+        inkcheckVersion: VERSION,
+        elapsedMs: Date.now() - startedAt,
+        effectiveConfiguration: reportConfiguration,
+        compile: { success: false, errors: compiled.errors, warnings: compiled.warnings },
+        explore: null,
+        evidence: { endingsEmitted: streamedEndings, runtimeErrorsEmitted: streamedRuntimeErrors, benchmarkSignalsEmitted: streamedBenchmarkSignals },
+      });
+    } else if (asJson) {
       console.log(
         JSON.stringify(
-          artifact ? { ...failureReport, artifact } : failureReport,
+          artifact ? { ...failureReport!, artifact } : failureReport!,
           null,
           2
         )
@@ -844,9 +935,24 @@ async function main() {
   // Memory guard: a V8 heap OOM cannot be caught after the fact, so stop
   // cleanly before it. The cap is an explicit --max-memory, or 85% of the
   // V8 old-space limit (which honors any --max-old-space-size the user set).
-  const { memoryCapBytes, deadlineMs, memoryGuard, timeGuard } = createResourceGuards({
+  // Explicit runs retain up to 25%/1 GiB of their envelope for result
+  // construction. Timed runs retain up to sixty seconds to merge retained
+  // findings and flush a bounded
+  // terminal report; the deadline starts before compilation, not after it.
+  const finalizationMemoryReserveMb = maxMemoryMb === undefined
+    ? undefined
+    : Math.min(1_024, Math.max(1, Math.floor(maxMemoryMb * 0.25)));
+  const finalizationTimeReserveMs = maxTimeSec === undefined
+    ? undefined
+    : Math.min(60_000, Math.max(250, Math.floor(maxTimeSec * 1_000 * 0.10)));
+  const { memoryCapBytes, memorySearchLimitBytes, deadlineMs, memoryGuard, timeGuard, peakMemoryBytes } = createResourceGuards({
     maxMemoryMb,
-    ...(maxTimeSec === undefined ? {} : { maxTimeMs: maxTimeSec * 1000 }),
+    ...(finalizationMemoryReserveMb === undefined ? {} : { finalizationMemoryReserveMb }),
+    ...(maxTimeSec === undefined ? {} : {
+      maxTimeMs: maxTimeSec * 1000,
+      startedAtMs: startedAt,
+      finalizationTimeReserveMs,
+    }),
   });
 
   let nextCheckpoint: ReturnType<typeof exploreSharedResumable>["checkpoint"];
@@ -875,6 +981,7 @@ async function main() {
       preserveRandomState: semantics.usesRandomness,
       detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
       randomnessDetected: semantics.usesRandomness,
+      ...(asJsonStream ? { onEvidence: streamEvidence } : {}),
       onProgress: (progress: ExploreProgress) => {
         statesExplored = saveCheckpoint ? progress.statesExplored : statesBase + progress.statesExplored;
         const progressDetails = {
@@ -950,14 +1057,14 @@ async function main() {
           ? explorePortfolioPilotHandoffConcurrent(compiled.storyJson!, knots, externals, {
             ...configuredOptions,
             concurrency: resolvedConcurrency.ceiling,
-            memoryCapBytes,
+            memoryCapBytes: memorySearchLimitBytes,
             deadlineMs,
             })
         : resolvedConcurrency.executor === "fixed-concurrent"
           ? explorePortfolioConcurrent(compiled.storyJson!, knots, externals, {
               ...configuredOptions,
               concurrency: resolvedConcurrency.ceiling,
-              memoryCapBytes,
+              memoryCapBytes: memorySearchLimitBytes,
               deadlineMs,
             })
         : exploreWithGoals(compiled.storyJson!, knots, externals, configuredOptions, search);
@@ -981,6 +1088,7 @@ async function main() {
         detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
         randomnessDetected: semantics.usesRandomness,
         assertions: configuredAssertions,
+        ...(asJsonStream ? { onEvidence: streamEvidence } : {}),
       });
       checked = mergeMinRepro(checked, bfs);
       statesExplored = statesBase + checked.statesExplored;
@@ -1047,7 +1155,10 @@ async function main() {
     }
   }
 
-  const outputReport = buildReportEnvelope({
+  // The bounded stream deliberately avoids materializing the enriched full
+  // report: at marathon scale that duplicate object graph and its monolithic
+  // JSON string can exceed V8's string limit after search has already ended.
+  const outputReport = asJsonStream ? undefined : buildReportEnvelope({
     compile: compileReport,
     stats: st,
     ...(profile ? { profile } : {}),
@@ -1082,13 +1193,52 @@ async function main() {
         : "run ended without resumable state; no checkpoint was created");
     }
   }
-  const artifact = saveReport ? persistReport(outputReport) : undefined;
+  const artifact = saveReport ? persistReport(outputReport!) : undefined;
   emitProgress("phase_start", { phase: "report" });
-  if (asJson) {
+  if (asJsonStream) {
+    // Ensure alternate execution surfaces or future search engines cannot
+    // omit a finding from a clean terminal stream.
+    for (const ending of report.endingsFound) streamEvidence({ kind: "ending", finding: ending });
+    for (const error of report.runtimeErrors) streamEvidence({ kind: "runtime-error", finding: error });
+    emitJsonStream({
+      type: "run_end",
+      inkcheckVersion: VERSION,
+      elapsedMs: Date.now() - startedAt,
+      effectiveConfiguration: { ...reportConfiguration, limits: report.limits },
+      compile: { success: true, errors: compiled.errors, warnings: compiled.warnings },
+      explore: {
+        statesExplored: report.statesExplored,
+        endingsFound: report.endingsFound.length,
+        runtimeErrors: report.runtimeErrors.length,
+        limits: report.limits,
+        exhaustive: report.exhaustive,
+        truncated: report.truncated,
+        truncatedBy: report.truncatedBy,
+        ...(report.execution ? {
+          execution: {
+            mode: report.execution.mode,
+            requestedConcurrency: report.execution.requestedConcurrency,
+            effectiveConcurrency: report.execution.effectiveConcurrency,
+            ...(report.execution.fallbackReason ? { fallbackReason: report.execution.fallbackReason } : {}),
+          },
+        } : {}),
+      },
+      resources: {
+        memoryCapBytes,
+        memorySearchLimitBytes,
+        finalizationMemoryReserveBytes: memoryCapBytes - memorySearchLimitBytes,
+        peakMemoryBytes: peakMemoryBytes(),
+        deadlineMs: maxTimeSec === undefined ? null : startedAt + maxTimeSec * 1_000,
+        searchDeadlineMs: deadlineMs ?? null,
+        finalizationTimeReserveMs: finalizationTimeReserveMs ?? 0,
+      },
+      evidence: { endingsEmitted: streamedEndings, runtimeErrorsEmitted: streamedRuntimeErrors, benchmarkSignalsEmitted: streamedBenchmarkSignals },
+    });
+  } else if (asJson) {
     console.log(
       JSON.stringify(
           {
-            ...outputReport,
+            ...outputReport!,
             ...(artifact ? { artifact } : {}),
             ...(checkpointOutput ? { checkpoint: checkpointOutput } : {}),
           },
@@ -1099,7 +1249,7 @@ async function main() {
   } else if (asMarkdown) {
     console.log(renderMarkdown(compiled, st, report, advice));
   } else if (asHuman) {
-    console.log(renderHumanFindings(buildHumanFindings(outputReport)));
+    console.log(renderHumanFindings(buildHumanFindings(outputReport!)));
   } else {
     console.log(
       `✓ compiled — ${st.words ?? "?"} words, ${st.knots ?? knots.length} knots, ${st.choices ?? "?"} choices`

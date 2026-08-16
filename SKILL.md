@@ -41,6 +41,7 @@ report.
 ```bash
 inkcheck story.ink                    # compile + explore (defaults: depth 100, 10M states)
 inkcheck story.ink --strict --json    # CI mode: machine report, warnings fail
+inkcheck story.ink --json-stream --concurrency 1  # bounded long-run NDJSON evidence
 inkcheck story.ink --max-time 60      # big story: clean partial report after 60s
 inkcheck resume <checkpoint-id> --max-states N   # continue a budget-limited run
 inkcheck artifacts findings <report-id>          # page through stored findings
@@ -81,8 +82,10 @@ Exit 1: the runtime error is a hard fail; the unvisited knot is a warning
   killed the finding.
 - MUST check whether the report claims *exhaustive*; if budget-limited,
   either raise budgets, `resume` from the checkpoint, or state the caveat.
-- MUST use `--json` when another tool consumes the result, and `--strict`
-  when a warning should block a merge.
+- MUST use `--json` for a complete machine-consumed report, or
+  `--json-stream --concurrency 1` when a long-running wrapper needs replayable
+  partial evidence before the terminal summary. Use `--strict` when a warning
+  should block a merge.
 - MUST NOT judge story *quality* — pacing, tone, and lore are outside this
   tool's jurisdiction; only structure gets a verdict.
 - MUST NOT auto-"fix" unvisited knots by deleting them; the report's
