@@ -39,6 +39,7 @@ export interface AdaptiveConcurrentOptions extends ExploreOptions {
   deadlineMs?: number;
   failPassForTest?: PortfolioPassKind;
   failWorkerInitializationForTest?: boolean;
+  failWorkerConstructionAtForTest?: number;
   aggregateMemoryUsedForTest?: () => number;
   activationPilotStatesForTest?: number;
   /** Deterministic clock injection for executor deadline contract tests. */
@@ -111,6 +112,7 @@ function sanitizedOptions(options: AdaptiveConcurrentOptions): ExploreOptions {
     deadlineMs: _deadlineMs,
     failPassForTest: _failPassForTest,
     failWorkerInitializationForTest: _failWorkerInitializationForTest,
+    failWorkerConstructionAtForTest: _failWorkerConstructionAtForTest,
     aggregateMemoryUsedForTest: _aggregateMemoryUsedForTest,
     activationPilotStatesForTest: _activationPilotStatesForTest,
     nowForTest: _nowForTest,
@@ -132,36 +134,48 @@ function startSlot(
   knots: KnotInfo[],
   externals: string[],
   options: AdaptiveConcurrentOptions,
-  perWorkerMemory: number
+  perWorkerMemory: number,
+  constructionIndex: number
 ): WorkerSlot {
   const controlBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * CONTROL_WORDS);
   const channel = new MessageChannel();
-  const data: AdaptivePortfolioWorkerData = {
-    assignments,
-    storyJson,
-    knots,
-    externals,
-    options: sanitizedOptions(options),
-    memoryCapBytes: perWorkerMemory,
-    ...(options.deadlineMs === undefined ? {} : { deadlineMs: options.deadlineMs }),
-    ...(options.failPassForTest ? { failPassForTest: options.failPassForTest } : {}),
-    ...(options.failWorkerInitializationForTest ? { failWorkerInitializationForTest: true } : {}),
-    control: controlBuffer,
-    port: channel.port2,
-  };
-  const worker = new Worker(path.join(__dirname, "adaptive-portfolio-worker.js"), {
-    workerData: data,
-    transferList: [channel.port2],
-    resourceLimits: { maxOldGenerationSizeMb: Math.max(16, Math.floor(perWorkerMemory / (1024 * 1024))) },
-  });
-  return {
-    worker,
-    assignments,
-    control: new Int32Array(controlBuffer),
-    port: channel.port1,
-    progress: new Map(),
-    ready: false,
-  };
+  let worker: Worker | undefined;
+  try {
+    if (options.failWorkerConstructionAtForTest === constructionIndex) {
+      throw new Error(`injected synchronous worker construction failure at slot ${constructionIndex}`);
+    }
+    const data: AdaptivePortfolioWorkerData = {
+      assignments,
+      storyJson,
+      knots,
+      externals,
+      options: sanitizedOptions(options),
+      memoryCapBytes: perWorkerMemory,
+      ...(options.deadlineMs === undefined ? {} : { deadlineMs: options.deadlineMs }),
+      ...(options.failPassForTest ? { failPassForTest: options.failPassForTest } : {}),
+      ...(options.failWorkerInitializationForTest ? { failWorkerInitializationForTest: true } : {}),
+      control: controlBuffer,
+      port: channel.port2,
+    };
+    worker = new Worker(path.join(__dirname, "adaptive-portfolio-worker.js"), {
+      workerData: data,
+      transferList: [channel.port2],
+      resourceLimits: { maxOldGenerationSizeMb: Math.max(16, Math.floor(perWorkerMemory / (1024 * 1024))) },
+    });
+    return {
+      worker,
+      assignments,
+      control: new Int32Array(controlBuffer),
+      port: channel.port1,
+      progress: new Map(),
+      ready: false,
+    };
+  } catch (error) {
+    channel.port1.close();
+    channel.port2.close();
+    if (worker) void worker.terminate();
+    throw error;
+  }
 }
 
 function drain(slot: WorkerSlot): void {
@@ -272,13 +286,38 @@ export function explorePortfolioAdaptiveConcurrent(
   if (initialPilot && pilotIndex < 0) {
     throw new Error(`pilot pass ${initialPilot.pass} is disabled by the effective portfolio weights`);
   }
+  if (initialPilot && options.deadlineMs !== undefined
+    && (options.nowForTest ?? Date.now)() >= options.deadlineMs) {
+    throw new PortfolioWorkerInitializationDeadlineError();
+  }
   const assignments = Array.from({ length: effectiveConcurrency }, () => [] as AdaptivePassAssignment[]);
   for (const spec of specs) {
     if (spec.index !== pilotIndex) assignments[spec.index % effectiveConcurrency].push({ index: spec.index, pass: spec.pass });
   }
-  const slots = assignments
-    .filter((items) => items.length > 0)
-    .map((items) => startSlot(items, storyJson, knots, externals, options, perWorkerMemory));
+  const slots: WorkerSlot[] = [];
+  let slotsStopped = false;
+  const stopSlots = (): void => {
+    if (slotsStopped) return;
+    slotsStopped = true;
+    for (const slot of slots) stopSlot(slot);
+  };
+  try {
+    for (const items of assignments.filter((candidate) => candidate.length > 0)) {
+      slots.push(startSlot(
+        items,
+        storyJson,
+        knots,
+        externals,
+        options,
+        perWorkerMemory,
+        slots.length + 1
+      ));
+    }
+  } catch (error) {
+    stopSlots();
+    throw error;
+  }
+  try {
   const resources: AggregateResourceTracker = {
     peakTrackedHeapBytes: process.memoryUsage().heapUsed,
     aggregateMemoryStopped: false,
@@ -339,7 +378,6 @@ export function explorePortfolioAdaptiveConcurrent(
   }
   if (slots.every((slot) => slot.failed || slot.timedOut)) {
     const deadlineOnly = slots.length > 0 && slots.every((slot) => slot.timedOut && !slot.failed);
-    for (const slot of slots) stopSlot(slot);
     if (initialPilot && deadlineOnly) throw new PortfolioWorkerInitializationDeadlineError();
     throw new Error(`all concurrent portfolio workers failed to initialize: ${slots.map((slot) => slot.failed ?? "deadline elapsed").join("; ")}`);
   }
@@ -573,7 +611,7 @@ export function explorePortfolioAdaptiveConcurrent(
     });
   }
   for (const [index, final] of finalResults) latestSnapshots.set(index, final.result);
-  for (const slot of slots) stopSlot(slot);
+  stopSlots();
 
   const orderedResults = [...latestSnapshots.entries()].sort(([left], [right]) => left - right);
   if (orderedResults.length === 0) {
@@ -668,4 +706,7 @@ export function explorePortfolioAdaptiveConcurrent(
     statesSinceLastDiscovery: merged.discoverySummary?.statesSinceLastDiscovery ?? null,
   });
   return merged;
+  } finally {
+    stopSlots();
+  }
 }

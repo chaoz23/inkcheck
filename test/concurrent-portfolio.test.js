@@ -21,6 +21,7 @@ const {
 } = require("../dist/concurrency-policy");
 const { compile, scanKnots } = require("../dist/inklecate");
 
+const PROJECT_ROOT = path.join(__dirname, "..");
 const ROOT = path.join(__dirname, "fixtures", "search");
 const GRID = path.join(ROOT, "early-variable-grid.ink");
 const SUSTAINED_GRID = path.join(__dirname, "..", "examples", "early-choice-grid.ink");
@@ -54,6 +55,42 @@ async function story(file) {
   const compiled = await compile(file);
   assert.strictEqual(compiled.success, true, compiled.issues.map((issue) => issue.raw).join("\n"));
   return { storyJson: compiled.storyJson, knots: scanKnots(file) };
+}
+
+function assertCleanupProbeExits(label, action) {
+  const script = `
+const path = require("node:path");
+const { compile, scanKnots } = require("./dist/inklecate");
+const { explorePortfolioAdaptiveConcurrent } = require("./dist/adaptive-concurrent-portfolio");
+const ONE_GIB = 1024 * 1024 * 1024;
+const expectError = (operation, pattern) => {
+  try {
+    operation();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (pattern.test(message)) return;
+    throw error;
+  }
+  throw new Error(\`expected cleanup probe failure matching \${pattern}\`);
+};
+(async () => {
+  const file = path.join(process.cwd(), "examples", "early-choice-grid.ink");
+  const compiled = await compile(file);
+  if (!compiled.success) throw new Error("cleanup probe story failed to compile");
+  const knots = scanKnots(file);
+  ${action}
+})().catch((error) => {
+  console.error(error instanceof Error ? error.stack : String(error));
+  process.exitCode = 1;
+});
+`;
+  const child = spawnSync(process.execPath, ["-e", script], {
+    cwd: PROJECT_ROOT,
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  assert.ok(!child.error, `${label} did not exit within five seconds: ${child.error?.message ?? "unknown error"}`);
+  assert.strictEqual(child.status, 0, `${label}\nstdout:\n${child.stdout}\nstderr:\n${child.stderr}`);
 }
 
 function stableEvidence(result) {
@@ -369,6 +406,7 @@ test("a live pilot continues inside the sequential adaptive ceiling", async () =
 test("single-pass handoff activates without duplicate work or budget drift", async () => {
   const compiled = await story(SUSTAINED_GRID);
   const progress = [];
+  const snapshots = [];
   const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
     maxStates: 2_000,
     maxDepth: 100,
@@ -378,6 +416,7 @@ test("single-pass handoff activates without duplicate work or budget drift", asy
     memoryCapBytes: ONE_GIB,
     activationPilotStatesForTest: TEST_HANDOFF_PILOT,
     onProgress: (event) => progress.push(event),
+    onSnapshot: (snapshot) => snapshots.push(JSON.parse(JSON.stringify(snapshot))),
   });
   const scheduled = result.schedule.flatMap((round) => round.entries)
     .reduce((total, entry) => total + entry.consumed, 0);
@@ -399,22 +438,26 @@ test("single-pass handoff activates without duplicate work or budget drift", asy
   assert.strictEqual(progress[0].statesExplored, TEST_HANDOFF_PILOT);
   assert.ok(progress.every((event, index) => index === 0 || event.statesExplored >= progress[index - 1].statesExplored));
   assert.strictEqual(progress.at(-1).statesExplored, 2_000);
+  assert.deepStrictEqual(snapshots.at(-1), canonical(result));
 });
 
 test("single-pass handoff preserves the portfolio below the pilot threshold", async () => {
   const compiled = await story(SUSTAINED_GRID);
   const options = { maxStates: 100, maxDepth: 100, seed: 7, storySeed: 1 };
   const baseline = explorePortfolio(compiled.storyJson, compiled.knots, [], options);
+  const snapshots = [];
   const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
     ...options,
     concurrency: 4,
     memoryCapBytes: ONE_GIB,
     activationPilotStatesForTest: TEST_HANDOFF_PILOT,
+    onSnapshot: (snapshot) => snapshots.push(structuredClone(snapshot)),
   });
   assert.deepStrictEqual(canonical(stableEvidence(result)), canonical(stableEvidence(baseline)));
   assert.strictEqual(result.execution.mode, "sequential");
   assert.strictEqual(result.execution.activation.reason, "budget_below_pilot");
   assert.strictEqual(result.execution.activation.pilotStatesExplored, 0);
+  assert.deepStrictEqual(snapshots.at(-1), structuredClone(result));
 });
 
 test("an exhaustive live pilot retains pass telemetry and its executed schedule", async () => {
@@ -443,7 +486,7 @@ test("an already-expired pilot deadline returns time-bound partial evidence", as
     memoryCapBytes: ONE_GIB,
     deadlineMs: 0,
     timeGuard: () => false,
-    onSnapshot: (snapshot) => snapshots.push(snapshot),
+    onSnapshot: (snapshot) => snapshots.push(JSON.parse(JSON.stringify(snapshot))),
   });
   assert.strictEqual(result.execution.mode, "sequential");
   assert.strictEqual(result.execution.fallbackReason, "pilot_time_limit");
@@ -460,6 +503,8 @@ test("an already-expired pilot deadline returns time-bound partial evidence", as
   assert.strictEqual(result.schedule.length, 1);
   assert.strictEqual(snapshots.length, 1);
   assert.strictEqual(snapshots[0].truncatedBy.time, true);
+  assert.strictEqual(snapshots[0].execution.activation.reason, "pilot_time_limit");
+  assert.deepStrictEqual(snapshots[0].execution.activation, result.execution.activation);
 });
 
 test("a pilot memory stop returns memory-bound partial evidence", async () => {
@@ -485,8 +530,9 @@ test("a pilot memory stop returns memory-bound partial evidence", async () => {
   assert.strictEqual(result.limits.maxStates, 100_000);
 });
 
-test("a deadline reached while workers initialize finalizes the live pilot", async () => {
+test("an expired handoff deadline finalizes the live pilot before constructing workers", async () => {
   const compiled = await story(SUSTAINED_GRID);
+  const snapshots = [];
   const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
     maxStates: 2_000,
     maxDepth: 100,
@@ -498,6 +544,10 @@ test("a deadline reached while workers initialize finalizes the live pilot", asy
     timeGuard: () => true,
     deadlineMs: 1,
     nowForTest: () => 1,
+    // startSlot throws synchronously at its first test seam. Returning the
+    // pilot proves the expired-deadline path never invoked it or new Worker.
+    failWorkerConstructionAtForTest: 1,
+    onSnapshot: (snapshot) => snapshots.push(structuredClone(snapshot)),
   });
   assert.strictEqual(result.execution.mode, "sequential");
   assert.strictEqual(result.execution.fallbackReason, "worker_initialization_deadline");
@@ -512,6 +562,75 @@ test("a deadline reached while workers initialize finalizes the live pilot", asy
   assert.strictEqual(result.truncatedBy.maxStates, false);
   assert.strictEqual(result.limits.maxStates, 2_000);
   assert.deepStrictEqual(result.passes[0].truncatedBy, result.truncatedBy);
+  assert.strictEqual(snapshots.length, 1);
+  assert.strictEqual(snapshots[0].execution.activation.reason, "worker_initialization_deadline");
+  assert.deepStrictEqual(snapshots[0].execution.activation, result.execution.activation);
+});
+
+test("synchronous worker construction failures before a live deadline still throw", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  assert.throws(
+    () => explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
+      maxStates: 2_000,
+      maxDepth: 100,
+      seed: 7,
+      storySeed: 1,
+      concurrency: 4,
+      memoryCapBytes: ONE_GIB,
+      activationPilotStatesForTest: TEST_HANDOFF_PILOT,
+      timeGuard: () => true,
+      deadlineMs: 2,
+      nowForTest: () => 1,
+      failWorkerConstructionAtForTest: 1,
+    }),
+    /injected synchronous worker construction failure at slot 1/
+  );
+});
+
+test("a later synchronous worker construction failure stops earlier slots", () => {
+  assertCleanupProbeExits("second-construction rollback", `
+  expectError(() => explorePortfolioAdaptiveConcurrent(
+    compiled.storyJson,
+    knots,
+    [],
+    {
+      maxStates: 2_000,
+      maxDepth: 100,
+      seed: 7,
+      storySeed: 1,
+      concurrency: 2,
+      memoryCapBytes: ONE_GIB,
+      failWorkerConstructionAtForTest: 2,
+    },
+    2,
+    256 * 1024 * 1024,
+    512 * 1024 * 1024
+  ), /injected synchronous worker construction failure at slot 2/);
+  `);
+});
+
+test("live slots stop when progress or snapshot callbacks throw", () => {
+  for (const callback of ["onProgress", "onSnapshot"]) {
+    assertCleanupProbeExits(`${callback} cleanup`, `
+  expectError(() => explorePortfolioAdaptiveConcurrent(
+    compiled.storyJson,
+    knots,
+    [],
+    {
+      maxStates: 200,
+      maxDepth: 100,
+      seed: 7,
+      storySeed: 1,
+      concurrency: 2,
+      memoryCapBytes: ONE_GIB,
+      ${callback}: () => { throw new Error("injected ${callback} failure"); },
+    },
+    2,
+    256 * 1024 * 1024,
+    512 * 1024 * 1024
+  ), /injected ${callback} failure/);
+    `);
+  }
 });
 
 test("genuine worker initialization failures are not downgraded to deadline fallbacks", async () => {
@@ -533,12 +652,14 @@ test("genuine worker initialization failures are not downgraded to deadline fall
 
 test("single-pass handoff rejects depth-bound work without restarting the pilot", async () => {
   const compiled = await story(SUSTAINED_GRID);
+  const snapshots = [];
   const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
     maxStates: 2_000,
     maxDepth: 5,
     concurrency: 4,
     memoryCapBytes: ONE_GIB,
     activationPilotStatesForTest: TEST_HANDOFF_PILOT,
+    onSnapshot: (snapshot) => snapshots.push(structuredClone(snapshot)),
   });
   const scheduled = result.schedule.flatMap((round) => round.entries)
     .reduce((total, entry) => total + entry.consumed, 0);
@@ -549,6 +670,7 @@ test("single-pass handoff rejects depth-bound work without restarting the pilot"
   assert.strictEqual(scheduled, 2_000);
   assert.ok(result.schedule[0].entries.find((entry) => entry.pass === "dfs:inside-out").consumed >= result.execution.activation.pilotStatesExplored);
   assert.strictEqual(result.execution.activation.pilotStatesExplored, TEST_HANDOFF_PILOT);
+  assert.deepStrictEqual(snapshots.at(-1), structuredClone(result));
 });
 
 test("single-pass handoff retains pilot evidence when a worker fails", async () => {
