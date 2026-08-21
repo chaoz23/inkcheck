@@ -295,6 +295,12 @@ export function explorePortfolioAdaptiveConcurrent(
     if (spec.index !== pilotIndex) assignments[spec.index % effectiveConcurrency].push({ index: spec.index, pass: spec.pass });
   }
   const slots: WorkerSlot[] = [];
+  let slotsStopped = false;
+  const stopSlots = (): void => {
+    if (slotsStopped) return;
+    slotsStopped = true;
+    for (const slot of slots) stopSlot(slot);
+  };
   try {
     for (const items of assignments.filter((candidate) => candidate.length > 0)) {
       slots.push(startSlot(
@@ -308,9 +314,10 @@ export function explorePortfolioAdaptiveConcurrent(
       ));
     }
   } catch (error) {
-    for (const slot of slots) stopSlot(slot);
+    stopSlots();
     throw error;
   }
+  try {
   const resources: AggregateResourceTracker = {
     peakTrackedHeapBytes: process.memoryUsage().heapUsed,
     aggregateMemoryStopped: false,
@@ -371,7 +378,6 @@ export function explorePortfolioAdaptiveConcurrent(
   }
   if (slots.every((slot) => slot.failed || slot.timedOut)) {
     const deadlineOnly = slots.length > 0 && slots.every((slot) => slot.timedOut && !slot.failed);
-    for (const slot of slots) stopSlot(slot);
     if (initialPilot && deadlineOnly) throw new PortfolioWorkerInitializationDeadlineError();
     throw new Error(`all concurrent portfolio workers failed to initialize: ${slots.map((slot) => slot.failed ?? "deadline elapsed").join("; ")}`);
   }
@@ -605,7 +611,7 @@ export function explorePortfolioAdaptiveConcurrent(
     });
   }
   for (const [index, final] of finalResults) latestSnapshots.set(index, final.result);
-  for (const slot of slots) stopSlot(slot);
+  stopSlots();
 
   const orderedResults = [...latestSnapshots.entries()].sort(([left], [right]) => left - right);
   if (orderedResults.length === 0) {
@@ -700,4 +706,7 @@ export function explorePortfolioAdaptiveConcurrent(
     statesSinceLastDiscovery: merged.discoverySummary?.statesSinceLastDiscovery ?? null,
   });
   return merged;
+  } finally {
+    stopSlots();
+  }
 }

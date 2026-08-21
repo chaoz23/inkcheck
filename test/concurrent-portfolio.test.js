@@ -9,7 +9,6 @@ const {
   explorePortfolioPilotActivatedConcurrent,
   explorePortfolioPilotHandoffConcurrent,
 } = require("../dist/concurrent-portfolio");
-const { explorePortfolioAdaptiveConcurrent } = require("../dist/adaptive-concurrent-portfolio");
 const {
   createPortfolioPassEngine,
   explorePortfolio,
@@ -22,6 +21,7 @@ const {
 } = require("../dist/concurrency-policy");
 const { compile, scanKnots } = require("../dist/inklecate");
 
+const PROJECT_ROOT = path.join(__dirname, "..");
 const ROOT = path.join(__dirname, "fixtures", "search");
 const GRID = path.join(ROOT, "early-variable-grid.ink");
 const SUSTAINED_GRID = path.join(__dirname, "..", "examples", "early-choice-grid.ink");
@@ -55,6 +55,42 @@ async function story(file) {
   const compiled = await compile(file);
   assert.strictEqual(compiled.success, true, compiled.issues.map((issue) => issue.raw).join("\n"));
   return { storyJson: compiled.storyJson, knots: scanKnots(file) };
+}
+
+function assertCleanupProbeExits(label, action) {
+  const script = `
+const path = require("node:path");
+const { compile, scanKnots } = require("./dist/inklecate");
+const { explorePortfolioAdaptiveConcurrent } = require("./dist/adaptive-concurrent-portfolio");
+const ONE_GIB = 1024 * 1024 * 1024;
+const expectError = (operation, pattern) => {
+  try {
+    operation();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (pattern.test(message)) return;
+    throw error;
+  }
+  throw new Error(\`expected cleanup probe failure matching \${pattern}\`);
+};
+(async () => {
+  const file = path.join(process.cwd(), "examples", "early-choice-grid.ink");
+  const compiled = await compile(file);
+  if (!compiled.success) throw new Error("cleanup probe story failed to compile");
+  const knots = scanKnots(file);
+  ${action}
+})().catch((error) => {
+  console.error(error instanceof Error ? error.stack : String(error));
+  process.exitCode = 1;
+});
+`;
+  const child = spawnSync(process.execPath, ["-e", script], {
+    cwd: PROJECT_ROOT,
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  assert.ok(!child.error, `${label} did not exit within five seconds: ${child.error?.message ?? "unknown error"}`);
+  assert.strictEqual(child.status, 0, `${label}\nstdout:\n${child.stdout}\nstderr:\n${child.stderr}`);
 }
 
 function stableEvidence(result) {
@@ -551,28 +587,50 @@ test("synchronous worker construction failures before a live deadline still thro
   );
 });
 
-test("a later synchronous worker construction failure stops earlier slots", async () => {
-  const compiled = await story(SUSTAINED_GRID);
-  assert.throws(
-    () => explorePortfolioAdaptiveConcurrent(
-      compiled.storyJson,
-      compiled.knots,
-      [],
-      {
-        maxStates: 2_000,
-        maxDepth: 100,
-        seed: 7,
-        storySeed: 1,
-        concurrency: 2,
-        memoryCapBytes: ONE_GIB,
-        failWorkerConstructionAtForTest: 2,
-      },
-      2,
-      256 * 1024 * 1024,
-      512 * 1024 * 1024
-    ),
-    /injected synchronous worker construction failure at slot 2/
-  );
+test("a later synchronous worker construction failure stops earlier slots", () => {
+  assertCleanupProbeExits("second-construction rollback", `
+  expectError(() => explorePortfolioAdaptiveConcurrent(
+    compiled.storyJson,
+    knots,
+    [],
+    {
+      maxStates: 2_000,
+      maxDepth: 100,
+      seed: 7,
+      storySeed: 1,
+      concurrency: 2,
+      memoryCapBytes: ONE_GIB,
+      failWorkerConstructionAtForTest: 2,
+    },
+    2,
+    256 * 1024 * 1024,
+    512 * 1024 * 1024
+  ), /injected synchronous worker construction failure at slot 2/);
+  `);
+});
+
+test("live slots stop when progress or snapshot callbacks throw", () => {
+  for (const callback of ["onProgress", "onSnapshot"]) {
+    assertCleanupProbeExits(`${callback} cleanup`, `
+  expectError(() => explorePortfolioAdaptiveConcurrent(
+    compiled.storyJson,
+    knots,
+    [],
+    {
+      maxStates: 200,
+      maxDepth: 100,
+      seed: 7,
+      storySeed: 1,
+      concurrency: 2,
+      memoryCapBytes: ONE_GIB,
+      ${callback}: () => { throw new Error("injected ${callback} failure"); },
+    },
+    2,
+    256 * 1024 * 1024,
+    512 * 1024 * 1024
+  ), /injected ${callback} failure/);
+    `);
+  }
 });
 
 test("genuine worker initialization failures are not downgraded to deadline fallbacks", async () => {
