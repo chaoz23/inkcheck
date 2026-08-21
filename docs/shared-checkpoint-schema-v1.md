@@ -44,8 +44,10 @@ See [local resumable checkpoints](local-checkpoints.md) for freshness, privacy, 
 
 The logical checkpoint remains schema v1 JSON. New local artifacts stream that JSON through gzip as `.json.gz`; stable IDs still hash the same uncompressed logical checkpoint, and readers continue to accept earlier plain `.json` artifacts. Storage compression therefore changes neither deterministic frontier order nor split-run equivalence.
 
+New artifacts have a small canonical self-checksummed metadata sidecar, allowing list and retention operations to read bounded metadata plus payload file size without opening the frontier. That checksum detects isolated field corruption but is not authentication against a hostile local writer who can recompute it. Opening and resuming remain full-integrity boundaries: manifest validation and the full stored-payload digest precede bounded decompression, then the original stable-ID, envelope, configuration, and freshness checks run. Read failures explicitly distinguish corruption, unsupported schemas, and an artifact that cannot fit the schema-v1 readback envelope.
+
 ## Deliberate limits
 
-Schema v1 supports only base `shared:deep-novelty-v1`; assertions, goals, variable-aware steering, goal-aware steering, and the default portfolio are rejected rather than resumed approximately. Hosted/MCP resume, frontier partitioning, and cross-version migration remain future work.
+Schema v1 supports only base `shared:deep-novelty-v1`; assertions, goals, variable-aware steering, goal-aware steering, and the default portfolio are rejected rather than resumed approximately. Hosted/MCP resume, frontier partitioning, and cross-version migration remain future work. Because v1 is one JSON value, it also cannot safely reopen a payload above the runtime's maximum string length even when gzip keeps the stored file below quota. Its compressed buffer, decompressed buffer, JSON string, and parsed graph may overlap in memory. The reader reports an unsafe boundary as a resource limit and preserves the artifact; framed incremental schema v2 is required to remove both the string ceiling and this peak-memory shape.
 
 Checkpoint JSON can contain authored choice text, ending text, variable snapshots, serialized Ink runtime state, and exact witness paths. Treat it as sensitive project data and do not commit checkpoints by default.

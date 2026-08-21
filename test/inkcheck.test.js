@@ -3,7 +3,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 
 const {
   parseIssue,
@@ -51,6 +51,8 @@ const {
 } = require("../dist/discovery");
 const {
   CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
+  CheckpointReadError,
+  CheckpointSizeLimitError,
   listCheckpointArtifacts,
   loadCheckpointForResume,
   openCheckpointArtifact,
@@ -90,12 +92,30 @@ const EARLY_CHOICE_GRID = path.join(__dirname, "..", "examples", "early-choice-g
 const DEEP_CHAIN = path.join(__dirname, "..", "examples", "deep-chain.ink");
 const EXTERNAL_STORY = path.join(__dirname, "..", "examples", "external-story.ink");
 const CLI = path.join(__dirname, "..", "dist", "cli.js");
+const CHECKPOINT_SAVE_WORKER = path.join(__dirname, "fixtures", "checkpoint-save-worker.js");
 const ROOT = path.join(__dirname, "..");
 const SEARCH_FIXTURES = path.join(__dirname, "fixtures", "search");
 const INSPECT_PROJECT = path.join(__dirname, "fixtures", "inspect", "project.ink");
 const DUPLICATE_CHOICE_TEXT = path.join(__dirname, "fixtures", "duplicate-choice-text.ink");
 const ASSERTION_STORY = path.join(__dirname, "fixtures", "assertions.ink");
 const POLICY_LATE_ERROR = path.join(__dirname, "fixtures", "policy-late-error.ink");
+
+function runCheckpointSaveWorker(projectRoot, maxStates = 20, environment = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CHECKPOINT_SAVE_WORKER, projectRoot, String(maxStates)], {
+      env: { ...process.env, ...environment },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (status, signal) => resolve({ status, signal, stdout, stderr }));
+  });
+}
 const STAGED_DISJOINT = path.join(__dirname, "fixtures", "staged-disjoint.ink");
 const NO_DISCOVERY_BEFORE_DEPTH = path.join(__dirname, "fixtures", "no-discovery-before-depth.ink");
 const LATE_RECOVERY = path.join(__dirname, "fixtures", "late-recovery.ink");
@@ -1660,6 +1680,9 @@ test("checkpoint artifacts are private, source-bound, idempotent, and determinis
     assert.deepStrictEqual(repeated.pruned, []);
     const firstFile = path.join(tmp, ...first.path.split("/"));
     if (process.platform !== "win32") assert.strictEqual(fs.statSync(firstFile).mode & 0o777, 0o600);
+    const firstManifest = firstFile.replace(/\.json(?:\.gz)?$/, ".meta.json");
+    assert.strictEqual(fs.existsSync(firstManifest), true);
+    if (process.platform !== "win32") assert.strictEqual(fs.statSync(firstManifest).mode & 0o777, 0o600);
     assert.strictEqual((await openCheckpointArtifact(tmp, first.id)).artifact.freshness, "current");
     assert.strictEqual((await loadCheckpointForResume(tmp, first.id)).checkpoint.state.totalGranted, 10);
 
@@ -1678,20 +1701,43 @@ test("checkpoint artifacts are private, source-bound, idempotent, and determinis
     assert.match(newest.path, /\.json\.gz$/);
     const { gunzipSync } = require("node:zlib");
     const compressedFile = path.join(tmp, ...newest.path.split("/"));
+    const compressedManifest = compressedFile.replace(/\.json\.gz$/, ".meta.json");
     const legacyFile = compressedFile.slice(0, -3);
     const uncompressed = gunzipSync(fs.readFileSync(compressedFile));
     assert.ok(fs.statSync(compressedFile).size < uncompressed.length);
+    assert.strictEqual(newest.payloadSizeBytes, fs.statSync(compressedFile).size);
+    assert.strictEqual(newest.metadataSizeBytes, fs.statSync(compressedManifest).size);
+    assert.strictEqual(newest.sizeBytes, newest.payloadSizeBytes + newest.metadataSizeBytes);
 
-    // Existing schema-v1 JSON artifacts remain readable after storage compression ships.
+    // Existing sidecar-free schema-v1 JSON artifacts remain readable after storage compression ships.
     fs.writeFileSync(legacyFile, uncompressed, { mode: 0o600 });
     fs.rmSync(compressedFile);
+    fs.rmSync(compressedManifest);
     const legacy = await openCheckpointArtifact(tmp, references[3].id);
     assert.strictEqual(legacy.artifact.storageEncoding, "json");
     assert.match(legacy.artifact.path, /\.json$/);
     assert.strictEqual((await loadCheckpointForResume(tmp, references[3].id)).checkpoint.state.totalGranted, 40);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const crashedLegacyPublish = await runCheckpointSaveWorker(tmp, 40, {
+        NODE_ENV: "test",
+        INKCHECK_TEST_CHECKPOINT_CRASH_STAGE: "after-legacy-manifest-temporary",
+        INKCHECK_TEST_CHECKPOINT_MAX_DEPTH: "150",
+        INKCHECK_TEST_CHECKPOINT_SEED: "7",
+      });
+      assert.strictEqual(crashedLegacyPublish.status, 86, crashedLegacyPublish.stderr);
+      const legacyDebris = fs.readdirSync(path.dirname(legacyFile))
+        .filter((name) => name.includes(references[3].id));
+      assert.strictEqual(legacyDebris.filter((name) => name.endsWith(".claim")).length, attempt + 1);
+      assert.strictEqual(legacyDebris.filter((name) => name.endsWith(".payload.tmp")).length, attempt + 1);
+      assert.strictEqual(legacyDebris.some((name) => /^\.checkpoint-.*\.[0-9]+\.[0-9a-f-]+\.meta\.tmp$/.test(name)), false,
+        "legacy sidecar reconstruction never creates UUID-style temporary names");
+    }
     const legacyRepeated = await saveCheckpointArtifact(tmp, story, makeCheckpoint(40));
     assert.strictEqual(legacyRepeated.path, references[3].path.replace(/\.gz$/, ""));
     assert.strictEqual(fs.existsSync(`${legacyFile}.gz`), false, "legacy reuse does not create a duplicate encoding");
+    assert.strictEqual(fs.readdirSync(path.dirname(legacyFile))
+      .some((name) => name.includes(references[3].id) && name.startsWith(".")), false,
+    "successful legacy sidecar reconstruction cleans its fixed recovery slot");
 
     const beforeQuotaFailure = fs.readdirSync(path.join(tmp, ".inkcheck", "checkpoints"));
     await assert.rejects(
@@ -1737,15 +1783,963 @@ test("checkpoint artifacts fail closed on tampering and incompatible envelopes",
     const tampered = JSON.parse(original);
     tampered.checkpoint.state.totalGranted++;
     fs.writeFileSync(artifactFile, gzipSync(JSON.stringify(tampered)));
-    assert.throws(() => listCheckpointArtifacts(tmp), /content does not match its stable ID/);
+    assert.throws(() => listCheckpointArtifacts(tmp), (error) => {
+      assert.ok(error instanceof CheckpointReadError);
+      assert.strictEqual(error.kind, "corrupt");
+      assert.match(error.message, /content does not match its stable ID/);
+      return true;
+    });
+
+    fs.writeFileSync(artifactFile, gzipSync("{"));
+    await assert.rejects(() => openCheckpointArtifact(tmp, reference.id), (error) => {
+      assert.ok(error instanceof CheckpointReadError);
+      assert.strictEqual(error.kind, "corrupt");
+      assert.strictEqual(error.stage, "storage", "manifest payload digest fails before parsing");
+      return true;
+    });
+    fs.rmSync(artifactFile.replace(/\.json\.gz$/, ".meta.json"));
+    await assert.rejects(() => openCheckpointArtifact(tmp, reference.id), (error) => {
+      assert.ok(error instanceof CheckpointReadError);
+      assert.strictEqual(error.kind, "corrupt");
+      assert.strictEqual(error.stage, "json", "sidecar-free v1 fallback still classifies corrupt JSON");
+      return true;
+    });
 
     const incompatible = JSON.parse(original);
     incompatible.artifactSchemaVersion = 999;
     fs.writeFileSync(artifactFile, gzipSync(JSON.stringify(incompatible)));
-    await assert.rejects(() => openCheckpointArtifact(tmp, reference.id), /compatible Inkcheck version or migrate/);
+    await assert.rejects(() => openCheckpointArtifact(tmp, reference.id), (error) => {
+      assert.ok(error instanceof CheckpointReadError);
+      assert.strictEqual(error.kind, "unsupported");
+      assert.match(error.message, /compatible Inkcheck version or migrate/);
+      return true;
+    });
 
     fs.writeFileSync(artifactFile, "not-gzip");
-    await assert.rejects(() => openCheckpointArtifact(tmp, reference.id), /corrupt gzip/);
+    await assert.rejects(() => openCheckpointArtifact(tmp, reference.id), (error) => {
+      assert.ok(error instanceof CheckpointReadError);
+      assert.strictEqual(error.kind, "corrupt");
+      assert.strictEqual(error.stage, "decompression");
+      assert.match(error.message, /corrupt gzip/);
+      return true;
+    });
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("checkpoint readback is resource-bounded while manifests keep listing metadata-only", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-checkpoint-read-limit-"));
+  const story = path.join(tmp, "story.ink");
+  try {
+    fs.copyFileSync(path.join(SEARCH_FIXTURES, "low-dedup-wide.ink"), story);
+    const compiled = await compile(story);
+    const checkpoint = exploreSharedResumable(compiled.storyJson, scanKnots(story), [], {
+      maxStates: 10,
+      preserveTurnState: false,
+      preserveRandomState: false,
+    }).checkpoint;
+    const reference = await saveCheckpointArtifact(tmp, story, checkpoint);
+    const artifactFile = path.join(tmp, ...reference.path.split("/"));
+    const manifestFile = artifactFile.replace(/\.json(?:\.gz)?$/, ".meta.json");
+
+    const listed = listCheckpointArtifacts(tmp, { maxDecompressedBytes: 1 });
+    assert.strictEqual(listed.length, 1, "listing reads the sidecar instead of inflating the frontier");
+    assert.strictEqual(Object.hasOwn(listed[0], "manifestFile"), false, "private sidecar paths are not exposed");
+
+    const originalOpenSync = fs.openSync;
+    fs.openSync = (candidate, ...args) => {
+      if (path.resolve(String(candidate)) === path.resolve(artifactFile)) {
+        throw new Error("checkpoint payload must not be opened during manifested list/prune");
+      }
+      return originalOpenSync(candidate, ...args);
+    };
+    try {
+      assert.strictEqual(listCheckpointArtifacts(tmp).length, 1);
+      const nextCheckpoint = exploreSharedResumable(compiled.storyJson, scanKnots(story), [], {
+        maxStates: 20,
+        preserveTurnState: false,
+        preserveRandomState: false,
+      }).checkpoint;
+      await saveCheckpointArtifact(tmp, story, nextCheckpoint);
+    } finally {
+      fs.openSync = originalOpenSync;
+    }
+
+    const originalPayload = fs.readFileSync(artifactFile);
+    const sameSizeTamper = Buffer.from(originalPayload);
+    sameSizeTamper[Math.floor(sameSizeTamper.length / 2)] ^= 1;
+    fs.writeFileSync(artifactFile, sameSizeTamper);
+    assert.strictEqual(listCheckpointArtifacts(tmp).some((item) => item.id === reference.id), true,
+      "bounded listing deliberately defers same-size payload integrity to open/resume");
+    await assert.rejects(() => openCheckpointArtifact(tmp, reference.id), (error) => {
+      assert.ok(error instanceof CheckpointReadError);
+      assert.strictEqual(error.kind, "corrupt");
+      assert.strictEqual(error.stage, "storage");
+      return true;
+    });
+    fs.writeFileSync(artifactFile, originalPayload);
+
+    await assert.rejects(
+      () => openCheckpointArtifact(tmp, reference.id, { maxDecompressedBytes: 1 }),
+      (error) => {
+        assert.ok(error instanceof CheckpointReadError);
+        assert.strictEqual(error.kind, "resource_limit");
+        assert.strictEqual(error.stage, "decompression");
+        assert.strictEqual(error.limitBytes, 1);
+        assert.match(error.message, /framed checkpoint format/);
+        return true;
+      }
+    );
+    await assert.rejects(
+      () => loadCheckpointForResume(tmp, reference.id, { maxStoredBytes: 1 }),
+      (error) => {
+        assert.ok(error instanceof CheckpointReadError);
+        assert.strictEqual(error.kind, "resource_limit");
+        assert.strictEqual(error.stage, "storage");
+        assert.ok(error.observedBytes > error.limitBytes);
+        return true;
+      }
+    );
+
+    // A same-ID save first applies the schema-v1 default read envelope, then
+    // may fall back to a fixed-memory checksum under the caller's larger
+    // durable-storage cap. Use a synthetic fstat size so the test proves that
+    // cap is forwarded without reserving, reading, or allocating 512 MiB.
+    const sparseSize = (512 * 1024 * 1024) + 1;
+    const payloadStat = fs.statSync(artifactFile);
+    const sparseStat = new Proxy(payloadStat, {
+      get(target, property) {
+        if (property === "size") return sparseSize;
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const originalFstatSync = fs.fstatSync;
+    const originalCloseSync = fs.closeSync;
+    const originalReadSync = fs.readSync;
+    const payloadFds = new Map();
+    let payloadOpenCount = 0;
+    const acceptedActiveCap = new Error("active checkpoint digest cap accepted sparse fstat");
+    fs.openSync = (candidate, ...args) => {
+      const fd = originalOpenSync(candidate, ...args);
+      if (path.resolve(String(candidate)) === path.resolve(artifactFile)) {
+        payloadOpenCount++;
+        payloadFds.set(fd, payloadOpenCount);
+      }
+      return fd;
+    };
+    fs.fstatSync = (fd, ...args) => payloadFds.has(fd)
+      ? sparseStat
+      : originalFstatSync(fd, ...args);
+    fs.closeSync = (fd) => {
+      payloadFds.delete(fd);
+      return originalCloseSync(fd);
+    };
+    fs.readSync = (fd, ...args) => {
+      if (payloadFds.get(fd) === 2) throw acceptedActiveCap;
+      return originalReadSync(fd, ...args);
+    };
+    try {
+      await assert.rejects(
+        () => saveCheckpointArtifact(tmp, story, checkpoint, {
+          maxCheckpointBytes: sparseSize + 1024,
+          maxProjectBytes: sparseSize + 1024,
+        }),
+        (error) => {
+          assert.strictEqual(error, acceptedActiveCap,
+            "fallback checksum reaches its fixed-buffer read under the caller's active cap");
+          return true;
+        }
+      );
+    } finally {
+      fs.openSync = originalOpenSync;
+      fs.fstatSync = originalFstatSync;
+      fs.closeSync = originalCloseSync;
+      fs.readSync = originalReadSync;
+    }
+    assert.strictEqual(payloadOpenCount, 2,
+      "default readback rejects from fstat before the active-cap verifier reopens once");
+
+    const heldManifest = `${manifestFile}.held`;
+    fs.renameSync(manifestFile, heldManifest);
+    try {
+      assert.throws(() => listCheckpointArtifacts(tmp, { maxDecompressedBytes: 1 }), (error) => {
+        assert.ok(error instanceof CheckpointReadError);
+        assert.strictEqual(error.kind, "resource_limit");
+        return true;
+      });
+    } finally {
+      fs.renameSync(heldManifest, manifestFile);
+    }
+
+    const originalManifest = fs.readFileSync(manifestFile, "utf8");
+    for (const [field, value] of [["createdAt", "1900-01-01T00:00:00.000Z"], ["totalGranted", 999]]) {
+      const changed = JSON.parse(originalManifest);
+      changed[field] = value;
+      fs.writeFileSync(manifestFile, JSON.stringify(changed));
+      assert.throws(() => listCheckpointArtifacts(tmp), (error) => {
+        assert.ok(error instanceof CheckpointReadError);
+        assert.strictEqual(error.kind, "corrupt");
+        assert.strictEqual(error.stage, "manifest");
+        assert.match(error.message, /canonical checksum/);
+        return true;
+      });
+      fs.writeFileSync(manifestFile, originalManifest);
+    }
+
+    const incompatibleManifest = JSON.parse(originalManifest);
+    incompatibleManifest.manifestSchemaVersion = 2;
+    incompatibleManifest.futureSchemaField = { framedPayload: true };
+    fs.writeFileSync(manifestFile, JSON.stringify(incompatibleManifest));
+    assert.throws(() => listCheckpointArtifacts(tmp), (error) => {
+      assert.ok(error instanceof CheckpointReadError);
+      assert.strictEqual(error.kind, "unsupported");
+      assert.strictEqual(error.stage, "manifest");
+      return true;
+    });
+    const futureManifest = fs.readFileSync(manifestFile);
+    const recoveryFile = path.join(
+      path.dirname(manifestFile),
+      `.${reference.id}.recovery-00.meta.json`
+    );
+    fs.writeFileSync(recoveryFile, originalManifest);
+    fs.writeFileSync(`${recoveryFile}.claim`, JSON.stringify({ schemaVersion: 1, pid: 999999 }));
+    await assert.rejects(() => saveCheckpointArtifact(tmp, story, checkpoint), (error) => {
+      assert.ok(error instanceof CheckpointReadError);
+      assert.strictEqual(error.kind, "unsupported");
+      assert.strictEqual(error.stage, "manifest");
+      return true;
+    });
+    assert.deepStrictEqual(fs.readFileSync(manifestFile), futureManifest,
+      "v1 recovery metadata never overwrites an authoritative future-schema sidecar");
+    const oversizedCanonical = Buffer.alloc((64 * 1024) + 1, 0x20);
+    fs.writeFileSync(manifestFile, oversizedCanonical);
+    await assert.rejects(() => saveCheckpointArtifact(tmp, story, checkpoint), (error) => {
+      assert.ok(error instanceof CheckpointReadError);
+      assert.strictEqual(error.kind, "resource_limit");
+      assert.strictEqual(error.stage, "manifest");
+      return true;
+    });
+    assert.deepStrictEqual(fs.readFileSync(manifestFile), oversizedCanonical,
+      "resource-limited canonical metadata is never replaced by a recovery record");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("legacy JSON checkpoint growth is bounded from one open descriptor", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-checkpoint-legacy-growth-"));
+  const story = path.join(tmp, "story.ink");
+  try {
+    fs.copyFileSync(path.join(SEARCH_FIXTURES, "low-dedup-wide.ink"), story);
+    const compiled = await compile(story);
+    const checkpoint = exploreSharedResumable(compiled.storyJson, scanKnots(story), [], {
+      maxStates: 10,
+      preserveTurnState: false,
+      preserveRandomState: false,
+    }).checkpoint;
+    const reference = await saveCheckpointArtifact(tmp, story, checkpoint);
+    const compressedFile = path.join(tmp, ...reference.path.split("/"));
+    const manifestFile = compressedFile.replace(/\.json\.gz$/, ".meta.json");
+    const legacyFile = compressedFile.replace(/\.gz$/, "");
+    const legacyBytes = require("node:zlib").gunzipSync(fs.readFileSync(compressedFile));
+    fs.writeFileSync(legacyFile, legacyBytes);
+    fs.rmSync(compressedFile);
+    fs.rmSync(manifestFile);
+
+    const maxStoredBytes = legacyBytes.length + 64;
+    const originalOpenSync = fs.openSync;
+    const originalReadSync = fs.readSync;
+    let payloadOpens = 0;
+    let grew = false;
+    fs.openSync = (candidate, flags, ...args) => {
+      if (path.resolve(String(candidate)) === path.resolve(legacyFile) && flags === "r") payloadOpens++;
+      return originalOpenSync(candidate, flags, ...args);
+    };
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      const read = originalReadSync(fd, buffer, offset, length, position);
+      if (!grew && position === 0) {
+        grew = true;
+        fs.appendFileSync(legacyFile, Buffer.alloc(128, 0x20));
+      }
+      return read;
+    };
+    try {
+      await assert.rejects(
+        () => openCheckpointArtifact(tmp, reference.id, {
+          maxStoredBytes,
+          maxDecompressedBytes: legacyBytes.length + 1024,
+        }),
+        (error) => {
+          assert.ok(error instanceof CheckpointReadError);
+          assert.strictEqual(error.kind, "resource_limit");
+          assert.strictEqual(error.stage, "storage");
+          assert.ok(error.observedBytes > maxStoredBytes);
+          return true;
+        }
+      );
+    } finally {
+      fs.openSync = originalOpenSync;
+      fs.readSync = originalReadSync;
+    }
+    assert.strictEqual(payloadOpens, 1, "legacy bounds and bytes come from one opened file descriptor");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("checkpoint recovery manifests survive deterministic crash windows without payload decoding", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-checkpoint-crash-recovery-"));
+  const story = path.join(tmp, "story.ink");
+  try {
+    fs.copyFileSync(path.join(SEARCH_FIXTURES, "low-dedup-wide.ink"), story);
+    const beforePayload = await runCheckpointSaveWorker(tmp, 20, {
+      NODE_ENV: "test",
+      INKCHECK_TEST_CHECKPOINT_CRASH_STAGE: "after-recovery-manifest",
+    });
+    assert.strictEqual(beforePayload.status, 86, beforePayload.stderr);
+
+    const directory = path.join(tmp, ".inkcheck", "checkpoints");
+    let names = fs.readdirSync(directory);
+    assert.strictEqual(names.filter((name) => /\.recovery-\d+\.meta\.json$/.test(name)).length, 1);
+    assert.strictEqual(names.some((name) => name.endsWith(".json.gz")), false,
+      "a recovery-only intent is never exposed as checkpoint evidence");
+
+    const afterPayload = await runCheckpointSaveWorker(tmp, 20, {
+      NODE_ENV: "test",
+      INKCHECK_TEST_CHECKPOINT_CRASH_STAGE: "after-payload-publication",
+    });
+    assert.strictEqual(afterPayload.status, 86, afterPayload.stderr);
+    names = fs.readdirSync(directory);
+    const payloadName = names.find((name) => /^checkpoint-[0-9a-f]{24}\.json\.gz$/.test(name));
+    assert.ok(payloadName);
+    const id = payloadName.slice(0, -".json.gz".length);
+    assert.strictEqual(fs.existsSync(path.join(directory, `${id}.meta.json`)), false);
+    assert.strictEqual(names.filter((name) => /\.recovery-\d+\.meta\.json$/.test(name)).length, 2,
+      "the matching durable record and an older recovery-only record both survive the crashes");
+    assert.throws(() => listCheckpointArtifacts(tmp, { maxDecompressedBytes: 1 }), (error) => {
+      assert.ok(error instanceof CheckpointReadError);
+      assert.strictEqual(error.kind, "resource_limit");
+      return true;
+    });
+
+    const decodeMarker = path.join(tmp, "decode-attempted");
+    const recovered = await runCheckpointSaveWorker(tmp, 20, {
+      NODE_ENV: "test",
+      INKCHECK_TEST_FORBID_CHECKPOINT_DECODE: "1",
+      INKCHECK_TEST_CHECKPOINT_DECODE_MARKER: decodeMarker,
+    });
+    assert.strictEqual(recovered.status, 0, recovered.stderr);
+    assert.strictEqual(fs.existsSync(decodeMarker), false,
+      "resource-limited recovery reconstructs metadata from the durable record without inflating JSON");
+    names = fs.readdirSync(directory);
+    assert.deepStrictEqual(names.filter((name) => name.includes(id)).sort(), [
+      `${id}.json.gz`, `${id}.meta.json`,
+    ]);
+    assert.strictEqual(names.some((name) => name.includes(".recovery-")), false,
+      "recovery-only debris is cleaned only after the canonical pair is reread and verified");
+    assert.strictEqual(listCheckpointArtifacts(tmp, { maxDecompressedBytes: 1 })[0].id, id);
+
+    fs.rmSync(path.join(directory, `${id}.json.gz`));
+    const replaceGap = await runCheckpointSaveWorker(tmp, 20, {
+      NODE_ENV: "test",
+      INKCHECK_TEST_CHECKPOINT_FORCE_WINDOWS_REPLACE: "1",
+      INKCHECK_TEST_CHECKPOINT_CRASH_STAGE: "after-manifest-displacement",
+    });
+    assert.strictEqual(replaceGap.status, 86, replaceGap.stderr);
+    names = fs.readdirSync(directory);
+    assert.strictEqual(fs.existsSync(path.join(directory, `${id}.meta.json`)), false,
+      "the deterministic failpoint stops inside the portable replace gap");
+    assert.strictEqual(names.some((name) => name.endsWith(".promote")), true);
+    assert.strictEqual(names.some((name) => name.endsWith(".displaced")), true);
+
+    const gapDecodeMarker = path.join(tmp, "replace-gap-decode-attempted");
+    const gapRecovered = await runCheckpointSaveWorker(tmp, 20, {
+      NODE_ENV: "test",
+      INKCHECK_TEST_FORBID_CHECKPOINT_DECODE: "1",
+      INKCHECK_TEST_CHECKPOINT_DECODE_MARKER: gapDecodeMarker,
+    });
+    assert.strictEqual(gapRecovered.status, 0, gapRecovered.stderr);
+    assert.strictEqual(fs.existsSync(gapDecodeMarker), false);
+    names = fs.readdirSync(directory);
+    assert.deepStrictEqual(names.filter((name) => name.includes(id)).sort(), [
+      `${id}.json.gz`, `${id}.meta.json`,
+    ], "the bounded promotion and displaced companions are cleaned after gap recovery");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("checkpoint cleanup preserves a live same-ID writer's claimed slot", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-checkpoint-live-owner-"));
+  const story = path.join(tmp, "story.ink");
+  try {
+    fs.copyFileSync(path.join(SEARCH_FIXTURES, "low-dedup-wide.ink"), story);
+    const ownerGate = path.join(tmp, "live-owner-gate");
+    const heldOwner = runCheckpointSaveWorker(tmp, 20, {
+      NODE_ENV: "test",
+      INKCHECK_TEST_CHECKPOINT_GATE: ownerGate,
+      INKCHECK_TEST_CHECKPOINT_GATE_STAGE: "after-recovery-manifest",
+    });
+    const deadline = Date.now() + 10_000;
+    while (!fs.readdirSync(tmp).some((name) => name.startsWith("live-owner-gate.")
+      && name.endsWith(".ready"))) {
+      if (Date.now() >= deadline) throw new Error("timed out waiting for held checkpoint owner");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    const winner = await runCheckpointSaveWorker(tmp, 20);
+    assert.strictEqual(winner.status, 0, winner.stderr);
+    const id = JSON.parse(winner.stdout).id;
+    const directory = path.join(tmp, ".inkcheck", "checkpoints");
+    let names = fs.readdirSync(directory);
+    assert.strictEqual(names.some((name) => name === `${id}.json.gz`), true);
+    assert.strictEqual(names.some((name) => name === `${id}.meta.json`), true);
+    assert.strictEqual(names.filter((name) => name.endsWith(".claim")).length, 1);
+    assert.strictEqual(names.filter((name) => /\.recovery-\d+\.meta\.json$/.test(name)).length, 1);
+    assert.strictEqual(names.filter((name) => name.endsWith(".payload.tmp")).length, 1,
+      "the winner cannot unlink another live process's claimed transaction");
+
+    fs.writeFileSync(ownerGate, "release");
+    const owner = await heldOwner;
+    assert.strictEqual(owner.status, 0, owner.stderr);
+    names = fs.readdirSync(directory);
+    assert.deepStrictEqual(names.filter((name) => name.includes(id)).sort(), [
+      `${id}.json.gz`, `${id}.meta.json`,
+    ], "the slot owner releases its own claim after reopening the winner");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("checkpoint publication preserves concurrent same-process nonce owners", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-checkpoint-same-process-owner-"));
+  const story = path.join(tmp, "story.ink");
+  try {
+    fs.copyFileSync(path.join(SEARCH_FIXTURES, "low-dedup-wide.ink"), story);
+    const compiled = await compile(story);
+    const checkpoint = exploreSharedResumable(compiled.storyJson, scanKnots(story), [], {
+      maxStates: 20,
+      preserveTurnState: false,
+      preserveRandomState: false,
+    }).checkpoint;
+    const pending = Array.from({ length: 4 }, () => saveCheckpointArtifact(tmp, story, checkpoint));
+    const directory = path.join(tmp, ".inkcheck", "checkpoints");
+    let names = fs.readdirSync(directory);
+    assert.strictEqual(names.filter((name) => name.endsWith(".claim")).length, 4,
+      "all synchronous reservation phases own distinct nonce-bearing slots");
+    assert.strictEqual(names.filter((name) => name.endsWith(".payload.tmp")).length, 4);
+    assert.strictEqual(names.some((name) => name.endsWith(".json.gz")), false);
+
+    const references = await Promise.all(pending);
+    assert.strictEqual(new Set(references.map((reference) => reference.id)).size, 1);
+    const id = references[0].id;
+    names = fs.readdirSync(directory);
+    assert.deepStrictEqual(names.filter((name) => name.includes(id)).sort(), [
+      `${id}.json.gz`, `${id}.meta.json`,
+    ], "a winner cannot delete live sibling transactions, and every owner cleans after joining it");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("checkpoint manifest tampering cannot steer deterministic retention", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-checkpoint-manifest-retention-"));
+  const story = path.join(tmp, "story.ink");
+  try {
+    fs.copyFileSync(path.join(SEARCH_FIXTURES, "low-dedup-wide.ink"), story);
+    const compiled = await compile(story);
+    const makeCheckpoint = (maxStates) => exploreSharedResumable(compiled.storyJson, scanKnots(story), [], {
+      maxStates,
+      preserveTurnState: false,
+      preserveRandomState: false,
+    }).checkpoint;
+    const references = [];
+    for (const maxStates of [10, 20, 30]) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
+      references.push(await saveCheckpointArtifact(tmp, story, makeCheckpoint(maxStates)));
+    }
+    const oldest = [...listCheckpointArtifacts(tmp)].sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+    const manifestFile = path.join(tmp, ".inkcheck", "checkpoints", `${oldest.id}.meta.json`);
+    const originalManifest = fs.readFileSync(manifestFile, "utf8");
+    const changed = JSON.parse(originalManifest);
+    changed.createdAt = "2999-01-01T00:00:00.000Z";
+    fs.writeFileSync(manifestFile, JSON.stringify(changed));
+    const before = fs.readdirSync(path.dirname(manifestFile)).sort();
+    await assert.rejects(() => saveCheckpointArtifact(tmp, story, makeCheckpoint(40)), (error) => {
+      assert.ok(error instanceof CheckpointReadError);
+      assert.strictEqual(error.kind, "corrupt");
+      assert.match(error.message, /canonical checksum/);
+      return true;
+    });
+    assert.deepStrictEqual(fs.readdirSync(path.dirname(manifestFile)).sort(), before,
+      "retention does not delete or reorder around tampered metadata");
+
+    fs.writeFileSync(manifestFile, originalManifest);
+    const saved = await saveCheckpointArtifact(tmp, story, makeCheckpoint(40));
+    assert.strictEqual(saved.pruned.includes(oldest.id), true, "untampered creation order remains authoritative");
+    assert.strictEqual(references.length, 3);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("checkpoint publication serializes cross-process same-ID writers and recovers one-file crash windows", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-checkpoint-concurrent-save-"));
+  const story = path.join(tmp, "story.ink");
+  try {
+    fs.copyFileSync(path.join(SEARCH_FIXTURES, "low-dedup-wide.ink"), story);
+    const compiled = await compile(story);
+    const checkpoint = exploreSharedResumable(compiled.storyJson, scanKnots(story), [], {
+      maxStates: 20,
+      preserveTurnState: false,
+      preserveRandomState: false,
+    }).checkpoint;
+    const publicationGate = path.join(tmp, "same-id-publication-gate");
+    const workerPromises = Array.from({ length: 6 }, () => runCheckpointSaveWorker(tmp, 20, {
+      NODE_ENV: "test",
+      INKCHECK_TEST_CHECKPOINT_GATE: publicationGate,
+      INKCHECK_TEST_CHECKPOINT_GATE_STAGE: "after-recovery-manifest",
+    }));
+    const gateDeadline = Date.now() + 10_000;
+    while (fs.readdirSync(tmp).filter((name) => name.startsWith("same-id-publication-gate.")
+      && name.endsWith(".ready")).length < 6) {
+      if (Date.now() >= gateDeadline) throw new Error("timed out waiting for six checkpoint publication workers");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const directory = path.join(tmp, ".inkcheck", "checkpoints");
+    let names = fs.readdirSync(directory);
+    assert.strictEqual(names.filter((name) => /\.recovery-\d+\.meta\.json$/.test(name)).length, 6,
+      "all six processes hold durable recovery records before payload publication");
+    assert.strictEqual(names.some((name) => name.endsWith(".json.gz")), false);
+    fs.writeFileSync(publicationGate, "release");
+    const workers = await Promise.all(workerPromises);
+    for (const worker of workers) assert.strictEqual(worker.status, 0, worker.stderr);
+    const references = workers.map((worker) => JSON.parse(worker.stdout));
+    assert.strictEqual(new Set(references.map((reference) => reference.id)).size, 1);
+    const id = references[0].id;
+    names = fs.readdirSync(directory);
+    assert.deepStrictEqual(names.filter((name) => name.includes(id)).sort(), [`${id}.json.gz`, `${id}.meta.json`]);
+    assert.strictEqual(names.some((name) => name.endsWith(".tmp") || name.endsWith(".lock")), false);
+    assert.strictEqual((await openCheckpointArtifact(tmp, id)).artifact.totalGranted, 20);
+
+    const artifactFile = path.join(directory, `${id}.json.gz`);
+    const manifestFile = path.join(directory, `${id}.meta.json`);
+    const deadOwner = spawn(process.execPath, ["-e", ""]);
+    const deadOwnerPid = deadOwner.pid;
+    await new Promise((resolve, reject) => {
+      deadOwner.once("error", reject);
+      deadOwner.once("close", resolve);
+    });
+    assert.ok(Number.isSafeInteger(deadOwnerPid) && deadOwnerPid > 0);
+    const oversizedRecovery = path.join(directory, `.${id}.recovery-00.meta.json`);
+    fs.writeFileSync(oversizedRecovery, Buffer.alloc((64 * 1024) + 1));
+    fs.writeFileSync(`${oversizedRecovery}.claim`, JSON.stringify({ schemaVersion: 1, pid: deadOwnerPid }));
+    const originalOpenSync = fs.openSync;
+    const originalCloseSync = fs.closeSync;
+    const originalReadSync = fs.readSync;
+    const oversizedFds = new Set();
+    let readOversizedRecovery = false;
+    fs.openSync = (candidate, ...args) => {
+      const fd = originalOpenSync(candidate, ...args);
+      if (path.resolve(String(candidate)) === path.resolve(oversizedRecovery)) oversizedFds.add(fd);
+      return fd;
+    };
+    fs.closeSync = (fd) => {
+      oversizedFds.delete(fd);
+      return originalCloseSync(fd);
+    };
+    fs.readSync = (fd, ...args) => {
+      if (oversizedFds.has(fd)) {
+        readOversizedRecovery = true;
+        throw new Error("oversized recovery metadata must be rejected from fstat before reading bytes");
+      }
+      return originalReadSync(fd, ...args);
+    };
+    try {
+      await saveCheckpointArtifact(tmp, story, checkpoint);
+    } finally {
+      fs.openSync = originalOpenSync;
+      fs.closeSync = originalCloseSync;
+      fs.readSync = originalReadSync;
+    }
+    assert.strictEqual(readOversizedRecovery, false);
+    assert.strictEqual(fs.existsSync(oversizedRecovery), false,
+      "a verified canonical pair safely cleans an oversized hidden recovery candidate");
+
+    const validManifest = fs.readFileSync(manifestFile);
+    fs.writeFileSync(manifestFile, "{corrupt");
+    await assert.rejects(() => saveCheckpointArtifact(tmp, story, checkpoint), (error) => {
+      assert.ok(error instanceof CheckpointReadError);
+      assert.strictEqual(error.kind, "corrupt");
+      assert.strictEqual(error.stage, "manifest");
+      return true;
+    });
+    assert.strictEqual(fs.existsSync(artifactFile), true);
+    names = fs.readdirSync(directory);
+    assert.strictEqual(names.some((name) => name.includes(".recovery-")), false,
+      "a corrupt final manifest without a recovery record fails closed");
+    fs.writeFileSync(manifestFile, validManifest);
+
+    fs.rmSync(manifestFile);
+    assert.strictEqual(listCheckpointArtifacts(tmp)[0].metadataSizeBytes, 0,
+      "a payload-first crash remains readable through the v1 compatibility path");
+    await saveCheckpointArtifact(tmp, story, checkpoint);
+    assert.strictEqual(fs.existsSync(manifestFile), true, "idempotent reuse restores a missing sidecar");
+
+    fs.rmSync(artifactFile);
+    assert.deepStrictEqual(listCheckpointArtifacts(tmp), [], "an orphan sidecar is never listed as evidence");
+    const beforeReplacementGate = path.join(tmp, "portable-replacement-before-gate");
+    const afterReplacementGate = path.join(tmp, "portable-replacement-after-gate");
+    const replacementJoinMarker = path.join(tmp, "portable-replacement-joined");
+    const joiner = runCheckpointSaveWorker(tmp, 20, {
+      NODE_ENV: "test",
+      INKCHECK_TEST_CHECKPOINT_FORCE_WINDOWS_REPLACE: "1",
+      INKCHECK_TEST_CHECKPOINT_GATE: beforeReplacementGate,
+      INKCHECK_TEST_CHECKPOINT_GATE_STAGE: "before-manifest-displacement",
+      INKCHECK_TEST_CHECKPOINT_JOIN_MARKER: replacementJoinMarker,
+    });
+    const replacementDeadline = Date.now() + 10_000;
+    while (!fs.readdirSync(tmp).some((name) => name.startsWith("portable-replacement-before-gate.")
+      && name.endsWith(".ready"))) {
+      if (Date.now() >= replacementDeadline) throw new Error("joiner did not reach the pre-displacement gate");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const displacer = runCheckpointSaveWorker(tmp, 20, {
+      NODE_ENV: "test",
+      INKCHECK_TEST_CHECKPOINT_FORCE_WINDOWS_REPLACE: "1",
+      INKCHECK_TEST_CHECKPOINT_GATE: afterReplacementGate,
+      INKCHECK_TEST_CHECKPOINT_GATE_STAGE: "after-manifest-displacement",
+    });
+    while (!fs.readdirSync(tmp).some((name) => name.startsWith("portable-replacement-after-gate.")
+      && name.endsWith(".ready"))) {
+      if (Date.now() >= replacementDeadline) throw new Error("displacer did not enter portable replace gap");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.strictEqual(fs.existsSync(manifestFile), false);
+    fs.writeFileSync(beforeReplacementGate, "release joiner");
+    while (!fs.existsSync(manifestFile)) {
+      if (Date.now() >= replacementDeadline) throw new Error("joiner did not publish from portable replace gap");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.strictEqual(fs.existsSync(replacementJoinMarker), true,
+      "the second promoter executed the existing-displaced join branch");
+    fs.writeFileSync(afterReplacementGate, "release displacer");
+    const replacementResults = await Promise.all([joiner, displacer]);
+    for (const worker of replacementResults) assert.strictEqual(worker.status, 0, worker.stderr);
+    assert.strictEqual((await openCheckpointArtifact(tmp, id)).artifact.totalGranted, 20,
+      "a second portable promoter joins the bounded replace gap instead of failing corrupt");
+
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousForceWindows = process.env.INKCHECK_TEST_CHECKPOINT_FORCE_WINDOWS_REPLACE;
+    const previousStaleMarker = process.env.INKCHECK_TEST_CHECKPOINT_STALE_DISPLACED_MARKER;
+    const leaveReleasedPortableGap = async (marker, failRelease = false) => {
+      fs.rmSync(artifactFile);
+      const originalLinkSync = fs.linkSync;
+      const originalTransientRmSync = fs.rmSync;
+      const originalWriteFileSync = fs.writeFileSync;
+      let injectedPublishError = false;
+      let injectedRestoreBusy = false;
+      let injectedReleaseError = false;
+      fs.linkSync = (source, destination, ...args) => {
+        if (!injectedPublishError && String(source).endsWith(".promote")
+          && path.resolve(String(destination)) === path.resolve(manifestFile)) {
+          injectedPublishError = true;
+          const error = new Error("simulated portable manifest publish failure");
+          error.code = "EIO";
+          throw error;
+        }
+        return originalLinkSync(source, destination, ...args);
+      };
+      fs.rmSync = (candidate, ...args) => {
+        if (injectedPublishError && !injectedRestoreBusy && String(candidate).endsWith(".displaced")) {
+          injectedRestoreBusy = true;
+          const error = new Error("simulated restored-displaced cleanup refusal");
+          error.code = "EBUSY";
+          throw error;
+        }
+        return originalTransientRmSync(candidate, ...args);
+      };
+      fs.writeFileSync = (candidate, ...args) => {
+        if (failRelease && !injectedReleaseError && String(candidate).endsWith(".claim.released")) {
+          injectedReleaseError = true;
+          const error = new Error("simulated durable release failure");
+          error.code = "EIO";
+          throw error;
+        }
+        return originalWriteFileSync(candidate, ...args);
+      };
+      process.env.NODE_ENV = "test";
+      process.env.INKCHECK_TEST_CHECKPOINT_FORCE_WINDOWS_REPLACE = "1";
+      process.env.INKCHECK_TEST_CHECKPOINT_STALE_DISPLACED_MARKER = marker;
+      try {
+        await assert.rejects(() => saveCheckpointArtifact(tmp, story, checkpoint), (error) => {
+          assert.strictEqual(error.code, "EIO");
+          return true;
+        });
+      } finally {
+        fs.linkSync = originalLinkSync;
+        fs.rmSync = originalTransientRmSync;
+        fs.writeFileSync = originalWriteFileSync;
+      }
+      assert.strictEqual(injectedPublishError, true);
+      assert.strictEqual(injectedRestoreBusy, true);
+      const releasedNames = fs.readdirSync(directory);
+      assert.strictEqual(releasedNames.some((name) => name.endsWith(".displaced")), true);
+      assert.strictEqual(injectedReleaseError, failRelease);
+      assert.strictEqual(releasedNames.some((name) => name.endsWith(".claim.released")), !failRelease,
+        failRelease
+          ? "the release seam failed before a durable marker became visible"
+          : "a returned transient error durably releases its exact transaction nonce");
+    };
+    try {
+      const sameProcessTakeover = path.join(tmp, "same-process-stale-displaced-takeover");
+      await leaveReleasedPortableGap(sameProcessTakeover);
+      await saveCheckpointArtifact(tmp, story, checkpoint);
+      assert.strictEqual(fs.existsSync(sameProcessTakeover), true,
+        "a same-process retry takes over the inactive displaced companion");
+      assert.deepStrictEqual(fs.readdirSync(directory).filter((name) => name.includes(id)).sort(), [
+        `${id}.json.gz`, `${id}.meta.json`,
+      ], "same-process retry reclaims its released recovery namespace");
+
+      const crossProcessTakeover = path.join(tmp, "cross-process-stale-displaced-takeover");
+      await leaveReleasedPortableGap(crossProcessTakeover);
+      const externalRetry = await runCheckpointSaveWorker(tmp, 20, {
+        NODE_ENV: "test",
+        INKCHECK_TEST_CHECKPOINT_FORCE_WINDOWS_REPLACE: "1",
+        INKCHECK_TEST_CHECKPOINT_STALE_DISPLACED_MARKER: crossProcessTakeover,
+      });
+      assert.strictEqual(externalRetry.status, 0, externalRetry.stderr);
+      assert.strictEqual(fs.existsSync(crossProcessTakeover), true,
+        "another process distinguishes the durable release while its owner PID remains alive");
+      assert.deepStrictEqual(fs.readdirSync(directory).filter((name) => name.includes(id)).sort(), [
+        `${id}.json.gz`, `${id}.meta.json`,
+      ]);
+
+      const inMemoryTakeover = path.join(tmp, "same-process-in-memory-stale-takeover");
+      await leaveReleasedPortableGap(inMemoryTakeover, true);
+      await saveCheckpointArtifact(tmp, story, checkpoint);
+      assert.strictEqual(fs.existsSync(inMemoryTakeover), true,
+        "failed release I/O still clears the exact active nonce for a same-process retry");
+      assert.deepStrictEqual(fs.readdirSync(directory).filter((name) => name.includes(id)).sort(), [
+        `${id}.json.gz`, `${id}.meta.json`,
+      ]);
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      if (previousForceWindows === undefined) {
+        delete process.env.INKCHECK_TEST_CHECKPOINT_FORCE_WINDOWS_REPLACE;
+      } else {
+        process.env.INKCHECK_TEST_CHECKPOINT_FORCE_WINDOWS_REPLACE = previousForceWindows;
+      }
+      if (previousStaleMarker === undefined) {
+        delete process.env.INKCHECK_TEST_CHECKPOINT_STALE_DISPLACED_MARKER;
+      } else {
+        process.env.INKCHECK_TEST_CHECKPOINT_STALE_DISPLACED_MARKER = previousStaleMarker;
+      }
+    }
+
+    fs.rmSync(artifactFile);
+    fs.rmSync(manifestFile);
+    const originalRmSync = fs.rmSync;
+    let injectedBusyCleanup = 0;
+    fs.rmSync = (candidate, ...args) => {
+      if (String(candidate).endsWith(".payload.tmp")) {
+        injectedBusyCleanup++;
+        const error = new Error("simulated Windows open-file cleanup refusal");
+        error.code = "EBUSY";
+        throw error;
+      }
+      return originalRmSync(candidate, ...args);
+    };
+    try {
+      await saveCheckpointArtifact(tmp, story, checkpoint);
+    } finally {
+      fs.rmSync = originalRmSync;
+    }
+    assert.ok(injectedBusyCleanup >= 2,
+      "cleanup remains busy both before and after the transaction is durably released");
+    assert.strictEqual((await openCheckpointArtifact(tmp, id)).artifact.totalGranted, 20,
+      "best-effort bounded cleanup cannot undo a verified pair on Windows");
+    names = fs.readdirSync(directory);
+    const busyClaimName = names.find((name) => name.endsWith(".claim"));
+    assert.ok(busyClaimName);
+    const busyReleaseName = `${busyClaimName}.released`;
+    assert.strictEqual(names.includes(busyReleaseName), true,
+      "cleanup refusal preserves durable inactive state beside the claim");
+    const busyClaim = JSON.parse(fs.readFileSync(path.join(directory, busyClaimName), "utf8"));
+    const busyRelease = JSON.parse(fs.readFileSync(path.join(directory, busyReleaseName), "utf8"));
+    assert.strictEqual(busyRelease.nonce, busyClaim.nonce);
+    await saveCheckpointArtifact(tmp, story, checkpoint);
+    assert.deepStrictEqual(fs.readdirSync(directory).filter((name) => name.includes(id)).sort(), [
+      `${id}.json.gz`, `${id}.meta.json`,
+    ], "a clean retry reclaims the exact released transaction after EBUSY clears");
+
+    fs.rmSync(artifactFile);
+    fs.rmSync(manifestFile);
+    const orphanRelease = path.join(directory, `.${id}.recovery-00.meta.json.claim.released`);
+    const orphanNonce = "00000000-0000-4000-8000-000000000000";
+    fs.writeFileSync(orphanRelease, JSON.stringify({ schemaVersion: 1, nonce: orphanNonce }));
+    const guardedRmSync = fs.rmSync;
+    let removedOrphanUnderClaim = false;
+    fs.rmSync = (candidate, ...args) => {
+      if (path.resolve(String(candidate)) === path.resolve(orphanRelease)) {
+        const claimFile = orphanRelease.slice(0, -".released".length);
+        assert.strictEqual(fs.existsSync(`${claimFile}.cleaning`), true,
+          "the atomic cleaning claim excludes reservation while orphan state is removed");
+        removedOrphanUnderClaim = true;
+      }
+      return guardedRmSync(candidate, ...args);
+    };
+    try {
+      await saveCheckpointArtifact(tmp, story, checkpoint);
+    } finally {
+      fs.rmSync = guardedRmSync;
+    }
+    assert.strictEqual(removedOrphanUnderClaim, true,
+      "a claimless marker is removed only while the fixed cleaning claim owns the slot");
+    assert.deepStrictEqual(fs.readdirSync(directory).filter((name) => name.includes(id)).sort(), [
+      `${id}.json.gz`, `${id}.meta.json`,
+    ]);
+
+    const isolateClaimFile = path.join(directory, `.${id}.recovery-00.meta.json.claim`);
+    const isolateReleaseFile = `${isolateClaimFile}.released`;
+    const isolateTemporary = path.join(directory, `.${id}.recovery-00.meta.json.payload.tmp`);
+    const isolateNonce = "11111111-1111-4111-8111-111111111111";
+    fs.writeFileSync(isolateClaimFile, JSON.stringify({
+      schemaVersion: 1,
+      pid: process.pid,
+      nonce: isolateNonce,
+    }));
+    fs.writeFileSync(isolateTemporary, "held by another worker isolate");
+    await saveCheckpointArtifact(tmp, story, checkpoint);
+    assert.strictEqual(fs.existsSync(isolateClaimFile), true);
+    assert.strictEqual(fs.existsSync(isolateTemporary), true,
+      "a markerless current-PID nonce unknown to this isolate remains live");
+    fs.writeFileSync(isolateReleaseFile, JSON.stringify({ schemaVersion: 1, nonce: isolateNonce }));
+    await saveCheckpointArtifact(tmp, story, checkpoint);
+    assert.strictEqual(fs.existsSync(isolateClaimFile), false,
+      "the exact durable release permits cross-isolate cleanup");
+    assert.strictEqual(fs.existsSync(isolateTemporary), false);
+
+    const corruptReleaseNonce = "22222222-2222-4222-8222-222222222222";
+    fs.writeFileSync(isolateClaimFile, JSON.stringify({
+      schemaVersion: 1,
+      pid: process.pid,
+      nonce: corruptReleaseNonce,
+    }));
+    fs.writeFileSync(isolateTemporary, "quarantined");
+    fs.writeFileSync(isolateReleaseFile, "{torn");
+    await saveCheckpointArtifact(tmp, story, checkpoint);
+    assert.strictEqual(fs.existsSync(isolateClaimFile), true);
+    assert.strictEqual(fs.existsSync(isolateTemporary), true,
+      "a malformed unowned release marker quarantines only its fixed slot");
+    fs.rmSync(isolateClaimFile);
+    fs.rmSync(isolateTemporary);
+    fs.rmSync(isolateReleaseFile);
+
+    const deadCorruptReleaseNonce = "23232323-2323-4232-8232-232323232323";
+    fs.writeFileSync(isolateClaimFile, JSON.stringify({
+      schemaVersion: 1,
+      pid: deadOwnerPid,
+      nonce: deadCorruptReleaseNonce,
+    }));
+    fs.writeFileSync(isolateTemporary, "dead owner");
+    fs.writeFileSync(isolateReleaseFile, "{torn");
+    await saveCheckpointArtifact(tmp, story, checkpoint);
+    assert.strictEqual(fs.existsSync(isolateClaimFile), false);
+    assert.strictEqual(fs.existsSync(isolateTemporary), false,
+      "a corrupt release cannot wedge a definitely dead owner slot");
+    assert.strictEqual(fs.existsSync(isolateReleaseFile), false);
+
+    fs.writeFileSync(isolateTemporary, "claimless busy companion");
+    const originalClaimlessRmSync = fs.rmSync;
+    fs.rmSync = (candidate, ...args) => {
+      if (path.resolve(String(candidate)) === path.resolve(isolateTemporary)) {
+        const error = new Error("simulated claimless cleanup refusal");
+        error.code = "EBUSY";
+        throw error;
+      }
+      return originalClaimlessRmSync(candidate, ...args);
+    };
+    fs.rmSync(artifactFile);
+    fs.rmSync(manifestFile);
+    try {
+      await saveCheckpointArtifact(tmp, story, checkpoint);
+    } finally {
+      fs.rmSync = originalClaimlessRmSync;
+    }
+    assert.strictEqual(fs.existsSync(isolateTemporary), true,
+      "reservation skips a claimless slot when a companion cannot be removed");
+    assert.strictEqual((await openCheckpointArtifact(tmp, id)).artifact.totalGranted, 20);
+    fs.rmSync(isolateTemporary);
+
+    const staleCleaning = `${isolateClaimFile}.cleaning`;
+    fs.writeFileSync(staleCleaning, JSON.stringify({
+      schemaVersion: 1,
+      pid: process.pid,
+      nonce: "33333333-3333-4333-8333-333333333333",
+    }));
+    fs.rmSync(artifactFile);
+    fs.rmSync(manifestFile);
+    await saveCheckpointArtifact(tmp, story, checkpoint);
+    assert.strictEqual(fs.existsSync(staleCleaning), true,
+      "a crashed cleaning owner consumes one bounded slot instead of permitting pathname reuse");
+    assert.strictEqual((await openCheckpointArtifact(tmp, id)).artifact.totalGranted, 20);
+    fs.rmSync(staleCleaning);
+
+    const recorded = listCheckpointArtifacts(tmp)[0];
+    fs.rmSync(artifactFile);
+    fs.rmSync(manifestFile);
+    const pairLimit = recorded.payloadSizeBytes + Math.floor(recorded.metadataSizeBytes / 2);
+    await assert.rejects(
+      () => saveCheckpointArtifact(tmp, story, checkpoint, { maxCheckpointBytes: pairLimit }),
+      (error) => {
+        assert.ok(error instanceof CheckpointSizeLimitError);
+        assert.strictEqual(error.kind, "single");
+        assert.ok(error.observedBytes > pairLimit, "quota includes the private metadata sidecar");
+        return true;
+      }
+    );
+    await assert.rejects(
+      () => saveCheckpointArtifact(tmp, story, checkpoint, {
+        maxCheckpointBytes: Number.MAX_SAFE_INTEGER,
+        maxProjectBytes: pairLimit,
+      }),
+      (error) => {
+        assert.ok(error instanceof CheckpointSizeLimitError);
+        assert.strictEqual(error.kind, "project");
+        assert.ok(error.observedBytes > pairLimit, "project quota also includes sidecar bytes");
+        return true;
+      }
+    );
+    names = fs.readdirSync(directory);
+    assert.strictEqual(names.some((name) => name.endsWith(".tmp") || name.endsWith(".lock")), false);
+    assert.strictEqual(names.some((name) => name === `${id}.json.gz` || name === `${id}.meta.json`), false,
+      "pair-quota failure publishes neither file");
+
+    for (let slot = 0; slot < 32; slot++) {
+      fs.writeFileSync(
+        path.join(directory, `.${id}.recovery-${String(slot).padStart(2, "0")}.meta.json.claim.cleaning`),
+        JSON.stringify({
+          schemaVersion: 1,
+          pid: process.pid,
+          nonce: "44444444-4444-4444-8444-444444444444",
+        })
+      );
+    }
+    const cappedNames = fs.readdirSync(directory).sort();
+    await assert.rejects(() => saveCheckpointArtifact(tmp, story, checkpoint), (error) => {
+      assert.ok(error instanceof CheckpointReadError);
+      assert.strictEqual(error.kind, "resource_limit");
+      assert.strictEqual(error.stage, "manifest");
+      assert.strictEqual(error.observedBytes, 32);
+      assert.strictEqual(error.limitBytes, 32);
+      return true;
+    });
+    assert.deepStrictEqual(fs.readdirSync(directory).sort(), cappedNames,
+      "32 fail-closed cleaning claims bound exhaustion and create no 33rd recovery namespace");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
