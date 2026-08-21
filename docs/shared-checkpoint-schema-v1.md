@@ -20,7 +20,9 @@ const continued = exploreSharedResumable(storyJson, knots, externals, {
 
 ## Exact-resume contract
 
-Schema v1 stores the partially expanded choice cursor, pending nodes and witness ancestry, deep/novelty/seeded frontier internals, PRNG state, deduplication and semantic indexes, findings, coverage, discovery-curve state, counters, and deterministic memory accounting. Tests pause partway through a choice list, round-trip the checkpoint through JSON, and require the resumed result and next checkpoint to deep-equal uninterrupted execution at the same final grant.
+Schema v1 stores the partially expanded choice cursor, pending nodes and witness ancestry, deep/novelty/seeded frontier internals, PRNG state, deduplication and semantic indexes, findings, coverage, discovery-curve state, counters, deterministic memory accounting, and the additive deterministic resource/yield ledger. Tests pause partway through a choice list, round-trip the checkpoint through JSON, and require the resumed result and next checkpoint to deep-equal uninterrupted execution at the same final grant.
+
+The resource/yield fields are additive within schema v1. Older v1 checkpoints that lack them remain readable and resume the exact search frontier; their new telemetry reports `historyComplete: false` because Inkcheck does not reconstruct missing interval history. A checkpoint that contains the ledger must resume with the same sampling interval. Saving or reopening a checkpoint does not itself create a resource sample; this partial #216 slice samples only fixed transition intervals and termination. Live process heap/RSS is observational and is never written to checkpoint JSON or included in its stable ID. See [shared-search observability](shared-search-observability.md).
 
 The checkpoint is bound to:
 

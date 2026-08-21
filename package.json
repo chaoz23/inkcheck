@@ -74,6 +74,7 @@
     "docs/local-artifacts.md",
     "docs/local-checkpoints.md",
     "docs/shared-checkpoint-schema-v1.md",
+    "docs/shared-search-observability.md",
     "docs/mcp-search-sessions.md",
     "docs/campaign-policy-contract.md",
     "docs/concurrency-evaluation.md",

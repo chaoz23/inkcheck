@@ -16,7 +16,7 @@ Common fields:
 | --- | --- | --- |
 | `schemaVersion` | number | Progress schema version. Currently `1`. |
 | `sequence` | number | Monotonic event number starting at `1` for each CLI process. |
-| `type` | string | Event kind: `run_start`, `phase_start`, `progress`, `discovery`, `phase_end`, or `run_end`. |
+| `type` | string | Event kind: `run_start`, `phase_start`, `progress`, `discovery`, `resource`, `phase_end`, or `run_end`. |
 | `elapsedMs` | number | Milliseconds since the CLI run started. |
 | `statesExplored` | number | Total story states explored so far in this CLI process. |
 | `stateBudget` | number | Total configured work budget: baseline plus additional goal states. |
@@ -41,6 +41,7 @@ Optional fields:
 | `unvisitedKnots` | number | Knots not yet reached by any pass in this run. Non-increasing within a run. |
 | `knotsVisited` | number | Cumulative authored knots reached. Present on `discovery` events. |
 | `discoveries` | object | Numeric deltas first observed at this event: `endings`, `runtimeErrors`, `knotsVisited`, `visibleOutcomes`, `assertionViolations`, `goalsReached`, and `stagesReached`. Present only on `discovery` events. |
+| `sharedObservability` | object | Shared-search `resource` events only: one deterministic logical retention/yield sample paired with observed process heap/RSS. `runWideState` is the explicit outer-run position; nested `sample.state` remains local to its shared pass. See [shared-search observability](shared-search-observability.md). |
 | `status` | string | Terminal process status: `complete`, `cancelled`, or `error`. Hosted wrappers also use queue/job states. |
 | `stopReason` | string | Binding terminal reason such as `exhaustive`, `state_budget`, `depth_limit`, `time_limit`, `memory_limit`, `frontier_limit`, `worker_failure`, `compile_error`, `cancelled`, or `error`. |
 | `outcome` | string | Result classification separate from the stop cause: `clean`, `issues_found`, `review_required`, or `compile_error`. |
@@ -57,7 +58,7 @@ A normal complete run looks like this:
 2. `phase_start` for `compile`
 3. `phase_end` for `compile`
 4. `phase_start` / `phase_end` for source scanning and exploration phases as applicable
-5. zero or more `progress` activity events and `discovery` evidence events during exploration
+5. zero or more `progress` activity, `discovery` evidence, and shared-search `resource` events during exploration
 6. `phase_start` for `report`
 7. `phase_end` for `report`
 8. `run_end`
@@ -82,6 +83,12 @@ Privacy-safe discovery event:
 
 ```json
 {"schemaVersion":1,"sequence":5,"type":"discovery","elapsedMs":611,"statesExplored":5200,"stateBudget":100000,"budgetFraction":0.052,"pass":"beam:w=64","endingsFound":4,"runtimeErrorsFound":1,"unvisitedKnots":7,"knotsVisited":12,"discoveries":{"endings":1,"runtimeErrors":1,"knotsVisited":2,"visibleOutcomes":1,"assertionViolations":0,"goalsReached":0,"stagesReached":0}}
+```
+
+Shared-search resource event (abridged here; consumers should ignore unknown nested fields):
+
+```json
+{"schemaVersion":1,"sequence":6,"type":"resource","elapsedMs":702,"statesExplored":10000,"stateBudget":100000,"budgetFraction":0.1,"pass":"shared:deep-novelty-v1:seed=1","sharedObservability":{"schemaVersion":1,"pass":"shared:deep-novelty-v1:seed=1","runWideState":10000,"sample":{"schemaVersion":1,"boundary":"interval","state":10000,"retention":{"schemaVersion":1,"current":{"totalAccountedBytes":8388608}},"yield":{"schemaVersion":1,"fromStateExclusive":0,"throughState":10000,"delta":{"critical":{"runtimeErrors":0,"assertionViolations":0}}}},"process":{"schemaVersion":1,"scope":"process","heapUsedBytes":67108864,"heapTotalBytes":83886080,"rssBytes":104857600,"externalBytes":2097152,"arrayBuffersBytes":1048576,"comparedLogicalAccountedBytes":8388608,"unattributedBytes":58720256}}}
 ```
 
 Terminal event:
@@ -113,6 +120,8 @@ for await (const line of stderrLines) {
 
 `discovery` means that a cumulative run counter increased. It is useful for a concise terminal update, hosted status, or agent scheduling, but it is not a finding record and does not replace the final report. Counts stay privacy-safe by omitting identities, story labels, source locations, messages, paths, and variable data. A later bounded run can still find more.
 
+`resource` is emitted only by shared search at fixed transition boundaries and termination. Checkpoint operations, discovery events, and memory/frontier pressure do not add sampling boundaries in this partial #216 slice. `sample` contains deterministic aggregate counts and logical byte estimates. `process` contains nondeterministic Node process observations and must not participate in report identity, exact-resume comparison, frontier order, or a coverage claim. The outer `statesExplored` is CLI-process progress and equals the run base plus `sharedObservability.runWideState`. The nested `sample.state` always belongs to that shared pass. During additive goal work, Inkcheck advances `runWideState` by the general pass's consumed work instead of rewriting the directed pass's local sample position; consumers must not infer this offset from pass names.
+
 ## Privacy
 
 Progress events are intentionally telemetry-like. They must not contain:
@@ -124,7 +133,7 @@ Progress events are intentionally telemetry-like. They must not contain:
 - uploaded file contents;
 - runtime error messages or repro paths.
 
-Those can appear in the final report because the report is story material. Keep the final report wherever you would be comfortable storing project QA artifacts. Progress streams are safer for logs, status UIs, and agent orchestration, but they still reveal operational facts such as run duration, state budget, pass names, and counts.
+Those can appear in the final report because the report is story material. Keep the final report wherever you would be comfortable storing project QA artifacts. Progress streams are safer for logs, status UIs, and agent orchestration, but they still reveal operational facts such as run duration, state budget, pass names, counts, and process memory.
 
 ## Compatibility notes
 

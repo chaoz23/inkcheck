@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a bounded fixed-interval/termination `ResourceSampleV1` ledger for shared search with deterministic logical retention, category-specific interval yield, early-versus-post-first summaries, fail-closed exact-resume persistence, strict compact machine projection, privacy-safe live heap/RSS observations, and explicit monotonic run-wide positions across additive goal passes. This partial #216 slice changes no search policy, makes no complete owner-attribution claim, and leaves checkpoint/discovery/pressure-triggered sampling for later work.
 - Bound schema-v1 checkpoint readback by stored and decompressed bytes, classify reopen failures as corrupt, unsupported, or resource-limited, and add canonically self-bound private manifests so listing and retention use bounded metadata I/O without opening new frontiers. Full payload digests remain an open/resume boundary; no-clobber same-ID publication, payload-first crash recovery, and pair-inclusive quotas preserve existing v1 JSON/gzip reads, stable IDs, and exact resume pending framed schema v2.
 - Add an opt-in bounded NDJSON evidence stream for marathon-scale external consumers. It emits replayable numeric ending/runtime witnesses with global elapsed timestamps as they are retained, then a compact terminal summary without constructing the monolithic full-report JSON string.
 - Treat `--max-time` as a total CLI deadline and retain bounded time/heap headroom for clean report finalization. Explicit heap caps now expose the lower search watermark separately from the full process envelope.
