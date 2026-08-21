@@ -9,6 +9,7 @@ const {
   explorePortfolioPilotActivatedConcurrent,
   explorePortfolioPilotHandoffConcurrent,
 } = require("../dist/concurrent-portfolio");
+const { explorePortfolioAdaptiveConcurrent } = require("../dist/adaptive-concurrent-portfolio");
 const {
   createPortfolioPassEngine,
   explorePortfolio,
@@ -369,6 +370,7 @@ test("a live pilot continues inside the sequential adaptive ceiling", async () =
 test("single-pass handoff activates without duplicate work or budget drift", async () => {
   const compiled = await story(SUSTAINED_GRID);
   const progress = [];
+  const snapshots = [];
   const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
     maxStates: 2_000,
     maxDepth: 100,
@@ -378,6 +380,7 @@ test("single-pass handoff activates without duplicate work or budget drift", asy
     memoryCapBytes: ONE_GIB,
     activationPilotStatesForTest: TEST_HANDOFF_PILOT,
     onProgress: (event) => progress.push(event),
+    onSnapshot: (snapshot) => snapshots.push(JSON.parse(JSON.stringify(snapshot))),
   });
   const scheduled = result.schedule.flatMap((round) => round.entries)
     .reduce((total, entry) => total + entry.consumed, 0);
@@ -399,22 +402,26 @@ test("single-pass handoff activates without duplicate work or budget drift", asy
   assert.strictEqual(progress[0].statesExplored, TEST_HANDOFF_PILOT);
   assert.ok(progress.every((event, index) => index === 0 || event.statesExplored >= progress[index - 1].statesExplored));
   assert.strictEqual(progress.at(-1).statesExplored, 2_000);
+  assert.deepStrictEqual(snapshots.at(-1), canonical(result));
 });
 
 test("single-pass handoff preserves the portfolio below the pilot threshold", async () => {
   const compiled = await story(SUSTAINED_GRID);
   const options = { maxStates: 100, maxDepth: 100, seed: 7, storySeed: 1 };
   const baseline = explorePortfolio(compiled.storyJson, compiled.knots, [], options);
+  const snapshots = [];
   const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
     ...options,
     concurrency: 4,
     memoryCapBytes: ONE_GIB,
     activationPilotStatesForTest: TEST_HANDOFF_PILOT,
+    onSnapshot: (snapshot) => snapshots.push(structuredClone(snapshot)),
   });
   assert.deepStrictEqual(canonical(stableEvidence(result)), canonical(stableEvidence(baseline)));
   assert.strictEqual(result.execution.mode, "sequential");
   assert.strictEqual(result.execution.activation.reason, "budget_below_pilot");
   assert.strictEqual(result.execution.activation.pilotStatesExplored, 0);
+  assert.deepStrictEqual(snapshots.at(-1), structuredClone(result));
 });
 
 test("an exhaustive live pilot retains pass telemetry and its executed schedule", async () => {
@@ -503,7 +510,7 @@ test("an expired handoff deadline finalizes the live pilot before constructing w
     nowForTest: () => 1,
     // startSlot throws synchronously at its first test seam. Returning the
     // pilot proves the expired-deadline path never invoked it or new Worker.
-    failWorkerConstructionForTest: true,
+    failWorkerConstructionAtForTest: 1,
     onSnapshot: (snapshot) => snapshots.push(structuredClone(snapshot)),
   });
   assert.strictEqual(result.execution.mode, "sequential");
@@ -538,9 +545,33 @@ test("synchronous worker construction failures before a live deadline still thro
       timeGuard: () => true,
       deadlineMs: 2,
       nowForTest: () => 1,
-      failWorkerConstructionForTest: true,
+      failWorkerConstructionAtForTest: 1,
     }),
-    /injected synchronous worker construction failure/
+    /injected synchronous worker construction failure at slot 1/
+  );
+});
+
+test("a later synchronous worker construction failure stops earlier slots", async () => {
+  const compiled = await story(SUSTAINED_GRID);
+  assert.throws(
+    () => explorePortfolioAdaptiveConcurrent(
+      compiled.storyJson,
+      compiled.knots,
+      [],
+      {
+        maxStates: 2_000,
+        maxDepth: 100,
+        seed: 7,
+        storySeed: 1,
+        concurrency: 2,
+        memoryCapBytes: ONE_GIB,
+        failWorkerConstructionAtForTest: 2,
+      },
+      2,
+      256 * 1024 * 1024,
+      512 * 1024 * 1024
+    ),
+    /injected synchronous worker construction failure at slot 2/
   );
 });
 
@@ -563,12 +594,14 @@ test("genuine worker initialization failures are not downgraded to deadline fall
 
 test("single-pass handoff rejects depth-bound work without restarting the pilot", async () => {
   const compiled = await story(SUSTAINED_GRID);
+  const snapshots = [];
   const result = explorePortfolioPilotHandoffConcurrent(compiled.storyJson, compiled.knots, [], {
     maxStates: 2_000,
     maxDepth: 5,
     concurrency: 4,
     memoryCapBytes: ONE_GIB,
     activationPilotStatesForTest: TEST_HANDOFF_PILOT,
+    onSnapshot: (snapshot) => snapshots.push(structuredClone(snapshot)),
   });
   const scheduled = result.schedule.flatMap((round) => round.entries)
     .reduce((total, entry) => total + entry.consumed, 0);
@@ -579,6 +612,7 @@ test("single-pass handoff rejects depth-bound work without restarting the pilot"
   assert.strictEqual(scheduled, 2_000);
   assert.ok(result.schedule[0].entries.find((entry) => entry.pass === "dfs:inside-out").consumed >= result.execution.activation.pilotStatesExplored);
   assert.strictEqual(result.execution.activation.pilotStatesExplored, TEST_HANDOFF_PILOT);
+  assert.deepStrictEqual(snapshots.at(-1), structuredClone(result));
 });
 
 test("single-pass handoff retains pilot evidence when a worker fails", async () => {

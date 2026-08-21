@@ -32,8 +32,8 @@ export interface ConcurrentPortfolioOptions extends ExploreOptions {
   failPassForTest?: PortfolioPassKind;
   /** Deterministic failure injection for worker initialization contract tests. */
   failWorkerInitializationForTest?: boolean;
-  /** Deterministic synchronous worker-construction failure injection for contract tests. */
-  failWorkerConstructionForTest?: boolean;
+  /** Deterministic synchronous failure at the one-based worker construction index. */
+  failWorkerConstructionAtForTest?: number;
   /** Deterministic aggregate-memory injection for resource contract tests. */
   aggregateMemoryUsedForTest?: () => number;
   /** Internal-only smaller activation pilot for scheduler contract tests. */
@@ -151,6 +151,14 @@ function finalizePilot(
   return result;
 }
 
+function returnWithFinalSnapshot(
+  options: ConcurrentPortfolioOptions,
+  result: ExploreResult
+): ExploreResult {
+  options.onSnapshot?.(result);
+  return result;
+}
+
 /**
  * Research-only activation candidate for issue #169. A bounded sequential
  * pilot rejects stories that exhaust cheaply, bind on depth, or saturate the
@@ -253,7 +261,9 @@ export function explorePortfolioPilotHandoffConcurrent(
   if (!Number.isSafeInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_PORTFOLIO_CONCURRENCY) {
     throw new RangeError(`concurrency must be an integer from 1 to ${MAX_PORTFOLIO_CONCURRENCY}`);
   }
-  if (options.concurrency === 1 || maxStates === 1) return sequential(storyJson, knots, externals, options);
+  if (options.concurrency === 1 || maxStates === 1) {
+    return returnWithFinalSnapshot(options, sequential(storyJson, knots, externals, options));
+  }
   const configuredPilot = options.activationPilotStatesForTest ?? CONCURRENCY_ACTIVATION_PILOT_STATES;
   if (!Number.isSafeInteger(configuredPilot) || configuredPilot < 1 || configuredPilot > CONCURRENCY_ACTIVATION_PILOT_STATES) {
     throw new RangeError(`activation pilot must be an integer from 1 to ${CONCURRENCY_ACTIVATION_PILOT_STATES}`);
@@ -272,13 +282,15 @@ export function explorePortfolioPilotHandoffConcurrent(
       uncertainty: "high",
       productionEligible: true,
     };
-    return result;
+    return returnWithFinalSnapshot(options, result);
   }
   const weights = options.weights ?? DEFAULT_PORTFOLIO_WEIGHTS;
   const specs = portfolioPassSpecs(maxStates, weights);
   const pilotPass = specs.find((spec) => spec.pass === "dfs:inside-out")?.pass
     ?? specs.find((spec) => spec.pass.startsWith("dfs:"))?.pass;
-  if (!pilotPass) return sequential(storyJson, knots, externals, options, "single_pass");
+  if (!pilotPass) {
+    return returnWithFinalSnapshot(options, sequential(storyJson, knots, externals, options, "single_pass"));
+  }
 
   const pilotBudget = Math.min(configuredPilot, maxStates);
   const firstRoundGrants = splitBudget(Math.max(1, Math.floor(maxStates / 10)), specs.map((spec) => spec.weight));
@@ -298,7 +310,7 @@ export function explorePortfolioPilotHandoffConcurrent(
       uncertainty: "high",
       productionEligible: true,
     };
-    return result;
+    return returnWithFinalSnapshot(options, result);
   }
   const engine = createPortfolioPassEngine(pilotPass, storyJson, knots, externals, {
     ...options,
@@ -337,11 +349,9 @@ export function explorePortfolioPilotHandoffConcurrent(
     ? "activate_concurrent"
     : "stay_sequential";
   let result: ExploreResult;
-  let snapshotFinalizedPilot = false;
 
   if (pilotTerminalReason) {
     result = finalizePilot(engine, pilotBudget, consumed, maxStates, options, pilotTerminalReason, pilotStopCause);
-    snapshotFinalizedPilot = true;
   } else if (activationReason !== "pilot_open_frontier") {
     result = explorePortfolioFromPilot(storyJson, knots, externals, options, pilot);
     result.execution = {
@@ -396,7 +406,6 @@ export function explorePortfolioPilotHandoffConcurrent(
         activationReason = "worker_initialization_deadline";
         activationDecision = "stay_sequential";
         result = finalizePilot(engine, pilotBudget, consumed, maxStates, options, activationReason, "time");
-        snapshotFinalizedPilot = true;
       }
     }
   }
@@ -412,8 +421,7 @@ export function explorePortfolioPilotHandoffConcurrent(
     uncertainty: "high",
     productionEligible: true,
   };
-  if (snapshotFinalizedPilot) options.onSnapshot?.(result);
-  return result;
+  return returnWithFinalSnapshot(options, result);
 }
 
 /**

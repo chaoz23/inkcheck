@@ -39,7 +39,7 @@ export interface AdaptiveConcurrentOptions extends ExploreOptions {
   deadlineMs?: number;
   failPassForTest?: PortfolioPassKind;
   failWorkerInitializationForTest?: boolean;
-  failWorkerConstructionForTest?: boolean;
+  failWorkerConstructionAtForTest?: number;
   aggregateMemoryUsedForTest?: () => number;
   activationPilotStatesForTest?: number;
   /** Deterministic clock injection for executor deadline contract tests. */
@@ -112,7 +112,7 @@ function sanitizedOptions(options: AdaptiveConcurrentOptions): ExploreOptions {
     deadlineMs: _deadlineMs,
     failPassForTest: _failPassForTest,
     failWorkerInitializationForTest: _failWorkerInitializationForTest,
-    failWorkerConstructionForTest: _failWorkerConstructionForTest,
+    failWorkerConstructionAtForTest: _failWorkerConstructionAtForTest,
     aggregateMemoryUsedForTest: _aggregateMemoryUsedForTest,
     activationPilotStatesForTest: _activationPilotStatesForTest,
     nowForTest: _nowForTest,
@@ -134,39 +134,48 @@ function startSlot(
   knots: KnotInfo[],
   externals: string[],
   options: AdaptiveConcurrentOptions,
-  perWorkerMemory: number
+  perWorkerMemory: number,
+  constructionIndex: number
 ): WorkerSlot {
-  if (options.failWorkerConstructionForTest) {
-    throw new Error("injected synchronous worker construction failure");
-  }
   const controlBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * CONTROL_WORDS);
   const channel = new MessageChannel();
-  const data: AdaptivePortfolioWorkerData = {
-    assignments,
-    storyJson,
-    knots,
-    externals,
-    options: sanitizedOptions(options),
-    memoryCapBytes: perWorkerMemory,
-    ...(options.deadlineMs === undefined ? {} : { deadlineMs: options.deadlineMs }),
-    ...(options.failPassForTest ? { failPassForTest: options.failPassForTest } : {}),
-    ...(options.failWorkerInitializationForTest ? { failWorkerInitializationForTest: true } : {}),
-    control: controlBuffer,
-    port: channel.port2,
-  };
-  const worker = new Worker(path.join(__dirname, "adaptive-portfolio-worker.js"), {
-    workerData: data,
-    transferList: [channel.port2],
-    resourceLimits: { maxOldGenerationSizeMb: Math.max(16, Math.floor(perWorkerMemory / (1024 * 1024))) },
-  });
-  return {
-    worker,
-    assignments,
-    control: new Int32Array(controlBuffer),
-    port: channel.port1,
-    progress: new Map(),
-    ready: false,
-  };
+  let worker: Worker | undefined;
+  try {
+    if (options.failWorkerConstructionAtForTest === constructionIndex) {
+      throw new Error(`injected synchronous worker construction failure at slot ${constructionIndex}`);
+    }
+    const data: AdaptivePortfolioWorkerData = {
+      assignments,
+      storyJson,
+      knots,
+      externals,
+      options: sanitizedOptions(options),
+      memoryCapBytes: perWorkerMemory,
+      ...(options.deadlineMs === undefined ? {} : { deadlineMs: options.deadlineMs }),
+      ...(options.failPassForTest ? { failPassForTest: options.failPassForTest } : {}),
+      ...(options.failWorkerInitializationForTest ? { failWorkerInitializationForTest: true } : {}),
+      control: controlBuffer,
+      port: channel.port2,
+    };
+    worker = new Worker(path.join(__dirname, "adaptive-portfolio-worker.js"), {
+      workerData: data,
+      transferList: [channel.port2],
+      resourceLimits: { maxOldGenerationSizeMb: Math.max(16, Math.floor(perWorkerMemory / (1024 * 1024))) },
+    });
+    return {
+      worker,
+      assignments,
+      control: new Int32Array(controlBuffer),
+      port: channel.port1,
+      progress: new Map(),
+      ready: false,
+    };
+  } catch (error) {
+    channel.port1.close();
+    channel.port2.close();
+    if (worker) void worker.terminate();
+    throw error;
+  }
 }
 
 function drain(slot: WorkerSlot): void {
@@ -285,9 +294,23 @@ export function explorePortfolioAdaptiveConcurrent(
   for (const spec of specs) {
     if (spec.index !== pilotIndex) assignments[spec.index % effectiveConcurrency].push({ index: spec.index, pass: spec.pass });
   }
-  const slots = assignments
-    .filter((items) => items.length > 0)
-    .map((items) => startSlot(items, storyJson, knots, externals, options, perWorkerMemory));
+  const slots: WorkerSlot[] = [];
+  try {
+    for (const items of assignments.filter((candidate) => candidate.length > 0)) {
+      slots.push(startSlot(
+        items,
+        storyJson,
+        knots,
+        externals,
+        options,
+        perWorkerMemory,
+        slots.length + 1
+      ));
+    }
+  } catch (error) {
+    for (const slot of slots) stopSlot(slot);
+    throw error;
+  }
   const resources: AggregateResourceTracker = {
     peakTrackedHeapBytes: process.memoryUsage().heapUsed,
     aggregateMemoryStopped: false,
