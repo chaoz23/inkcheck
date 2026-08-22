@@ -167,6 +167,177 @@ function executionSummary(value: unknown) {
   };
 }
 
+const MAX_COMPACT_SHARED_OBSERVABILITY_PASSES = 8;
+const MAX_SHARED_OBSERVABILITY_SAMPLES = 128;
+const SHARED_RETAINED_MEMORY_FIELDS = [
+  "pendingStateBytes", "pendingVariableBytes", "activeStateBytes", "activeVariableBytes",
+  "ancestryBytes", "dedupeBytes", "semanticIndexBytes", "frontierReferenceBytes",
+  "findingBytes", "totalAccountedBytes", "pendingStates", "retainedNodes", "frontierReferences",
+] as const;
+
+function nonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function sharedPass(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 64) return undefined;
+  const match = /^shared:(?:deep-novelty|variable-aware|goal-directed)-v1:seed=(\d{1,10})$/.exec(value);
+  if (!match) return undefined;
+  const seed = Number(match[1]);
+  return Number.isSafeInteger(seed) && seed >= 0 && seed <= 0xffffffff ? value : undefined;
+}
+
+function sharedRetainedMemory(value: unknown): Record<string, number> | undefined {
+  const memory = record(value);
+  if (!memory) return undefined;
+  const projected: Record<string, number> = {};
+  for (const field of SHARED_RETAINED_MEMORY_FIELDS) {
+    const count = memory[field];
+    if (!nonNegativeSafeInteger(count)) return undefined;
+    projected[field] = count;
+  }
+  return projected;
+}
+
+function sharedYieldCounts(value: unknown): Record<string, unknown> | undefined {
+  const counts = record(value);
+  const critical = record(counts?.critical);
+  const intent = record(counts?.intent);
+  const authoredCoverage = record(counts?.authoredCoverage);
+  const rawTerritory = record(counts?.rawTerritory);
+  if (!counts || !critical || !intent || !authoredCoverage || !rawTerritory) return undefined;
+  const numeric = [
+    critical.runtimeErrors, critical.assertionViolations,
+    intent.goalsReached, intent.stagesReached,
+    authoredCoverage.knotsVisited, counts.visibleOutcomes, counts.semanticTransitions,
+    counts.terminalVariants, rawTerritory.transitions, rawTerritory.uniqueStates,
+    rawTerritory.dedupeHits,
+  ];
+  if (!numeric.every(nonNegativeSafeInteger)) return undefined;
+  return {
+    critical: {
+      runtimeErrors: critical.runtimeErrors,
+      assertionViolations: critical.assertionViolations,
+    },
+    intent: {
+      goalsReached: intent.goalsReached,
+      stagesReached: intent.stagesReached,
+    },
+    authoredCoverage: { knotsVisited: authoredCoverage.knotsVisited },
+    visibleOutcomes: counts.visibleOutcomes,
+    semanticTransitions: counts.semanticTransitions,
+    terminalVariants: counts.terminalVariants,
+    rawTerritory: {
+      transitions: rawTerritory.transitions,
+      uniqueStates: rawTerritory.uniqueStates,
+      dedupeHits: rawTerritory.dedupeHits,
+    },
+  };
+}
+
+function sharedResourceSample(value: unknown): Record<string, unknown> | undefined {
+  const sample = record(value);
+  const retention = record(sample?.retention);
+  const interval = record(sample?.yield);
+  const current = sharedRetainedMemory(retention?.current);
+  const peak = sharedRetainedMemory(retention?.peak);
+  const delta = sharedYieldCounts(interval?.delta);
+  const cumulative = sharedYieldCounts(interval?.cumulative);
+  if (!sample || sample.schemaVersion !== 1
+    || typeof sample.boundary !== "string"
+    || !["interval", "termination", "interval_and_termination"].includes(sample.boundary)
+    || !nonNegativeSafeInteger(sample.state)
+    || !retention || retention.schemaVersion !== 1 || !current || !peak
+    || !nonNegativeSafeInteger(retention.releasedNodes)
+    || !nonNegativeSafeInteger(retention.frontierCompactions)
+    || !interval || interval.schemaVersion !== 1
+    || !nonNegativeSafeInteger(interval.fromStateExclusive)
+    || !nonNegativeSafeInteger(interval.throughState)
+    || interval.fromStateExclusive > interval.throughState
+    || interval.throughState !== sample.state
+    || !delta || !cumulative) {
+    return undefined;
+  }
+  return {
+    schemaVersion: 1,
+    boundary: sample.boundary,
+    state: sample.state,
+    retention: {
+      schemaVersion: 1,
+      current,
+      peak,
+      releasedNodes: retention.releasedNodes,
+      frontierCompactions: retention.frontierCompactions,
+    },
+    yield: {
+      schemaVersion: 1,
+      fromStateExclusive: interval.fromStateExclusive,
+      throughState: interval.throughState,
+      delta,
+      cumulative,
+    },
+  };
+}
+
+function sharedYieldSummary(value: unknown): Record<string, unknown> | undefined {
+  const summary = record(value);
+  const throughFirstUseful = sharedYieldCounts(summary?.throughFirstUseful);
+  const afterFirstUseful = sharedYieldCounts(summary?.afterFirstUseful);
+  const cumulative = sharedYieldCounts(summary?.cumulative);
+  const firstUsefulAtState = summary?.firstUsefulAtState;
+  const firstCriticalAtState = summary?.firstCriticalAtState;
+  if (!summary || summary.schemaVersion !== 1
+    || (firstUsefulAtState !== null && !nonNegativeSafeInteger(firstUsefulAtState))
+    || (firstCriticalAtState !== null && !nonNegativeSafeInteger(firstCriticalAtState))
+    || !throughFirstUseful || !afterFirstUseful || !cumulative) {
+    return undefined;
+  }
+  return {
+    schemaVersion: 1,
+    firstUsefulAtState,
+    firstCriticalAtState,
+    throughFirstUseful,
+    afterFirstUseful,
+    cumulative,
+  };
+}
+
+function sharedObservabilitySummary(value: unknown) {
+  const summaries: Record<string, unknown>[] = [];
+  for (const passValue of array(value)) {
+    if (summaries.length >= MAX_COMPACT_SHARED_OBSERVABILITY_PASSES) break;
+    const pass = record(passValue);
+    const telemetry = record(pass?.sharedObservability);
+    const projectedPass = sharedPass(pass?.pass);
+    if (!pass || !telemetry || !projectedPass || telemetry.schemaVersion !== 1
+      || !nonNegativeSafeInteger(telemetry.sampleIntervalStates)
+      || telemetry.sampleIntervalStates < 1 || telemetry.sampleIntervalStates > 10_000_000
+      || !nonNegativeSafeInteger(telemetry.samplesRecorded)
+      || !nonNegativeSafeInteger(telemetry.samplesRetained)
+      || telemetry.samplesRetained > MAX_SHARED_OBSERVABILITY_SAMPLES
+      || !nonNegativeSafeInteger(telemetry.samplesCompacted)
+      || telemetry.samplesRecorded - telemetry.samplesRetained !== telemetry.samplesCompacted
+      || typeof telemetry.historyComplete !== "boolean") continue;
+    const samples = array(telemetry.samples);
+    if (samples.length !== telemetry.samplesRetained) continue;
+    const latest = samples.length ? sharedResourceSample(samples.at(-1)) : undefined;
+    const yieldSummary = sharedYieldSummary(telemetry.yieldSummary);
+    if ((samples.length && !latest) || !yieldSummary) continue;
+    summaries.push({
+      pass: projectedPass,
+      schemaVersion: 1,
+      sampleIntervalStates: telemetry.sampleIntervalStates,
+      samplesRecorded: telemetry.samplesRecorded,
+      samplesRetained: telemetry.samplesRetained,
+      samplesCompacted: telemetry.samplesCompacted,
+      historyComplete: telemetry.historyComplete,
+      ...(latest ? { latestSample: latest } : {}),
+      yieldSummary,
+    });
+  }
+  return summaries.length ? summaries : undefined;
+}
+
 function explorationSummary(explore: Record<string, unknown> | undefined) {
   if (!explore) return undefined;
   const assertionResults = array(explore.assertionResults).map(record).filter(Boolean) as Record<string, unknown>[];
@@ -174,6 +345,7 @@ function explorationSummary(explore: Record<string, unknown> | undefined) {
     (total, result) => total + array(result.violations).length,
     0
   );
+  const sharedObservability = sharedObservabilitySummary(explore.passes);
   return {
     statesExplored: explore.statesExplored,
     runtimeErrorCount: array(explore.runtimeErrors).length,
@@ -191,6 +363,7 @@ function explorationSummary(explore: Record<string, unknown> | undefined) {
     exhaustive: explore.exhaustive === true,
     limits: explore.limits,
     ...(explore.execution ? { execution: executionSummary(explore.execution) } : {}),
+    ...(sharedObservability ? { sharedObservability } : {}),
   };
 }
 

@@ -7,6 +7,7 @@ const { spawnSync } = require("node:child_process");
 
 const { compile, scanKnots } = require("../dist/inklecate");
 const {
+  MAX_SHARED_OBSERVABILITY_SAMPLES,
   SHARED_SEARCH_CHECKPOINT_SCHEMA_VERSION,
   explore,
   explorePortfolio,
@@ -47,6 +48,7 @@ const FINITE_LOOP = path.join(FIXTURES, "finite-counter-loop.ink");
 const GATED_ENDING = path.join(FIXTURES, "gated-ending.ink");
 const LOW_DEDUP_WIDE = path.join(FIXTURES, "low-dedup-wide.ink");
 const DEEP_BRANCHING = path.join(FIXTURES, "deep-branching.ink");
+const AUTHORED_DOG = path.join(__dirname, "..", "benchmarks", "authored", "dog-ink-adventure", "root.ink");
 const PROMOTION_CLI = path.join(__dirname, "..", "dist", "promotion-benchmark-cli.js");
 
 const EMPTY_TRUNCATION = {
@@ -507,6 +509,59 @@ test("shared checkpoint envelopes bind cleanly on adversarial growth shapes", as
   assert.strictEqual(byteMemory.limits.maxPendingBytes, byteLimit);
 });
 
+test("shared observability keeps deterministic retention and yield separate from live process memory", async () => {
+  const compiled = await compile(LOW_DEDUP_WIDE);
+  const observations = [];
+  const report = exploreShared(compiled.storyJson, scanKnots(LOW_DEDUP_WIDE), [], {
+    maxDepth: 150,
+    maxStates: 300,
+    seed: 7,
+    sharedObservabilityIntervalStates: 1,
+    onSharedObservability: (observation) => observations.push(observation),
+  });
+  const telemetry = report.passes[0].sharedObservability;
+  assert.strictEqual(telemetry.schemaVersion, 1);
+  assert.strictEqual(telemetry.sampleIntervalStates, 1);
+  assert.strictEqual(telemetry.samplesRecorded, report.statesExplored);
+  assert.ok(telemetry.samplesRetained <= MAX_SHARED_OBSERVABILITY_SAMPLES);
+  assert.strictEqual(telemetry.samplesCompacted, telemetry.samplesRecorded - telemetry.samplesRetained);
+  assert.ok(telemetry.samplesCompacted > 0);
+  assert.strictEqual(telemetry.samples[0].state, 1);
+  assert.strictEqual(telemetry.samples.at(-1).state, report.statesExplored);
+  assert.strictEqual(telemetry.samples.at(-1).boundary, "interval_and_termination");
+  assert.deepStrictEqual(
+    telemetry.samples.at(-1).yield.cumulative,
+    telemetry.yieldSummary.cumulative
+  );
+  assert.strictEqual(telemetry.yieldSummary.firstUsefulAtState, 0);
+  assert.ok(telemetry.yieldSummary.throughFirstUseful.authoredCoverage.knotsVisited > 0);
+  assert.ok(telemetry.yieldSummary.afterFirstUseful.rawTerritory.transitions > 0);
+  assert.ok(telemetry.yieldSummary.cumulative.semanticTransitions < report.passes[0].variableTransitionsObserved);
+  assert.strictEqual("score" in telemetry.yieldSummary, false);
+
+  for (let index = 1; index < telemetry.samples.length; index++) {
+    assert.ok(telemetry.samples[index].state > telemetry.samples[index - 1].state);
+    assert.strictEqual(
+      telemetry.samples[index].yield.fromStateExclusive,
+      telemetry.samples[index - 1].state
+    );
+  }
+  const latest = observations.at(-1);
+  assert.strictEqual(latest.schemaVersion, 1);
+  assert.strictEqual(latest.runWideState, latest.sample.state);
+  assert.strictEqual(latest.process.schemaVersion, 1);
+  assert.strictEqual(latest.process.scope, "process");
+  assert.ok(latest.process.heapUsedBytes > 0);
+  assert.ok(latest.process.rssBytes > 0);
+  assert.strictEqual(
+    latest.process.comparedLogicalAccountedBytes,
+    latest.sample.retention.current.totalAccountedBytes
+  );
+  assert.ok(Number.isInteger(latest.process.unattributedBytes));
+  assert.doesNotMatch(JSON.stringify(observations), /path_code|wide tree leaf|"Left"|"Center"|"Right"/i);
+  assert.doesNotMatch(JSON.stringify(report), /heapUsedBytes|heapTotalBytes|rssBytes|unattributedBytes/);
+});
+
 test("base shared search resumes from JSON with the exact uninterrupted result", async () => {
   const compiled = await compile(LOW_DEDUP_WIDE);
   const knots = scanKnots(LOW_DEDUP_WIDE);
@@ -516,6 +571,7 @@ test("base shared search resumes from JSON with the exact uninterrupted result",
     seed: 7,
     preserveTurnState: false,
     preserveRandomState: false,
+    sharedObservabilityIntervalStates: 25,
   };
   const uninterrupted = exploreSharedResumable(compiled.storyJson, knots, [], options);
   assert.deepStrictEqual(uninterrupted.result, exploreShared(compiled.storyJson, knots, [], options));
@@ -529,11 +585,84 @@ test("base shared search resumes from JSON with the exact uninterrupted result",
   assert.ok(first.checkpoint.state.current.cursor > 0, "fixture should pause partway through a choice list");
   assert.strictEqual(first.checkpoint.state.truncatedBy.maxStates, false);
   assert.strictEqual(first.result.truncatedBy.maxStates, true);
+  assert.deepStrictEqual(first.checkpoint.state.sharedObservability.samples.map((sample) => sample.state), [25, 50]);
+  assert.doesNotMatch(JSON.stringify(first.checkpoint), /heapUsedBytes|heapTotalBytes|rssBytes|unattributedBytes/);
 
   const serialized = JSON.parse(JSON.stringify(first.checkpoint));
   const resumed = exploreSharedResumable(compiled.storyJson, knots, [], options, serialized);
   assert.deepStrictEqual(resumed, uninterrupted);
   assert.strictEqual(resumed.checkpoint.state.totalGranted, 500);
+});
+
+test("shared checkpoints preserve useful milestones before the first retained sample", async () => {
+  const compiled = await compile(AUTHORED_DOG);
+  const knots = scanKnots(AUTHORED_DOG);
+  const options = {
+    maxDepth: 30,
+    maxStates: 100,
+    seed: 7,
+    storySeed: 1,
+    sharedObservabilityIntervalStates: 10,
+  };
+  const first = exploreSharedResumable(compiled.storyJson, knots, [], options);
+  const observability = first.checkpoint.state.sharedObservability;
+  assert.strictEqual(first.checkpoint.state.statesExplored, 100);
+  assert.strictEqual(observability.baseState, 0);
+  assert.strictEqual(observability.sampleIntervalStates, 10);
+  assert.strictEqual(observability.firstUsefulAtState, 1);
+  assert.strictEqual(observability.samples[0].state, 10);
+  assert.ok(observability.samples[0].yield.cumulative.authoredCoverage.knotsVisited > 0);
+  assert.ok(observability.firstUsefulAtState < observability.samples[0].state);
+  assert.ok(
+    observability.throughFirstUseful.authoredCoverage.knotsVisited
+      <= observability.samples[0].yield.cumulative.authoredCoverage.knotsVisited
+  );
+
+  const resumed = exploreSharedResumable(compiled.storyJson, knots, [], {
+    ...options,
+    maxStates: 200,
+  }, JSON.parse(JSON.stringify(first.checkpoint)));
+  assert.ok(resumed.result.statesExplored >= first.result.statesExplored);
+
+  const atFirstSample = structuredClone(first.checkpoint);
+  atFirstSample.state.sharedObservability.firstUsefulAtState = 10;
+  atFirstSample.state.sharedObservability.throughFirstUseful.rawTerritory.transitions = 10;
+  assert.doesNotThrow(() => exploreSharedResumable(compiled.storyJson, knots, [], {
+    ...options,
+    maxStates: 200,
+  }, atFirstSample));
+
+  const exceedsFirstSample = structuredClone(first.checkpoint);
+  const firstSampleUniqueStates = exceedsFirstSample.state.sharedObservability
+    .samples[0].yield.cumulative.rawTerritory.uniqueStates;
+  assert.ok(
+    firstSampleUniqueStates
+      < exceedsFirstSample.state.sharedObservability.previousYield.rawTerritory.uniqueStates
+  );
+  exceedsFirstSample.state.sharedObservability.firstUsefulAtState = 10;
+  exceedsFirstSample.state.sharedObservability.throughFirstUseful.rawTerritory.transitions = 10;
+  exceedsFirstSample.state.sharedObservability.throughFirstUseful.rawTerritory.uniqueStates
+    = firstSampleUniqueStates + 1;
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], {
+      ...options,
+      maxStates: 200,
+    }, exceedsFirstSample),
+    /useful milestone exceeds retained cumulative yield/
+  );
+
+  for (const lateMilestone of [11, 50]) {
+    const tampered = structuredClone(first.checkpoint);
+    tampered.state.sharedObservability.firstUsefulAtState = lateMilestone;
+    tampered.state.sharedObservability.throughFirstUseful.rawTerritory.transitions = lateMilestone;
+    assert.throws(
+      () => exploreSharedResumable(compiled.storyJson, knots, [], {
+        ...options,
+        maxStates: 200,
+      }, tampered),
+      /useful milestone is later than retained useful yield/
+    );
+  }
 });
 
 test("shared checkpoints fail closed on incompatible source, options, budget, and state", async () => {
@@ -551,6 +680,14 @@ test("shared checkpoints fail closed on incompatible source, options, budget, an
   assert.throws(
     () => exploreSharedResumable(compiled.storyJson, knots, [], { ...options, maxStates: 100, seed: 8 }, checkpoint),
     /source, strategy, limits, seeds/
+  );
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], {
+      ...options,
+      maxStates: 100,
+      sharedObservabilityIntervalStates: 1,
+    }, checkpoint),
+    /observability interval changed/
   );
   for (const [changedOptions, changedExternals] of [
     [{ maxDepth: 149 }, []],
@@ -597,6 +734,99 @@ test("shared checkpoints fail closed on incompatible source, options, budget, an
     () => exploreSharedResumable(compiled.storyJson, knots, [], { ...options, maxStates: 100 }, badParent),
     /invalid parent reference/
   );
+  const badObservability = clone();
+  badObservability.state.sharedObservability.baseYield.rawTerritory.transitions = -1;
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], { ...options, maxStates: 100 }, badObservability),
+    /shared observability ledger is malformed/
+  );
+  const observedOptions = { ...options, sharedObservabilityIntervalStates: 10 };
+  const observedCheckpoint = exploreSharedResumable(
+    compiled.storyJson,
+    knots,
+    [],
+    observedOptions
+  ).checkpoint;
+  assert.ok(observedCheckpoint.state.sharedObservability.samples.length >= 2);
+  assert.strictEqual(observedCheckpoint.state.runtimeErrors.length, 0);
+  assert.ok(observedCheckpoint.state.sharedObservability.firstUsefulAtState !== null);
+  const rejectObservedTamper = (mutate) => {
+    const tampered = structuredClone(observedCheckpoint);
+    mutate(tampered.state.sharedObservability, tampered.state);
+    assert.throws(
+      () => exploreSharedResumable(compiled.storyJson, knots, [], {
+        ...observedOptions,
+        maxStates: 100,
+      }, tampered),
+      /shared observability/
+    );
+  };
+  rejectObservedTamper((observability) => {
+    observability.samples[0].yield.delta.rawTerritory.transitions++;
+  });
+  rejectObservedTamper((observability) => {
+    observability.samples[0].retention.current.totalAccountedBytes++;
+  });
+  rejectObservedTamper((observability) => {
+    const sample = observability.samples[0];
+    sample.retention.current.pendingStates = sample.retention.peak.pendingStates + 1;
+  });
+  rejectObservedTamper((observability) => {
+    const [firstSample, secondSample] = observability.samples;
+    const high = Math.max(
+      firstSample.retention.current.findingBytes,
+      secondSample.retention.current.findingBytes,
+      firstSample.retention.peak.findingBytes,
+      secondSample.retention.peak.findingBytes
+    ) + 2;
+    firstSample.retention.peak.findingBytes = high;
+    secondSample.retention.peak.findingBytes = high - 1;
+  });
+  rejectObservedTamper((observability, state) => {
+    const [firstSample, secondSample] = observability.samples;
+    assert.ok(state.releasedNodes > 0);
+    firstSample.retention.releasedNodes = state.releasedNodes;
+    secondSample.retention.releasedNodes = state.releasedNodes - 1;
+  });
+  rejectObservedTamper((observability, state) => {
+    const [firstSample, secondSample] = observability.samples;
+    state.frontierCompactions = 1;
+    firstSample.retention.frontierCompactions = 1;
+    secondSample.retention.frontierCompactions = 0;
+  });
+  rejectObservedTamper((observability) => {
+    observability.nextSampleState++;
+  });
+  rejectObservedTamper((observability) => {
+    observability.firstCriticalAtState = 1;
+  });
+  rejectObservedTamper((observability) => {
+    observability.samples[0].boundary = "termination";
+  });
+  rejectObservedTamper((observability) => {
+    observability.samplesRecorded = 1_000_000;
+  });
+  rejectObservedTamper((observability) => {
+    observability.firstUsefulAtState = null;
+  });
+  rejectObservedTamper((observability, state) => {
+    const latestPeak = observability.samples.at(-1).retention.peak;
+    assert.ok(latestPeak.pendingStates > 0);
+    state.peakRetainedMemory.pendingStates = latestPeak.pendingStates - 1;
+  });
+  const legacyCheckpoint = clone();
+  delete legacyCheckpoint.state.sharedObservability;
+  delete legacyCheckpoint.state.meaningfulVariableTransitions;
+  delete legacyCheckpoint.state.discoveryCurve.countedVisibleOutcomes;
+  const legacyResume = exploreSharedResumable(
+    compiled.storyJson,
+    knots,
+    [],
+    { ...options, maxStates: 100 },
+    legacyCheckpoint
+  );
+  assert.strictEqual(legacyResume.result.passes[0].sharedObservability.historyComplete, false);
+  assert.strictEqual(legacyResume.result.statesExplored, 100);
   assert.throws(
     () => exploreSharedResumable(compiled.storyJson, knots, [], { ...options, assertions: [{}] }),
     /only the base shared strategy/

@@ -1,3 +1,5 @@
+import type { SharedResourceObservationV1 } from "./explore";
+
 export type HumanProgressPhase = "compile" | "source_scan" | "explore" | "min_repro" | "report";
 export type ProgressStatus = "complete" | "cancelled" | "error";
 export type ProgressStopReason =
@@ -17,7 +19,7 @@ export type ProgressStopReason =
 export type ProgressOutcome = "clean" | "issues_found" | "review_required" | "compile_error";
 
 export interface HumanProgressEvent {
-  type: "run_start" | "phase_start" | "progress" | "discovery" | "phase_end" | "run_end";
+  type: "run_start" | "phase_start" | "progress" | "discovery" | "resource" | "phase_end" | "run_end";
   phase?: HumanProgressPhase;
   pass?: string;
   elapsedMs: number;
@@ -41,6 +43,8 @@ export interface HumanProgressEvent {
   stopReason?: ProgressStopReason;
   outcome?: ProgressOutcome;
   exhaustive?: boolean;
+  /** Shared-search only; contains counts/bytes but no story content or identities. */
+  sharedObservability?: SharedResourceObservationV1;
 }
 
 export interface TerminalWriter {
@@ -133,6 +137,12 @@ export class HumanProgressRenderer {
         event.discoveries.knotsVisited ? `+${event.discoveries.knotsVisited} knot${event.discoveries.knotsVisited === 1 ? "" : "s"}` : "",
       ].filter(Boolean).join(", ");
       line = `Found ${found || "new story evidence"} at ${event.statesExplored.toLocaleString()} work states  |  ${duration(event.elapsedMs)} elapsed`;
+    } else if (event.type === "resource" && event.sharedObservability) {
+      const observation = event.sharedObservability;
+      const retained = observation.sample.retention.current.totalAccountedBytes / 1048576;
+      const heap = observation.process.heapUsedBytes / 1048576;
+      const rss = observation.process.rssBytes / 1048576;
+      line = `Shared search: ${event.statesExplored.toLocaleString()} states  |  logical ${retained.toFixed(1)} MiB, heap ${heap.toFixed(1)} MiB, RSS ${rss.toFixed(1)} MiB  |  ${duration(event.elapsedMs)} elapsed`;
     } else if (event.phase === "explore" || event.phase === "min_repro" || event.type === "progress") {
       const percent = event.stateBudget ? Math.floor((event.statesExplored / event.stateBudget) * 100) : 0;
       const throughput = this.rate >= 1 ? `  ${Math.round(this.rate).toLocaleString()} states/s` : "";
