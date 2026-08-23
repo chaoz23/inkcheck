@@ -199,6 +199,19 @@ test("concurrent workers stream monotonic aggregate budget progress before the f
   assert.strictEqual(updates.at(-1).runtimeErrorsFound, result.runtimeErrors.length);
 });
 
+test("concurrent workers exclude shared-only observation callbacks from worker data", async () => {
+  const compiled = await story(GRID);
+  let observations = 0;
+  const result = explorePortfolioConcurrent(compiled.storyJson, compiled.knots, [], {
+    maxStates: 100,
+    concurrency: 2,
+    memoryCapBytes: ONE_GIB,
+    onSharedObservability: () => observations++,
+  });
+  assert.strictEqual(result.execution.mode, "concurrent");
+  assert.strictEqual(observations, 0);
+});
+
 test("concurrent portfolio falls back before spawning when global memory cannot safely fund two workers", async () => {
   const compiled = await story(GRID);
   const result = explorePortfolioConcurrent(compiled.storyJson, compiled.knots, [], {

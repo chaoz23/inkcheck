@@ -19,6 +19,7 @@ import {
   ExploreResult,
   ExploreProgress,
   ExploreEvidence,
+  SharedResourceObservationV1,
   DEFAULT_STORY_SEED,
   MAX_STORY_SEED,
   PortfolioWeights,
@@ -59,7 +60,7 @@ import {
 } from "./discovery";
 import { findDefaultProjectConfig, loadProjectConfig } from "./config";
 import { createAgentKit, initProject, renderScaffoldResult } from "./scaffold";
-import { createResourceGuards } from "./resource-guards";
+import { createResourceGuards, observeProcessMemory } from "./resource-guards";
 import {
   explorePortfolioConcurrent,
   explorePortfolioPilotHandoffConcurrent,
@@ -769,6 +770,7 @@ async function main() {
   });
   let sequence = 0;
   let statesExplored = resumed?.checkpoint.state.statesExplored ?? 0;
+  let latestSharedObservation: SharedResourceObservationV1 | undefined;
   const selectedProgressMode = progressMode as "auto" | "human" | "ndjson" | "off";
   const humanProgress = selectedProgressMode === "auto" || selectedProgressMode === "human"
     ? new HumanProgressRenderer(process.stderr, selectedProgressMode)
@@ -793,7 +795,7 @@ async function main() {
   };
   const discoveryKeys = Object.keys(discoveryTotals) as (keyof DiscoveryChanges)[];
   const emitProgress = (
-    type: "run_start" | "phase_start" | "progress" | "discovery" | "phase_end" | "run_end",
+    type: "run_start" | "phase_start" | "progress" | "discovery" | "resource" | "phase_end" | "run_end",
     details: {
       phase?: "compile" | "source_scan" | "explore" | "min_repro" | "report";
       pass?: string;
@@ -808,6 +810,7 @@ async function main() {
       statesSinceLastDiscovery?: number | null;
       knotsVisited?: number;
       discoveries?: DiscoveryChanges;
+      sharedObservability?: SharedResourceObservationV1;
       status?: ProgressStatus;
       stopReason?: ProgressStopReason;
       outcome?: ProgressOutcome;
@@ -982,6 +985,18 @@ async function main() {
       detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
       randomnessDetected: semantics.usesRandomness,
       ...(asJsonStream ? { onEvidence: streamEvidence } : {}),
+      ...(selectedProgressMode === "off" ? {} : {
+        onSharedObservability: (observation: SharedResourceObservationV1) => {
+          latestSharedObservation = observation;
+          statesExplored = saveCheckpoint
+            ? observation.runWideState
+            : statesBase + observation.runWideState;
+          emitProgress("resource", {
+            pass: observation.pass,
+            sharedObservability: observation,
+          });
+        },
+      }),
       onProgress: (progress: ExploreProgress) => {
         statesExplored = saveCheckpoint ? progress.statesExplored : statesBase + progress.statesExplored;
         const progressDetails = {
@@ -1231,6 +1246,11 @@ async function main() {
         deadlineMs: maxTimeSec === undefined ? null : startedAt + maxTimeSec * 1_000,
         searchDeadlineMs: deadlineMs ?? null,
         finalizationTimeReserveMs: finalizationTimeReserveMs ?? 0,
+        observedProcessAtTermination: observeProcessMemory(
+          latestSharedObservation?.sample.retention.current.totalAccountedBytes
+            ?? report.passes?.find((pass) => pass.sharedMemory)?.sharedMemory?.current.totalAccountedBytes
+            ?? 0
+        ),
       },
       evidence: { endingsEmitted: streamedEndings, runtimeErrorsEmitted: streamedRuntimeErrors, benchmarkSignalsEmitted: streamedBenchmarkSignals },
     });
@@ -1387,6 +1407,7 @@ async function main() {
     endingsFound: report.endingsFound.length,
     runtimeErrorsFound: report.runtimeErrors.length,
     unvisitedKnots: report.unvisitedKnots.length,
+    ...(latestSharedObservation ? { sharedObservability: latestSharedObservation } : {}),
   });
   process.exitCode = hardFail || softFail ? 1 : 0;
 }

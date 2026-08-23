@@ -95,6 +95,7 @@ const CLI = path.join(__dirname, "..", "dist", "cli.js");
 const CHECKPOINT_SAVE_WORKER = path.join(__dirname, "fixtures", "checkpoint-save-worker.js");
 const ROOT = path.join(__dirname, "..");
 const SEARCH_FIXTURES = path.join(__dirname, "fixtures", "search");
+const LOW_DEDUP_WIDE = path.join(SEARCH_FIXTURES, "low-dedup-wide.ink");
 const INSPECT_PROJECT = path.join(__dirname, "fixtures", "inspect", "project.ink");
 const DUPLICATE_CHOICE_TEXT = path.join(__dirname, "fixtures", "duplicate-choice-text.ink");
 const ASSERTION_STORY = path.join(__dirname, "fixtures", "assertions.ink");
@@ -582,6 +583,49 @@ test("bounded goal search reaches targets with exact witnesses and protects gene
   assert.strictEqual(result.limits.totalMaxStates, 125);
   assert.strictEqual(result.goalBudget.generalGranted, 100);
   assert.strictEqual(result.goalBudget.directedGranted, 25);
+});
+
+test("additive goal resource observations separate run-wide progress from pass-local samples", async () => {
+  const compiled = await compile(LOW_DEDUP_WIDE);
+  const knots = scanKnots(LOW_DEDUP_WIDE);
+  const goals = [{
+    id: "unreachable_depth",
+    condition: { left: { variable: "depth" }, operator: "==", right: { literal: 999 } },
+  }];
+  for (const baseline of ["shared", "portfolio"]) {
+    const observations = [];
+    const result = exploreWithGoals(compiled.storyJson, knots, [], {
+      maxDepth: 150,
+      maxStates: 100,
+      goalMaxStates: 50,
+      goals,
+      sharedObservabilityIntervalStates: 25,
+      onSharedObservability: (observation) => observations.push(observation),
+    }, baseline);
+    assert.strictEqual(result.statesExplored, 150, baseline);
+    assert.deepStrictEqual(result.goalBudget, {
+      generalGranted: 100,
+      generalConsumed: 100,
+      directedGranted: 50,
+      directedConsumed: 50,
+    }, baseline);
+    assert.ok(observations.every((observation, index) => (
+      index === 0 || observation.runWideState >= observations[index - 1].runWideState
+    )), baseline);
+    const directed = observations.filter((observation) => observation.pass.startsWith("shared:goal-directed"));
+    assert.deepStrictEqual(directed.map((observation) => observation.sample.state), [25, 50, 50], baseline);
+    assert.deepStrictEqual(directed.map((observation) => observation.runWideState), [125, 150, 150], baseline);
+    if (baseline === "shared") {
+      assert.deepStrictEqual(
+        observations.map((observation) => observation.sample.state),
+        [25, 50, 75, 100, 100, 25, 50, 50]
+      );
+      assert.deepStrictEqual(
+        observations.map((observation) => observation.runWideState),
+        [25, 50, 75, 100, 100, 125, 150, 150]
+      );
+    }
+  }
 });
 
 test("every exploration engine records goals reached during general exploration", async () => {
@@ -3483,6 +3527,84 @@ test("discovery curves separate assertion, goal, stage, and visible-outcome valu
   assert.ok(latest.visibleOutcomes < report.endingsFound.length);
 });
 
+test("every engine samples assertion and goal discoveries before a bounded nonterminal stop", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-discovery-boundary-"));
+  const story = path.join(directory, "story.ink");
+  fs.writeFileSync(story, `VAR ready = false
+VAR score = 1
+
+Start.
+* [Trigger]
+    ~ ready = true
+    ~ score = -1
+    Still running.
+    * [Finish]
+        -> END
+`);
+  try {
+    const compiled = await compile(story);
+    assert.strictEqual(compiled.success, true);
+    const knots = scanKnots(story);
+    const assertions = [{
+      id: "score_nonnegative",
+      when: "always",
+      condition: { left: { variable: "score" }, operator: ">=", right: { literal: 0 } },
+    }];
+    const goals = [{
+      id: "ready",
+      condition: { left: { variable: "ready" }, operator: "==", right: { literal: true } },
+    }];
+    const engines = [
+      ["dfs", explore],
+      ["shared", exploreShared],
+      ["random", exploreRandom],
+      ["beam", exploreBeam],
+    ];
+    for (const [name, run] of engines) {
+      const result = run(compiled.storyJson, knots, [], {
+        maxDepth: 10,
+        maxStates: 1,
+        seed: 7,
+        assertions,
+        goals,
+      });
+      const latest = result.passes[0].discoveryCurve.at(-1);
+      assert.strictEqual(result.truncatedBy.maxStates, true, name);
+      assert.strictEqual(latest.state, 1, name);
+      assert.strictEqual(latest.assertionViolations, 1, name);
+      assert.strictEqual(latest.goalsReached, 1, name);
+      assert.strictEqual(result.passes[0].lastDiscoveryAtState, 1, name);
+    }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("visible outcomes are discovery boundaries and older curve checkpoints migrate additively", () => {
+  const counts = (visibleOutcomes) => ({
+    endingsFound: 0,
+    runtimeErrorsFound: 0,
+    knotsVisited: 0,
+    visibleOutcomes,
+    assertionViolations: 0,
+    goalsReached: 0,
+    stagesReached: 0,
+    uniqueStatesObserved: 0,
+  });
+  const recorder = new DiscoveryCurveRecorder();
+  assert.strictEqual(recorder.observe(0, counts(0)), false);
+  assert.strictEqual(recorder.observe(1, counts(1)), true);
+  assert.strictEqual(recorder.result().at(-1).visibleOutcomes, 1);
+
+  const legacyCheckpoint = recorder.checkpoint();
+  delete legacyCheckpoint.countedVisibleOutcomes;
+  legacyCheckpoint.previousTotal -= legacyCheckpoint.previousCounts.visibleOutcomes;
+  const restored = new DiscoveryCurveRecorder(legacyCheckpoint);
+  assert.strictEqual(restored.observe(2, counts(1)), false);
+  assert.strictEqual(restored.observe(3, counts(2)), true);
+  assert.strictEqual(restored.checkpoint().countedVisibleOutcomes, true);
+});
+
 test("discovery summaries distinguish no evidence from a late recovery", async () => {
   const emptyCompiled = await compile(NO_DISCOVERY_BEFORE_DEPTH);
   const empty = explore(emptyCompiled.storyJson, scanKnots(NO_DISCOVERY_BEFORE_DEPTH), [], {
@@ -4424,6 +4546,82 @@ test("CLI streams versioned progress to stderr without changing the final JSON r
   assert.strictEqual(final.outcome, "clean");
 });
 
+test("shared CLI progress emits bounded resource observations without changing canonical JSON", () => {
+  const story = path.join(SEARCH_FIXTURES, "low-dedup-wide.ink");
+  const args = [CLI, story, "--search=shared", "--max-states", "100", "--no-min-repro", "--json"];
+  const plain = spawnSync(process.execPath, [...args, "--progress=off"], { encoding: "utf8" });
+  const streamed = spawnSync(process.execPath, [...args, "--progress=ndjson"], { encoding: "utf8" });
+  assert.strictEqual(streamed.status, plain.status, streamed.stderr);
+  assert.strictEqual(streamed.stdout, plain.stdout);
+
+  const report = JSON.parse(streamed.stdout);
+  const events = streamed.stderr.trim().split("\n").map((line) => JSON.parse(line));
+  const resources = events.filter((event) => event.type === "resource");
+  assert.strictEqual(resources.length, 1);
+  const observation = resources[0].sharedObservability;
+  assert.strictEqual(observation.schemaVersion, 1);
+  assert.match(observation.pass, /^shared:/);
+  assert.strictEqual(observation.sample.boundary, "termination");
+  assert.strictEqual(observation.sample.state, report.explore.statesExplored);
+  assert.strictEqual(observation.runWideState, report.explore.statesExplored);
+  assert.ok(observation.sample.retention.current.totalAccountedBytes > 0);
+  assert.strictEqual(observation.process.scope, "process");
+  assert.ok(observation.process.heapUsedBytes > 0);
+  assert.ok(observation.process.rssBytes > 0);
+  assert.strictEqual(
+    observation.process.comparedLogicalAccountedBytes,
+    observation.sample.retention.current.totalAccountedBytes
+  );
+  assert.deepStrictEqual(events.at(-1).sharedObservability, observation);
+  assert.doesNotMatch(JSON.stringify(resources), /path_code|wide tree leaf|"Left"|"Center"|"Right"/i);
+  assert.doesNotMatch(streamed.stdout, /heapUsedBytes|heapTotalBytes|rssBytes|unattributedBytes/);
+});
+
+test("CLI resource progress stays global across additive shared-goal work", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-goal-resource-progress-"));
+  try {
+    fs.copyFileSync(LOW_DEDUP_WIDE, path.join(tmp, "story.ink"));
+    fs.writeFileSync(path.join(tmp, "inkcheck.yml"), require("yaml").stringify({
+      schemaVersion: 1,
+      entrypoint: "story.ink",
+      ci: { maxDepth: 150, maxStates: 100, goalMaxStates: 50, minRepro: false },
+      goals: [{
+        id: "unreachable_depth",
+        condition: { left: { variable: "depth" }, operator: "==", right: { literal: 999 } },
+      }],
+    }));
+    for (const baseline of ["shared", "portfolio"]) {
+      const checked = spawnSync(process.execPath, [
+        CLI, `--search=${baseline}`, "--json", "--progress=ndjson",
+      ], { cwd: tmp, encoding: "utf8" });
+      assert.strictEqual(checked.status, 0, checked.stderr);
+      const report = JSON.parse(checked.stdout);
+      const events = checked.stderr.trim().split("\n").map((line) => JSON.parse(line));
+      const resources = events.filter((event) => event.type === "resource");
+      assert.ok(resources.length > 0, baseline);
+      assert.ok(resources.every((event, index) => (
+        index === 0 || event.statesExplored >= resources[index - 1].statesExplored
+      )), baseline);
+      assert.ok(resources.every((event) => (
+        event.statesExplored === event.sharedObservability.runWideState
+      )), baseline);
+      const directed = resources.filter((event) => (
+        event.sharedObservability.pass.startsWith("shared:goal-directed")
+      ));
+      assert.ok(directed.length > 0, baseline);
+      assert.strictEqual(directed.at(-1).sharedObservability.sample.state, 50, baseline);
+      assert.strictEqual(directed.at(-1).sharedObservability.runWideState, 150, baseline);
+      assert.strictEqual(report.explore.statesExplored, 150, baseline);
+      assert.strictEqual(events.at(-1).type, "run_end", baseline);
+      assert.strictEqual(events.at(-1).statesExplored, 150, baseline);
+      assert.strictEqual(events.at(-1).sharedObservability.sample.state, 50, baseline);
+      assert.strictEqual(events.at(-1).sharedObservability.runWideState, 150, baseline);
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("--json-stream emits replayable evidence and a bounded terminal summary", () => {
   const proc = spawnSync(
     process.execPath,
@@ -4445,7 +4643,66 @@ test("--json-stream emits replayable evidence and a bounded terminal summary", (
   assert.strictEqual(terminal.explore.endingsFound, endings.length);
   assert.strictEqual(terminal.evidence.endingsEmitted, endings.length);
   assert.ok(terminal.resources.memorySearchLimitBytes < terminal.resources.memoryCapBytes);
+  assert.strictEqual(terminal.resources.observedProcessAtTermination.scope, "process");
+  assert.ok(terminal.resources.observedProcessAtTermination.heapUsedBytes > 0);
+  assert.ok(terminal.resources.observedProcessAtTermination.rssBytes > 0);
   assert.ok(Buffer.byteLength(JSON.stringify(terminal)) < 16 * 1024);
+});
+
+test("--json-stream samples process memory at termination independently of progress mode", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-terminal-memory-"));
+  const preload = path.join(tmp, "memory-calls.cjs");
+  const heapUsedBase = 3_000_000;
+  fs.writeFileSync(preload, [
+    'const fs = require("node:fs");',
+    "let calls = 0;",
+    "process.memoryUsage = () => {",
+    "  calls++;",
+    "  return {",
+    "    rss: 1_000_000 + calls,",
+    "    heapTotal: 2_000_000 + calls,",
+    `    heapUsed: ${heapUsedBase} + calls,`,
+    "    external: 4_000_000 + calls,",
+    "    arrayBuffers: 5_000_000 + calls,",
+    "  };",
+    "};",
+    "process.on(\"exit\", () => {",
+    "  fs.writeFileSync(process.env.INKCHECK_MEMORY_CALLS_PATH, String(calls));",
+    "});",
+  ].join("\n"));
+
+  try {
+    const observations = [];
+    for (const progress of ["off", "ndjson"]) {
+      const callsPath = path.join(tmp, `${progress}-calls.txt`);
+      const proc = spawnSync(process.execPath, [
+        "--require", preload, CLI, CLEAN_BRANCH,
+        "--search=shared", "--max-states", "100", "--max-memory", "96",
+        "--concurrency", "1", "--json-stream", `--progress=${progress}`,
+      ], {
+        encoding: "utf8",
+        env: { ...process.env, INKCHECK_MEMORY_CALLS_PATH: callsPath },
+      });
+      assert.strictEqual(proc.status, 0, proc.stderr);
+      const terminal = proc.stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+      const memoryCalls = Number(fs.readFileSync(callsPath, "utf8"));
+      const observed = terminal.resources.observedProcessAtTermination;
+      assert.strictEqual(observed.heapUsedBytes, heapUsedBase + memoryCalls, progress);
+      observations.push(observed);
+
+      if (progress === "ndjson") {
+        const progressEvents = proc.stderr.trim().split("\n").map((line) => JSON.parse(line));
+        assert.ok(progressEvents.some((event) => event.type === "phase_start" && event.phase === "min_repro"));
+        assert.ok(progressEvents.some((event) => event.type === "phase_end" && event.phase === "min_repro"));
+      }
+    }
+    assert.strictEqual(
+      observations[0].comparedLogicalAccountedBytes,
+      observations[1].comparedLogicalAccountedBytes
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("--json-stream requires a single worker and rejects monolithic report persistence", () => {
@@ -4642,8 +4899,29 @@ test("NDJSON progress contract docs stay linked and privacy-focused", () => {
   assert.match(docs, /work-budget progress, not story coverage/);
   assert.match(docs, /"type":"progress"/);
   assert.match(docs, /"type":"discovery"/);
+  assert.match(docs, /"type":"resource"/);
   assert.match(docs, /"type":"run_end"/);
   assert.match(docs, /must not contain:[\s\S]*story source text[\s\S]*choice prose[\s\S]*variable names or values/);
+});
+
+test("shared observability contract is linked, packaged, and explicit about its partial boundary", () => {
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  const docs = fs.readFileSync(path.join(ROOT, "docs", "shared-search-observability.md"), "utf8");
+  const packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  assert.match(readme, /docs\/shared-search-observability\.md/);
+  assert.ok(packageJson.files.includes("docs/shared-search-observability.md"));
+  assert.match(docs, /issue #216/);
+  assert.match(docs, /which remains open/);
+  assert.match(docs, /not the complete long-run resource policy/);
+  assert.match(docs, /only sampling boundaries in this slice/);
+  assert.match(docs, /Checkpoint save\/resume, discovery events, memory or frontier pressure/);
+  assert.match(docs, /never produces a weighted usefulness score/);
+  assert.match(docs, /not complete owner attribution/);
+  assert.match(docs, /rediscovery identities, throughput, retained GiB-minutes/);
+  assert.match(docs, /excluded from shared checkpoints, canonical JSON reports/);
+  assert.match(docs, /runWideState/);
+  assert.match(docs, /nested pass-local sample/);
+  assert.match(docs, /historyComplete: false/);
 });
 
 test("Rules That Matter contract stays linked, packaged, and bounded", () => {

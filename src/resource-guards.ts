@@ -19,6 +19,40 @@ export interface ResourceGuards {
   peakMemoryBytes: () => number;
 }
 
+/**
+ * Process-scoped memory observed from Node. These values are environmental
+ * facts, not deterministic search state or an ownership accounting model.
+ */
+export interface ProcessMemoryObservationV1 {
+  schemaVersion: 1;
+  scope: "process";
+  heapUsedBytes: number;
+  heapTotalBytes: number;
+  rssBytes: number;
+  externalBytes: number;
+  arrayBuffersBytes: number;
+  /** Deterministic logical estimate used only for the adjacent comparison. */
+  comparedLogicalAccountedBytes: number;
+  /** heapUsed minus the logical estimate; observational, not owner attribution. */
+  unattributedBytes: number;
+}
+
+export function observeProcessMemory(accountedLogicalBytes = 0): ProcessMemoryObservationV1 {
+  const usage = process.memoryUsage();
+  const comparedLogicalAccountedBytes = Math.max(0, accountedLogicalBytes);
+  return {
+    schemaVersion: 1,
+    scope: "process",
+    heapUsedBytes: usage.heapUsed,
+    heapTotalBytes: usage.heapTotal,
+    rssBytes: usage.rss,
+    externalBytes: usage.external,
+    arrayBuffersBytes: usage.arrayBuffers ?? 0,
+    comparedLogicalAccountedBytes,
+    unattributedBytes: usage.heapUsed - comparedLogicalAccountedBytes,
+  };
+}
+
 /** Build the same pre-OOM and wall-clock guards for every execution surface. */
 export function createResourceGuards(options: ResourceGuardOptions = {}): ResourceGuards {
   const memoryCapBytes = options.maxMemoryMb === undefined

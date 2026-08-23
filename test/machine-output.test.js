@@ -92,6 +92,85 @@ function largeReport() {
   };
 }
 
+function sharedRetention(offset = 0) {
+  const retention = {
+    pendingStateBytes: 100 + offset,
+    pendingVariableBytes: 101 + offset,
+    activeStateBytes: 102 + offset,
+    activeVariableBytes: 103 + offset,
+    ancestryBytes: 104 + offset,
+    dedupeBytes: 105 + offset,
+    semanticIndexBytes: 106 + offset,
+    frontierReferenceBytes: 107 + offset,
+    findingBytes: 108 + offset,
+    totalAccountedBytes: 0,
+    pendingStates: 10 + offset,
+    retainedNodes: 11 + offset,
+    frontierReferences: 12 + offset,
+  };
+  retention.totalAccountedBytes = Object.entries(retention)
+    .filter(([key]) => key.endsWith("Bytes") && key !== "totalAccountedBytes")
+    .reduce((total, [, value]) => total + value, 0);
+  return retention;
+}
+
+function sharedYield(offset = 0) {
+  return {
+    critical: { runtimeErrors: offset, assertionViolations: offset },
+    intent: { goalsReached: offset, stagesReached: offset },
+    authoredCoverage: { knotsVisited: offset },
+    visibleOutcomes: offset,
+    semanticTransitions: offset,
+    terminalVariants: offset,
+    rawTerritory: { transitions: offset, uniqueStates: offset, dedupeHits: offset },
+  };
+}
+
+function sharedSample(state, boundary, offset) {
+  return {
+    schemaVersion: 1,
+    boundary,
+    state,
+    retention: {
+      schemaVersion: 1,
+      current: sharedRetention(offset),
+      peak: sharedRetention(offset + 10),
+      releasedNodes: offset,
+      frontierCompactions: offset,
+    },
+    yield: {
+      schemaVersion: 1,
+      fromStateExclusive: state - 2_000,
+      throughState: state,
+      delta: sharedYield(1),
+      cumulative: sharedYield(offset),
+    },
+  };
+}
+
+function validSharedObservability() {
+  return {
+    schemaVersion: 1,
+    sampleIntervalStates: 10_000,
+    samplesRecorded: 2,
+    samplesRetained: 2,
+    samplesCompacted: 0,
+    historyComplete: true,
+    samples: [
+      sharedSample(10_000, "interval", 1),
+      sharedSample(12_000, "termination", 2),
+    ],
+    yieldSummary: {
+      schemaVersion: 1,
+      firstUsefulAtState: 4,
+      firstCriticalAtState: null,
+      throughFirstUseful: sharedYield(1),
+      afterFirstUseful: sharedYield(1),
+      cumulative: sharedYield(2),
+    },
+  };
+}
+
 test("default machine detail stays bounded and keeps response truncation separate from search truncation", () => {
   const report = largeReport();
   const projected = projectMachineReport(report);
@@ -149,6 +228,74 @@ test("summary, standard, and full detail form an explicit privacy and drill-down
     "runtime.error",
     "runtime.error",
   ]);
+});
+
+test("compact shared observability recursively whitelists its latest sample and yield summary", () => {
+  const report = largeReport();
+  const telemetry = validSharedObservability();
+  const expectedLatest = structuredClone(telemetry.samples.at(-1));
+  const expectedYieldSummary = structuredClone(telemetry.yieldSummary);
+  const secret = "PRIVATE NESTED OBSERVABILITY SECRET ".repeat(10_000);
+  report.explore.passes[0].pass = "shared:deep-novelty-v1:seed=7";
+  report.explore.passes[0].sharedObservability = telemetry;
+  telemetry.privateFuture = { secret, nested: [{ owner: secret }] };
+  telemetry.samples.at(-1).privateFuture = secret;
+  telemetry.samples.at(-1).retention.current.privateOwnerMap = [secret];
+  telemetry.samples.at(-1).retention.peak.privateFuturePeak = { secret };
+  telemetry.samples.at(-1).yield.delta.critical.privateFinding = secret;
+  telemetry.samples.at(-1).yield.cumulative.rawTerritory.privateIdentity = secret;
+  telemetry.yieldSummary.privateScore = secret;
+  telemetry.yieldSummary.throughFirstUseful.intent.privateGoal = { secret };
+  telemetry.yieldSummary.cumulative.rawTerritory.privateFuture = [secret];
+  telemetry.observedProcess = { rssBytes: 999_999_999, heapUsedBytes: 888_888_888, secret };
+  const projected = projectMachineReport(report, "summary");
+  assert.deepStrictEqual(projected.explore.sharedObservability, [{
+    pass: "shared:deep-novelty-v1:seed=7",
+    schemaVersion: 1,
+    sampleIntervalStates: 10_000,
+    samplesRecorded: 2,
+    samplesRetained: 2,
+    samplesCompacted: 0,
+    historyComplete: true,
+    latestSample: expectedLatest,
+    yieldSummary: expectedYieldSummary,
+  }]);
+  const serialized = JSON.stringify(projected);
+  assert.doesNotMatch(serialized, /PRIVATE NESTED OBSERVABILITY SECRET|privateFuture|privateOwnerMap|privateScore/);
+  assert.doesNotMatch(serialized, /rssBytes|heapUsedBytes|observedProcess/);
+  assert.ok(Buffer.byteLength(serialized, "utf8") <= MAX_STANDARD_MACHINE_RESPONSE_BYTES);
+});
+
+test("compact shared observability rejects invalid numbers, private pass names, and oversized collections", () => {
+  const report = largeReport();
+  const secret = "PRIVATE OVERSIZED OBSERVABILITY SECRET ".repeat(10_000);
+  const badNumber = validSharedObservability();
+  badNumber.samples.at(-1).retention.current.totalAccountedBytes = Number.MAX_SAFE_INTEGER + 1;
+  const oversized = validSharedObservability();
+  oversized.samples = Array.from({ length: 10_000 }, () => ({ private: secret }));
+  oversized.samplesRecorded = 10_000;
+  oversized.samplesRetained = 10_000;
+  report.explore.passes = [
+    { pass: `shared:deep-novelty-v1:seed=7:${secret}`, sharedObservability: validSharedObservability() },
+    { pass: "shared:deep-novelty-v1:seed=7", sharedObservability: badNumber },
+    { pass: "shared:deep-novelty-v1:seed=7", sharedObservability: oversized },
+  ];
+  const projected = projectMachineReport(report, "summary");
+  const serialized = JSON.stringify(projected);
+  assert.strictEqual(projected.explore.sharedObservability, undefined);
+  assert.doesNotMatch(serialized, /PRIVATE OVERSIZED OBSERVABILITY SECRET/);
+  assert.ok(Buffer.byteLength(serialized, "utf8") <= MAX_STANDARD_MACHINE_RESPONSE_BYTES);
+});
+
+test("compact shared observability bounds the number of otherwise valid pass summaries", () => {
+  const report = largeReport();
+  report.explore.passes = Array.from({ length: 1_000 }, (_, index) => ({
+    pass: `shared:deep-novelty-v1:seed=${index}`,
+    sharedObservability: validSharedObservability(),
+  }));
+  const projected = projectMachineReport(report, "summary");
+  assert.strictEqual(projected.explore.sharedObservability.length, 8);
+  assert.ok(Buffer.byteLength(JSON.stringify(projected), "utf8") <= MAX_STANDARD_MACHINE_RESPONSE_BYTES);
 });
 
 test("machine response limits reject unsafe caller values", () => {
