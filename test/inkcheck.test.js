@@ -613,17 +613,33 @@ test("additive goal resource observations separate run-wide progress from pass-l
       index === 0 || observation.runWideState >= observations[index - 1].runWideState
     )), baseline);
     const directed = observations.filter((observation) => observation.pass.startsWith("shared:goal-directed"));
-    assert.deepStrictEqual(directed.map((observation) => observation.sample.state), [25, 50, 50], baseline);
-    assert.deepStrictEqual(directed.map((observation) => observation.runWideState), [125, 150, 150], baseline);
+    assert.strictEqual(directed.length, 2, `${baseline}: live output stays cadence/termination bounded`);
+    assert.ok(directed.every((observation, index) => (
+      observation.schemaVersion === 2
+      && observation.sample.schemaVersion === 2
+      && observation.runWideState === 100 + observation.sample.state
+      && (index === 0 || observation.sample.state >= directed[index - 1].sample.state)
+    )), baseline);
+    assert.deepStrictEqual(
+      [...new Set(directed
+        .filter((observation) => observation.sample.reasons.includes("cadence"))
+        .map((observation) => observation.sample.state))],
+      [25, 50],
+      baseline
+    );
+    assert.strictEqual(directed.at(-1).sample.state, 50, baseline);
+    assert.ok(directed.at(-1).sample.reasons.includes("termination"), baseline);
     if (baseline === "shared") {
+      const general = observations.filter((observation) => !observation.pass.startsWith("shared:goal-directed"));
+      assert.ok(general.every((observation) => observation.runWideState === observation.sample.state));
       assert.deepStrictEqual(
-        observations.map((observation) => observation.sample.state),
-        [25, 50, 75, 100, 100, 25, 50, 50]
+        [...new Set(general
+          .filter((observation) => observation.sample.reasons.includes("cadence"))
+          .map((observation) => observation.sample.state))],
+        [25, 50, 75, 100]
       );
-      assert.deepStrictEqual(
-        observations.map((observation) => observation.runWideState),
-        [25, 50, 75, 100, 100, 125, 150, 150]
-      );
+      assert.strictEqual(general.at(-1).sample.state, 100);
+      assert.ok(general.at(-1).sample.reasons.includes("termination"));
     }
   }
 });
@@ -4557,13 +4573,17 @@ test("shared CLI progress emits bounded resource observations without changing c
   const report = JSON.parse(streamed.stdout);
   const events = streamed.stderr.trim().split("\n").map((line) => JSON.parse(line));
   const resources = events.filter((event) => event.type === "resource");
-  assert.strictEqual(resources.length, 1);
+  assert.ok(resources.length >= 1);
   const observation = resources[0].sharedObservability;
-  assert.strictEqual(observation.schemaVersion, 1);
+  assert.strictEqual(observation.schemaVersion, 2);
   assert.match(observation.pass, /^shared:/);
-  assert.strictEqual(observation.sample.boundary, "termination");
-  assert.strictEqual(observation.sample.state, report.explore.statesExplored);
-  assert.strictEqual(observation.runWideState, report.explore.statesExplored);
+  const terminalObservation = resources.at(-1).sharedObservability;
+  assert.ok(terminalObservation.sample.reasons.includes("termination"));
+  assert.strictEqual(terminalObservation.sample.state, report.explore.statesExplored);
+  assert.strictEqual(terminalObservation.runWideState, report.explore.statesExplored);
+  assert.ok(resources.some((event) => event.sharedObservability.sample.reasons.some(
+    (reason) => reason !== "cadence" && reason !== "termination"
+  )));
   assert.ok(observation.sample.retention.current.totalAccountedBytes > 0);
   assert.strictEqual(observation.process.scope, "process");
   assert.ok(observation.process.heapUsedBytes > 0);
@@ -4572,7 +4592,7 @@ test("shared CLI progress emits bounded resource observations without changing c
     observation.process.comparedLogicalAccountedBytes,
     observation.sample.retention.current.totalAccountedBytes
   );
-  assert.deepStrictEqual(events.at(-1).sharedObservability, observation);
+  assert.deepStrictEqual(events.at(-1).sharedObservability, terminalObservation);
   assert.doesNotMatch(JSON.stringify(resources), /path_code|wide tree leaf|"Left"|"Center"|"Right"/i);
   assert.doesNotMatch(streamed.stdout, /heapUsedBytes|heapTotalBytes|rssBytes|unattributedBytes/);
 });
@@ -4894,6 +4914,8 @@ test("NDJSON progress contract docs stay linked and privacy-focused", () => {
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
   const docs = fs.readFileSync(path.join(ROOT, "docs", "progress-ndjson.md"), "utf8");
   assert.match(readme, /docs\/progress-ndjson\.md/);
+  assert.ok(JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"))
+    .files.includes("docs/progress-ndjson.md"));
   assert.match(docs, /schemaVersion: 1/);
   assert.match(docs, /stdout report as authoritative/);
   assert.match(docs, /work-budget progress, not story coverage/);
@@ -4911,17 +4933,18 @@ test("shared observability contract is linked, packaged, and explicit about its 
   assert.match(readme, /docs\/shared-search-observability\.md/);
   assert.ok(packageJson.files.includes("docs/shared-search-observability.md"));
   assert.match(docs, /issue #216/);
-  assert.match(docs, /which remains open/);
-  assert.match(docs, /not the complete long-run resource policy/);
-  assert.match(docs, /only sampling boundaries in this slice/);
-  assert.match(docs, /Checkpoint save\/resume, discovery events, memory or frontier pressure/);
+  assert.match(docs, /Issue #216 remains open/);
+  assert.match(docs, /not a resource, allocation, or stopping policy/);
+  assert.match(docs, /This slice emits cadence, category, `frontier_compaction`, `frontier_ceiling`, and `termination` reasons/);
+  assert.match(docs, /checkpoint save\/reopen, epoch lifecycle, memory\/time pressure[\s\S]*do not emit those boundaries yet/);
   assert.match(docs, /never produces a weighted usefulness score/);
-  assert.match(docs, /not complete owner attribution/);
-  assert.match(docs, /rediscovery identities, throughput, retained GiB-minutes/);
+  assert.match(docs, /Owner attribution remains incomplete/);
+  assert.match(docs, /does not add kth-event milestones, campaign-new versus rediscovered identities[\s\S]*retained-GiB-minute rates/);
   assert.match(docs, /excluded from shared checkpoints, canonical JSON reports/);
   assert.match(docs, /runWideState/);
-  assert.match(docs, /nested pass-local sample/);
-  assert.match(docs, /historyComplete: false/);
+  assert.match(docs, /never rewrites the nested pass-local sample/);
+  assert.match(docs, /eventHistoryComplete: false/);
+  assert.match(docs, /not an overhead claim for this exact V2 implementation head/);
 });
 
 test("Rules That Matter contract stays linked, packaged, and bounded", () => {
@@ -4988,6 +5011,28 @@ test("human progress uses work-budget language and stays readable without termin
     },
   });
   renderer.handle({
+    type: "resource",
+    elapsedMs: 12_150,
+    statesExplored: 37_250,
+    stateBudget: 100_000,
+    sharedObservability: {
+      schemaVersion: 2,
+      pass: "shared:deep-novelty-v1:seed=7",
+      runWideState: 37_250,
+      sample: {
+        schemaVersion: 2,
+        sequence: 4,
+        reasons: ["cadence", "authored_knot"],
+        state: 37_250,
+        retention: { current: { totalAccountedBytes: 8 * 1048576 } },
+      },
+      process: {
+        heapUsedBytes: 64 * 1048576,
+        rssBytes: 96 * 1048576,
+      },
+    },
+  });
+  renderer.handle({
     type: "run_end",
     status: "complete",
     stopReason: "state_budget",
@@ -5002,6 +5047,7 @@ test("human progress uses work-budget language and stays readable without termin
   assert.doesNotMatch(output, /coverage/);
   assert.doesNotMatch(output, /\x1b\[/);
   assert.match(output, /Found \+1 error, \+1 ending, \+2 knots/);
+  assert.match(output, /Shared search:[\s\S]*logical 8\.0 MiB/);
   assert.match(output, /Finished: state budget reached; results are partial/);
 });
 

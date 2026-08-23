@@ -1,16 +1,55 @@
-# Shared-search observability v1
+# Shared-search observability v2
 
-Inkcheck's base shared search now records a bounded, versioned ledger of deterministic logical retention and category-specific yield. Live CLI progress can pair the same sample with observed Node process memory. This is a partial implementation slice tracked by [issue #216](https://github.com/chaoz23/inkcheck/issues/216), which remains open; it is not the complete long-run resource policy.
+Inkcheck's base shared search records a bounded, versioned ledger of deterministic logical retention and category-specific yield. Live CLI progress can pair the same deterministic sample with observed Node process memory. This remains a partial implementation of [issue #216](https://github.com/chaoz23/inkcheck/issues/216): it adds event-aware evidence, not a resource, allocation, or stopping policy. Issue #216 remains open.
 
 ## Deterministic ledger
 
-Each shared pass exposes `passes[].sharedObservability` with `schemaVersion: 1`. Inkcheck records a `ResourceSampleV1` every 10,000 completed transitions and at termination. Tests and embedders may request a different positive interval through the library option `sharedObservabilityIntervalStates`; CLI users receive the fixed default.
+Each shared pass exposes `passes[].sharedObservability` with `schemaVersion: 2`. Its `ResourceSampleV2` entries contain:
 
-Those are the only sampling boundaries in this slice. Checkpoint save/resume, discovery events, memory or frontier pressure, and other lifecycle events do not trigger an additional sample. Boundary-specific sampling and the policy for choosing it remain deferred under #216.
+- `schemaVersion: 2`;
+- a monotonic logical `sequence` retained across deterministic sample compaction;
+- one canonical, sorted `reasons` vector;
+- its exact 15-bit numeric `triggerMask`;
+- an exact eight-count `triggerYield` tuple;
+- the pass-local transition `state`;
+- deterministic logical `retention`; and
+- cumulative and interval `yield` vectors.
 
-The ledger retains at most 128 samples. If it grows beyond that bound, Inkcheck deterministically keeps the first and latest boundaries and downsamples the interior. `samplesRecorded`, `samplesRetained`, and `samplesCompacted` make that loss of interval resolution explicit. Every retained sample keeps cumulative counters, and its `delta` is recomputed over the retained interval. This compaction changes telemetry resolution only; it never changes frontier order or findings.
+The enclosing `SharedObservabilityTelemetryV2` contains `schemaVersion`, `sampleIntervalStates`, `samplesRecorded`, `cadenceSamplesRecorded`, `samplesRetained`, `samplesCompacted`, `historyComplete`, `eventHistoryComplete`, `samples`, the existing schema-v1 `yieldSummary`, and schema-v2 `timing`. The two completeness flags carry separate meanings: `historyComplete` says whether the cadence ledger has its full prefix, while `eventHistoryComplete` says whether off-cadence event positions are reconstructable. Complete event history implies complete cadence history, but not conversely.
 
-`RetentionBreakdownV1` separates `current` from per-field `peak` values. The current structural subset accounts for:
+The default cadence remains every 10,000 completed transitions. Tests and embedders may request a different positive interval through `sharedObservabilityIntervalStates`; CLI users receive the fixed default. The four sample counters distinguish unique transition positions recorded before compaction, fixed-cadence boundaries crossed, retained entries, and entries removed by compaction. The ledger retains at most 128 samples and deterministically preserves the early and latest history while downsampling the interior. Compaction changes telemetry resolution only; it never changes frontier order, findings, or stop behavior.
+
+### Reasons and coalescing
+
+One transition can satisfy several triggers. Inkcheck retains one ledger sample for that pass-local state and coalesces all applicable reasons into this canonical order:
+
+1. `cadence`
+2. `runtime_error`
+3. `assertion_violation`
+4. `goal_reached`
+5. `stage_reached`
+6. `authored_knot`
+7. `visible_outcome`
+8. `semantic_transition`
+9. `terminal_variant`
+10. `frontier_compaction`
+11. `frontier_ceiling`
+12. `checkpoint`
+13. `epoch`
+14. `pressure`
+15. `termination`
+
+Reason order is schema data, not observation order. Repeated reasons are removed. Bit positions 0 through 14 in `triggerMask` map exactly to that exported canonical order, and the mask must equal the `reasons` vector: a reason is present exactly when its bit is set. `triggerYield` positions map to reason bits 1 through 8 in the same order: runtime errors, assertion violations, goals, stages, authored knots, visible outcomes, semantic transitions, and terminal variants. Every count is a nonnegative safe integer, and a tuple position is nonzero exactly when its corresponding reason is present. A cadence boundary that discovers one authored knot and one terminal variant therefore has reasons `["cadence", "authored_knot", "terminal_variant"]`, mask `289` (bits 0, 5, and 8), and trigger yield `[0, 0, 0, 0, 1, 0, 0, 1]`. Termination at an already sampled state adds `termination` and bit 14 to that same logical boundary rather than inventing a duplicate sample.
+
+The reason vector, mask, and trigger-yield tuple encode only the exact retained boundary. They are deliberately separate from `yield.delta`. Between adjacent sample sequences with complete event history, `triggerYield` must equal the semantic-category portion of that sample's interval delta exactly. After sample compaction creates a genuine sequence gap, Inkcheck rebuilds the aggregate delta across the wider interval between retained samples but preserves the ending boundary's original `reasons`, `triggerMask`, and `triggerYield`; incomplete v1 history has the same information limit. In those gap or incomplete-history cases, every trigger-yield count must be no greater than the matching aggregate delta count. A category count inside a widened interval therefore does not imply that the category triggered at its ending boundary. The redundant vector/mask/tuple contract makes that distinction fail-closed with a fixed bounded shape.
+
+This slice emits cadence, category, `frontier_compaction`, `frontier_ceiling`, and `termination` reasons. The `checkpoint`, `epoch`, and generic `pressure` values reserve stable vocabulary for later work; checkpoint save/reopen, epoch lifecycle, memory/time pressure, and other resource actions do not emit those boundaries yet. `frontier_ceiling` is the existing explicit shared-frontier binding event, not a general owner-pressure policy.
+
+The bounded ledger and the live callback have deliberately different rates. The ledger retains the event boundaries above and compacts them deterministically. `onSharedObservability` and CLI `resource` progress sample process memory only at the fixed cadence and final termination. A pending cadence observation is emitted only after its state is closed, so any same-state event or termination reason is already coalesced and append-only consumers never receive partial revisions. With the production cadence and 100-million-state ceiling, one uninterrupted shared-pass execution emits at most 10,001 live resource observations; category-heavy stories do not increase that bound.
+
+## Retention breakdown
+
+The retention breakdown separates `current` from per-field `peak` values. The current structural subset accounts for:
 
 - pending and active serialized state and variable payloads;
 - retained ancestry and node-table slots;
@@ -21,13 +60,13 @@ The ledger retains at most 128 samples. If it grows beyond that bound, Inkcheck 
 
 These are deterministic logical estimates compatible with the existing `sharedMemory` telemetry. Serialized strings use UTF-8 bytes and structural values use documented estimates. A peak object contains independent high-water values, so its components need not describe one simultaneous heap snapshot.
 
-The subset is not complete owner attribution. It does not yet account for Ink runtime objects, checkpoint encode/decode buffers, report serialization, process-tree memory, or reserved finalization headroom. It must not be described as total memory owned by search.
+Owner attribution remains incomplete. It does not yet account for Ink runtime objects, checkpoint encode/decode buffers, report merge/serialization state, process-tree memory, or reserved checkpoint/finalization headroom. The values must not be described as total search-owned memory, and this slice does not set owner budgets or apply pressure actions.
 
-## Yield vector
+## Yield vector and event timing
 
-`YieldIntervalV1` reports separate cumulative and interval counts; it never produces a weighted usefulness score:
+The yield ledger reports separate cumulative and interval counts; it never produces a weighted usefulness score:
 
-| Category | Version-1 meaning |
+| Category | Meaning |
 | --- | --- |
 | `critical` | Distinct runtime errors and assertion violations. |
 | `intent` | Approved goals and cumulative goal stages reached. |
@@ -37,32 +76,43 @@ The subset is not complete owner attribution. It does not yet account for Ink ru
 | `terminalVariants` | Exact terminal states, kept separate from visible outcomes. |
 | `rawTerritory` | Transitions, unique exact states, and dedupe hits. These are work facts, not useful yield by themselves. |
 
-`yieldSummary.firstUsefulAtState` marks the first critical, intent, authored-coverage, visible-outcome, or semantic-transition event. `firstCriticalAtState` is separate. `throughFirstUseful` and `afterFirstUseful` keep early value distinct from later yield without collapsing unlike categories. The existing discovery curve also samples assertion and goal changes after those trackers run, and visible-outcome-only changes are valid discovery boundaries.
+`yieldSummary.firstUsefulAtState` marks the first critical, intent, authored-coverage, visible-outcome, or semantic-transition event. `firstCriticalAtState` is separate. `throughFirstUseful` and `afterFirstUseful` keep early value distinct from later yield without collapsing unlike categories.
 
-This slice does not yet expose kth/last event timing, full dry-gap history, rediscovery identities, throughput, retained GiB-minutes, campaign-new attribution, or checkpoint-, pressure-, and discovery-triggered samples.
+Telemetry v2 also exposes `timing` entries for `critical`, `intent`, `authoredCoverage`, `visibleOutcomes`, `semanticTransitions`, and `terminalVariants`. Each entry reports:
+
+- `identities` observed in that category;
+- `firstAtState` and `lastAtState` transition positions;
+- `longestDryStates` and `currentDryStates`; and
+- `identitiesPerMillionTransitions`.
+
+These are deterministic transition distances and category-specific rates, not wall-clock timing, a plateau estimate, or a coverage claim. Raw territory deliberately has no useful-yield timing entry. The existing discovery curve still records its own bounded factual discovery history; observability reasons identify why a resource sample exists.
+
+This slice does not add kth-event milestones, campaign-new versus rediscovered identities, search-active-minute or retained-GiB-minute rates, or complete owner-cost attribution.
 
 ## Observed process memory
 
-`onSharedObservability` and CLI `resource` progress events pair a deterministic sample with `ProcessMemoryObservationV1`. Each observation also carries numeric `runWideState`. For a standalone or general shared pass it equals the pass-local `sample.state`; for additive directed-goal work it adds the completed general-pass work. The CLI uses `runWideState` for monotonic outer progress and never rewrites the nested pass-local sample or infers an offset from the pass name.
+`onSharedObservability` and CLI `resource` progress events expose `SharedResourceObservationV2`: a deterministic v2 sample paired with the existing `ProcessMemoryObservationV1`. Each observation also carries numeric `runWideState`. For a standalone or general shared pass it equals the pass-local `sample.state`; for additive directed-goal work it adds the completed general-pass work. The CLI uses `runWideState` for monotonic outer progress and never rewrites the nested pass-local sample or infers an offset from the pass name.
 
-Process fields are:
+Process fields include V8 heap used/total, process RSS, external and array-buffer bytes, compared logical accounted bytes, and an observational unattributed difference. The difference may be negative because the logical model and V8 heap measure different things. It is not proof of ownership or a leak.
 
-- `heapUsedBytes` and `heapTotalBytes` from V8;
-- process `rssBytes`;
-- `externalBytes` and `arrayBuffersBytes`;
-- `comparedLogicalAccountedBytes`; and
-- `unattributedBytes`, calculated as `heapUsedBytes - comparedLogicalAccountedBytes`.
+Process observations are deliberately excluded from shared checkpoints, canonical JSON reports, report/checkpoint IDs, exact-resume comparisons, and compact machine summaries. They appear only on live CLI progress and the bounded evidence-stream terminal resource summary. They cannot alter frontier order, sampling reasons, or policy because this slice activates no policy.
 
-The difference may be negative because the logical model and V8 heap measure different things. It is an observational comparison, not proof of ownership or a leak. Heap/RSS values vary with runtime, garbage collection, machine load, and Node version.
+## Resume and V1 migration
 
-For that reason, process observations are deliberately excluded from shared checkpoints, canonical JSON reports, report/checkpoint IDs, exact-resume comparisons, and compact machine summaries. They appear only on live CLI progress and the bounded `--json-stream` terminal resource summary. Turning these values into automatic stopping, eviction, or allocation decisions is outside this slice.
+The deterministic ledger is additive inside shared checkpoint schema v1. New checkpoints persist observability schema v2, including canonical sample reasons, exact trigger masks and boundary-local trigger-yield tuples, sequences, timing state, completeness markers, and the nested ledger self-check described below. For the same source, configuration, seeds, cadence, and prior event history, split execution produces the same search result, v2 ledger, and next checkpoint as uninterrupted execution.
 
-## Resume and compatibility
+Checkpoint construction is side-effect-free: calling `checkpoint()` does not add or modify a sample, advance a sequence, or mutate timing. Checkpoint save/reopen likewise emits no observability boundary in this slice. Termination samples belong to finalized report telemetry and live progress, not the resumable pre-finalization checkpoint. Deterministic observability state participates in the logical checkpoint bytes and stable checkpoint ID; live process observations do not.
 
-The deterministic ledger is additive inside shared checkpoint schema v1. A split run with the same source, configuration, seed, and sampling interval produces the same search result, ledger, and next checkpoint as one uninterrupted run. Saving a checkpoint preserves the latest fixed-cadence ledger state but does not create a checkpoint-boundary sample. Changing the interval while resuming fails closed.
+Every emitted `SharedObservabilityCheckpointV2` carries `integritySha256`, a 64-character lowercase SHA-256 self-check. Inkcheck validates the exact known v2 ledger shape, reconstructs every fixed field and nested sample/count/timing field in schema-defined order, omits `integritySha256` from that body, prefixes the domain separator `inkcheck:shared-observability-checkpoint:v2\0`, and hashes the resulting canonical JSON bytes. Source object-key insertion order therefore cannot change the digest: accepted reordered input is emitted again in canonical order. A missing, stale, malformed, or accidentally mutated ledger fails closed instead of being resumed.
 
-Resumable checkpoints contain interval samples only; termination samples belong to finalized report telemetry and live progress. For checkpoint state `S`, ledger base `B`, and cadence `I`, `samplesRecorded` is exactly `floor(S / I) - floor(B / I)`. Retained samples stay on cadence boundaries, preserve the first boundary after `B` and the latest completed boundary through `S`, and keep transition counters aligned with their sample/cursor states. Milestone fields must agree with cumulative critical/useful yield: samples before the first-useful state cannot already contain useful yield, and the milestone vector cannot exceed any retained cumulative sample at or after that state. A complete history has base state zero. These cross-field checks fail closed on tampering while still permitting useful evidence discovered before the first retained sample.
+This checksum binds the logical ledger fields together; it is not authentication, a signature, or a MAC. A writer able to alter the checkpoint can recompute it. For persisted local artifacts, the manifest digest and full stored-payload digest remain the external file-corruption/readback boundary before bounded decompression; `integritySha256` is the additional internal self-check on the decoded observability ledger. It is persisted checkpoint state only and is not added to live resource progress or report telemetry.
 
-Older schema-v1 checkpoints remain readable. Because they contain no historical interval ledger or meaningful-transition counter, resumed telemetry sets `historyComplete: false` and begins interval deltas from the reopen boundary. Search frontier and finding compatibility remain exact; Inkcheck does not invent missing historical telemetry.
+Older shared-checkpoint-schema-v1 artifacts remain readable. A checkpoint with observability schema v1 is deterministically migrated to v2 when resumed. Migration derives each historical reason vector and trigger mask only from the explicit v1 boundary (`interval`, `termination`, or their combination), never from a rebuilt aggregate yield delta. Because v1 did not retain exact category triggers at that boundary, migration sets all eight `triggerYield` positions to zero. Those zeros mean “no v1 category trigger was recorded”; they are not proof that no category event occurred within the interval. The existing fixed-cadence history remains usable, but v1 did not record category/frontier reason history or the event positions needed for every timing field. Migrated telemetry therefore uses `eventHistoryComplete: false`. At the migration boundary, identity counts remain calculable from cumulative yield and `identitiesPerMillionTransitions` remains calculable once the completed-transition count is nonzero; `firstAtState`, `lastAtState`, `longestDryStates`, and `currentDryStates` are `null` because the old artifact cannot prove them. Subsequent v2 events may populate position and current-gap facts that become knowable after reopening, but unknown prefix facts remain `null`. Inkcheck does not reconstruct or guess missing events. `historyComplete` continues to distinguish a checkpoint that predates the ledger entirely. Neither a v1 artifact nor a pre-ledger artifact contains the nested checksum; the first v2 checkpoint emitted after either migration carries the canonical `integritySha256`. Newly observed v2 events after the reopen remain exact, but they do not retroactively make the missing prefix complete.
 
-Samples and live resource events contain only aggregate counts, byte estimates, pass names, and process values. They contain no story source, choice prose, final text, variable names or values, runtime messages, or witness paths.
+Changing the sampling interval while resuming still fails closed. Sequence validation requires positive strictly increasing values bounded by the total record count, state distance, cadence count, and possible records remaining; un-compacted ledgers must be contiguous and the latest retained sequence must equal `samplesRecorded`. Compacted gaps are expected: these relational checks do not claim to reconstruct or replay the exact discarded compaction history. Noncanonical or incompatible reasons, vector/mask/tuple disagreement, an inexact adjacent complete-history trigger delta, an over-large gap/incomplete-history trigger delta, inconsistent counters, an invalid integrity self-check, and impossible timing/yield relationships also fail closed. This migration changes nested observability data, not the shared checkpoint's top-level schema version or deterministic search semantics.
+
+## Scope and privacy
+
+Samples and live resource events contain only aggregate counts, boundary-local numeric trigger counts, byte estimates, pass names, reason codes and their bounded numeric mask, transition positions, and process values. They contain no story source, choice prose, final text, variable names or values, runtime messages, or witness paths.
+
+Checkpoint/epoch/pressure boundaries, complete owner accounting, retained-GiB-minute cost, and any observability-driven allocation, eviction, compaction, or stopping policy remain future #216/#156/#217/#218 work. The earlier V1 overhead study is tied to its measured source heads; it is not an overhead claim for this exact V2 implementation head. A separate exact-head calibration is required before any performance or promotion claim.

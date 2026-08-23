@@ -3,11 +3,13 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { createHash } = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
 const { compile, scanKnots } = require("../dist/inklecate");
 const {
   MAX_SHARED_OBSERVABILITY_SAMPLES,
+  SHARED_OBSERVABILITY_REASON_ORDER_V2,
   SHARED_SEARCH_CHECKPOINT_SCHEMA_VERSION,
   explore,
   explorePortfolio,
@@ -59,6 +61,154 @@ const EMPTY_TRUNCATION = {
   memory: false,
   time: false,
 };
+
+const SHARED_OBSERVABILITY_REASON_ORDER = [...SHARED_OBSERVABILITY_REASON_ORDER_V2];
+const SHARED_OBSERVABILITY_REASON_RANK = new Map(
+  SHARED_OBSERVABILITY_REASON_ORDER.map((reason, index) => [reason, index])
+);
+const SHARED_OBSERVABILITY_TRIGGER_YIELD_REASONS = SHARED_OBSERVABILITY_REASON_ORDER.slice(1, 9);
+const SHARED_OBSERVABILITY_CHECKPOINT_V2_INTEGRITY_DOMAIN =
+  "inkcheck:shared-observability-checkpoint:v2\0";
+
+function sharedObservabilityTriggerMask(reasons) {
+  return reasons.reduce(
+    (mask, reason) => mask | (1 << SHARED_OBSERVABILITY_REASON_RANK.get(reason)),
+    0
+  );
+}
+
+function sharedObservabilityCheckpointIntegrity(observability) {
+  const { integritySha256: _integritySha256, ...body } = observability;
+  return createHash("sha256")
+    .update(SHARED_OBSERVABILITY_CHECKPOINT_V2_INTEGRITY_DOMAIN)
+    .update(JSON.stringify(body))
+    .digest("hex");
+}
+
+function refreshSharedObservabilityCheckpointIntegrity(observability) {
+  observability.integritySha256 = sharedObservabilityCheckpointIntegrity(observability);
+}
+
+function assertSharedObservabilityCheckpointIntegrity(observability) {
+  assert.match(observability.integritySha256, /^[0-9a-f]{64}$/);
+  assert.strictEqual(
+    observability.integritySha256,
+    sharedObservabilityCheckpointIntegrity(observability)
+  );
+}
+
+function assertCanonicalSharedSamples(samples) {
+  let previousSequence = -1;
+  let previousState = -1;
+  for (const [index, sample] of samples.entries()) {
+    assert.strictEqual(sample.schemaVersion, 2);
+    assert.ok(Number.isSafeInteger(sample.sequence));
+    if (index === 0) assert.strictEqual(sample.sequence, 1, "the first retained sequence must survive compaction");
+    assert.ok(sample.sequence > previousSequence, "sample sequences must increase");
+    assert.ok(sample.state > previousState, "coalesced sample states must increase");
+    assert.ok(sample.reasons.length > 0);
+    assert.strictEqual(new Set(sample.reasons).size, sample.reasons.length, "sample reasons must be unique");
+    assert.ok(sample.reasons.every((reason) => SHARED_OBSERVABILITY_REASON_RANK.has(reason)));
+    assert.deepStrictEqual(
+      sample.reasons,
+      [...sample.reasons].sort(
+        (left, right) => SHARED_OBSERVABILITY_REASON_RANK.get(left)
+          - SHARED_OBSERVABILITY_REASON_RANK.get(right)
+      ),
+      "sample reasons must use canonical order"
+    );
+    assert.strictEqual(
+      sample.triggerMask,
+      sharedObservabilityTriggerMask(sample.reasons),
+      "the per-boundary trigger mask must match the exact retained reasons"
+    );
+    assert.ok(Array.isArray(sample.triggerYield));
+    assert.strictEqual(sample.triggerYield.length, SHARED_OBSERVABILITY_TRIGGER_YIELD_REASONS.length);
+    assert.ok(sample.triggerYield.every((count) => Number.isSafeInteger(count) && count >= 0));
+    assert.deepStrictEqual(
+      sample.reasons.filter((reason) => SHARED_OBSERVABILITY_TRIGGER_YIELD_REASONS.includes(reason)),
+      SHARED_OBSERVABILITY_TRIGGER_YIELD_REASONS.filter((_, triggerIndex) => (
+        sample.triggerYield[triggerIndex] > 0
+      )),
+      "yield reason bits must match the exact-at-boundary trigger tuple"
+    );
+    previousSequence = sample.sequence;
+    previousState = sample.state;
+  }
+}
+
+function withoutSharedObservability(report) {
+  const copy = structuredClone(report);
+  for (const pass of copy.passes) delete pass.sharedObservability;
+  return copy;
+}
+
+function subtractSharedYieldForV1(current, previous) {
+  return {
+    critical: {
+      runtimeErrors: current.critical.runtimeErrors - previous.critical.runtimeErrors,
+      assertionViolations: current.critical.assertionViolations - previous.critical.assertionViolations,
+    },
+    intent: {
+      goalsReached: current.intent.goalsReached - previous.intent.goalsReached,
+      stagesReached: current.intent.stagesReached - previous.intent.stagesReached,
+    },
+    authoredCoverage: {
+      knotsVisited: current.authoredCoverage.knotsVisited - previous.authoredCoverage.knotsVisited,
+    },
+    visibleOutcomes: current.visibleOutcomes - previous.visibleOutcomes,
+    semanticTransitions: current.semanticTransitions - previous.semanticTransitions,
+    terminalVariants: current.terminalVariants - previous.terminalVariants,
+    rawTerritory: {
+      transitions: current.rawTerritory.transitions - previous.rawTerritory.transitions,
+      uniqueStates: current.rawTerritory.uniqueStates - previous.rawTerritory.uniqueStates,
+      dedupeHits: current.rawTerritory.dedupeHits - previous.rawTerritory.dedupeHits,
+    },
+  };
+}
+
+function withV1SharedObservability(checkpoint) {
+  const migrated = structuredClone(checkpoint);
+  const v2 = migrated.state.sharedObservability;
+  const cadenceSamples = v2.samples.filter((sample) => sample.reasons.includes("cadence"));
+  let previousState = v2.baseState;
+  let previousYield = v2.baseYield;
+  const samples = cadenceSamples.map((sample) => {
+    const cumulative = structuredClone(sample.yield.cumulative);
+    const converted = {
+      schemaVersion: 1,
+      boundary: "interval",
+      state: sample.state,
+      retention: structuredClone(sample.retention),
+      yield: {
+        schemaVersion: 1,
+        fromStateExclusive: previousState,
+        throughState: sample.state,
+        delta: subtractSharedYieldForV1(cumulative, previousYield),
+        cumulative,
+      },
+    };
+    previousState = sample.state;
+    previousYield = cumulative;
+    return converted;
+  });
+  migrated.state.sharedObservability = {
+    schemaVersion: 1,
+    sampleIntervalStates: v2.sampleIntervalStates,
+    samplesRecorded: v2.cadenceSamplesRecorded,
+    samples,
+    baseState: v2.baseState,
+    baseYield: structuredClone(v2.baseYield),
+    previousSampleState: previousState,
+    previousYield: structuredClone(previousYield),
+    nextSampleState: v2.nextSampleState,
+    firstUsefulAtState: v2.firstUsefulAtState,
+    firstCriticalAtState: v2.firstCriticalAtState,
+    throughFirstUseful: structuredClone(v2.throughFirstUseful),
+    historyComplete: v2.historyComplete,
+  };
+  return migrated;
+}
 
 function ending(variables) {
   return {
@@ -519,16 +669,34 @@ test("shared observability keeps deterministic retention and yield separate from
     sharedObservabilityIntervalStates: 1,
     onSharedObservability: (observation) => observations.push(observation),
   });
+  const sparseCadenceReport = exploreShared(compiled.storyJson, scanKnots(LOW_DEDUP_WIDE), [], {
+    maxDepth: 150,
+    maxStates: 300,
+    seed: 7,
+    sharedObservabilityIntervalStates: 10_000_000,
+  });
+  assert.deepStrictEqual(
+    withoutSharedObservability(report),
+    withoutSharedObservability(sparseCadenceReport),
+    "observability cadence must not change findings or their order"
+  );
   const telemetry = report.passes[0].sharedObservability;
-  assert.strictEqual(telemetry.schemaVersion, 1);
+  assert.strictEqual(telemetry.schemaVersion, 2);
   assert.strictEqual(telemetry.sampleIntervalStates, 1);
-  assert.strictEqual(telemetry.samplesRecorded, report.statesExplored);
+  assert.strictEqual(telemetry.cadenceSamplesRecorded, report.statesExplored);
+  assert.ok(telemetry.samplesRecorded >= telemetry.cadenceSamplesRecorded);
   assert.ok(telemetry.samplesRetained <= MAX_SHARED_OBSERVABILITY_SAMPLES);
   assert.strictEqual(telemetry.samplesCompacted, telemetry.samplesRecorded - telemetry.samplesRetained);
   assert.ok(telemetry.samplesCompacted > 0);
-  assert.strictEqual(telemetry.samples[0].state, 1);
   assert.strictEqual(telemetry.samples.at(-1).state, report.statesExplored);
-  assert.strictEqual(telemetry.samples.at(-1).boundary, "interval_and_termination");
+  assert.deepStrictEqual(
+    telemetry.samples.at(-1).reasons.filter((reason) => reason === "cadence" || reason === "termination"),
+    ["cadence", "termination"]
+  );
+  assert.strictEqual(telemetry.historyComplete, true);
+  assert.strictEqual(telemetry.eventHistoryComplete, true);
+  assert.strictEqual(telemetry.timing.schemaVersion, 2);
+  assertCanonicalSharedSamples(telemetry.samples);
   assert.deepStrictEqual(
     telemetry.samples.at(-1).yield.cumulative,
     telemetry.yieldSummary.cumulative
@@ -538,16 +706,21 @@ test("shared observability keeps deterministic retention and yield separate from
   assert.ok(telemetry.yieldSummary.afterFirstUseful.rawTerritory.transitions > 0);
   assert.ok(telemetry.yieldSummary.cumulative.semanticTransitions < report.passes[0].variableTransitionsObserved);
   assert.strictEqual("score" in telemetry.yieldSummary, false);
+  assert.strictEqual(observations.length, report.statesExplored);
+  assert.strictEqual(
+    new Set(observations.map((observation) => `${observation.sample.sequence}:${observation.sample.state}`)).size,
+    observations.length,
+    "live cadence observations must be final one-per-state values, not same-state revisions"
+  );
 
   for (let index = 1; index < telemetry.samples.length; index++) {
-    assert.ok(telemetry.samples[index].state > telemetry.samples[index - 1].state);
     assert.strictEqual(
       telemetry.samples[index].yield.fromStateExclusive,
       telemetry.samples[index - 1].state
     );
   }
   const latest = observations.at(-1);
-  assert.strictEqual(latest.schemaVersion, 1);
+  assert.strictEqual(latest.schemaVersion, 2);
   assert.strictEqual(latest.runWideState, latest.sample.state);
   assert.strictEqual(latest.process.schemaVersion, 1);
   assert.strictEqual(latest.process.scope, "process");
@@ -560,6 +733,176 @@ test("shared observability keeps deterministic retention and yield separate from
   assert.ok(Number.isInteger(latest.process.unattributedBytes));
   assert.doesNotMatch(JSON.stringify(observations), /path_code|wide tree leaf|"Left"|"Center"|"Right"/i);
   assert.doesNotMatch(JSON.stringify(report), /heapUsedBytes|heapTotalBytes|rssBytes|unattributedBytes/);
+
+  const sparseLive = [];
+  const eventHeavy = exploreShared(compiled.storyJson, scanKnots(LOW_DEDUP_WIDE), [], {
+    maxDepth: 150,
+    maxStates: 1_000,
+    seed: 7,
+    onSharedObservability: (observation) => sparseLive.push(observation),
+  });
+  assert.ok(eventHeavy.passes[0].sharedObservability.samplesRecorded > sparseLive.length);
+  assert.strictEqual(sparseLive.length, 1, "off-cadence category events must not amplify live output");
+  assert.deepStrictEqual(sparseLive[0].sample.reasons.at(-1), "termination");
+});
+
+test("shared observability records every supported event reason off cadence", async () => {
+  const interval = 10_000_000;
+  const reports = [];
+  const lock = await compile(LOCK);
+  const lockKnots = scanKnots(LOCK);
+  reports.push(exploreShared(lock.storyJson, lockKnots, [], {
+    maxDepth: 150,
+    maxStates: 1_000,
+    seed: 7,
+    sharedObservabilityIntervalStates: interval,
+    assertions: [{
+      id: "a_stays_zero",
+      when: "always",
+      condition: { left: { variable: "a" }, operator: "==", right: { literal: 0 } },
+    }],
+    goals: [{
+      id: "a_chosen",
+      condition: { left: { variable: "a" }, operator: ">", right: { literal: 0 } },
+    }, {
+      id: "a_then_b",
+      stages: [{
+        id: "choose_a",
+        condition: { left: { variable: "a" }, operator: ">", right: { literal: 0 } },
+      }, {
+        id: "choose_b",
+        condition: { left: { variable: "b" }, operator: ">", right: { literal: 0 } },
+      }],
+    }],
+  }));
+
+  const plateau = await compile(PLATEAU);
+  reports.push(exploreShared(plateau.storyJson, scanKnots(PLATEAU), [], {
+    maxDepth: 150,
+    maxStates: 500,
+    seed: 7,
+    sharedObservabilityIntervalStates: interval,
+  }));
+
+  const wide = await compile(LOW_DEDUP_WIDE);
+  const wideKnots = scanKnots(LOW_DEDUP_WIDE);
+  reports.push(exploreShared(wide.storyJson, wideKnots, [], {
+    maxDepth: 150,
+    maxStates: 1_500,
+    seed: 7,
+    sharedObservabilityIntervalStates: interval,
+  }));
+  reports.push(exploreShared(wide.storyJson, wideKnots, [], {
+    maxDepth: 150,
+    maxStates: 100,
+    seed: 7,
+    sharedMaxPendingStates: 1,
+    sharedObservabilityIntervalStates: interval,
+  }));
+
+  for (const report of reports) {
+    const telemetry = report.passes[0].sharedObservability;
+    assert.strictEqual(telemetry.cadenceSamplesRecorded, 0);
+    assertCanonicalSharedSamples(telemetry.samples);
+  }
+  const supportedOffCadenceReasons = [
+    "runtime_error",
+    "assertion_violation",
+    "goal_reached",
+    "stage_reached",
+    "authored_knot",
+    "visible_outcome",
+    "semantic_transition",
+    "terminal_variant",
+    "frontier_compaction",
+    "frontier_ceiling",
+    "termination",
+  ];
+  const recorded = reports.flatMap((report) => report.passes[0].sharedObservability.samples);
+  for (const reason of supportedOffCadenceReasons) {
+    const sample = recorded.find((candidate) =>
+      candidate.reasons.includes(reason) && candidate.state % interval !== 0
+    );
+    assert.ok(sample, `expected an independently triggered ${reason} boundary`);
+    assert.strictEqual(sample.reasons.includes("cadence"), false);
+  }
+});
+
+test("shared observability coalesces cadence, events, and termination deterministically", async () => {
+  const compiled = await compile(LOCK);
+  const knots = scanKnots(LOCK);
+  const options = {
+    maxDepth: 150,
+    maxStates: 1,
+    seed: 7,
+    sharedObservabilityIntervalStates: 1,
+    assertions: [{
+      id: "a_stays_zero",
+      when: "always",
+      condition: { left: { variable: "a" }, operator: "==", right: { literal: 0 } },
+    }],
+    goals: [{
+      id: "a_chosen",
+      condition: { left: { variable: "a" }, operator: ">", right: { literal: 0 } },
+    }],
+  };
+  const first = exploreShared(compiled.storyJson, knots, [], options);
+  const second = exploreShared(compiled.storyJson, knots, [], options);
+  const firstTelemetry = first.passes[0].sharedObservability;
+  const secondTelemetry = second.passes[0].sharedObservability;
+  assert.deepStrictEqual(firstTelemetry, secondTelemetry);
+  assertCanonicalSharedSamples(firstTelemetry.samples);
+
+  const coincident = firstTelemetry.samples.filter((sample) => sample.state === 1);
+  assert.strictEqual(coincident.length, 1, "one state must retain one coalesced sample");
+  for (const reason of [
+    "cadence",
+    "assertion_violation",
+    "goal_reached",
+    "semantic_transition",
+    "termination",
+  ]) {
+    assert.ok(coincident[0].reasons.includes(reason), `coincident sample should include ${reason}`);
+  }
+  assert.strictEqual(firstTelemetry.samplesRecorded, firstTelemetry.samplesRetained);
+  assert.strictEqual(firstTelemetry.cadenceSamplesRecorded, 1);
+});
+
+test("complete adjacent V2 boundaries require exact semantic trigger yield", async () => {
+  const compiled = await compile(LOCK);
+  const knots = scanKnots(LOCK);
+  const options = {
+    maxDepth: 150,
+    maxStates: 10,
+    seed: 7,
+    sharedObservabilityIntervalStates: 1,
+  };
+  const checkpoint = exploreSharedResumable(
+    compiled.storyJson,
+    knots,
+    [],
+    options
+  ).checkpoint;
+  const observability = checkpoint.state.sharedObservability;
+  assert.strictEqual(observability.eventHistoryComplete, true);
+  const adjacent = observability.samples.find((sample) => sample.sequence === 7);
+  assert.ok(adjacent);
+  assert.strictEqual(adjacent.triggerYield[4], 2);
+  assert.strictEqual(adjacent.yield.delta.authoredCoverage.knotsVisited, 2);
+
+  const rehashedUndercount = structuredClone(checkpoint);
+  rehashedUndercount.state.sharedObservability.samples
+    .find((sample) => sample.sequence === 7).triggerYield[4] = 1;
+  refreshSharedObservabilityCheckpointIntegrity(
+    rehashedUndercount.state.sharedObservability
+  );
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], {
+      ...options,
+      maxStates: 11,
+    }, rehashedUndercount),
+    /shared observability v2 samples are malformed or out of order/
+  );
 });
 
 test("base shared search resumes from JSON with the exact uninterrupted result", async () => {
@@ -574,7 +917,8 @@ test("base shared search resumes from JSON with the exact uninterrupted result",
     sharedObservabilityIntervalStates: 25,
   };
   const uninterrupted = exploreSharedResumable(compiled.storyJson, knots, [], options);
-  assert.deepStrictEqual(uninterrupted.result, exploreShared(compiled.storyJson, knots, [], options));
+  const direct = exploreShared(compiled.storyJson, knots, [], options);
+  assert.deepStrictEqual(uninterrupted.result, direct);
   const first = exploreSharedResumable(compiled.storyJson, knots, [], {
     ...options,
     maxStates: 73,
@@ -585,16 +929,233 @@ test("base shared search resumes from JSON with the exact uninterrupted result",
   assert.ok(first.checkpoint.state.current.cursor > 0, "fixture should pause partway through a choice list");
   assert.strictEqual(first.checkpoint.state.truncatedBy.maxStates, false);
   assert.strictEqual(first.result.truncatedBy.maxStates, true);
-  assert.deepStrictEqual(first.checkpoint.state.sharedObservability.samples.map((sample) => sample.state), [25, 50]);
+  assert.strictEqual(first.checkpoint.state.sharedObservability.schemaVersion, 2);
+  assert.deepStrictEqual(
+    first.checkpoint.state.sharedObservability.samples
+      .filter((sample) => sample.reasons.includes("cadence"))
+      .map((sample) => sample.state),
+    [25, 50]
+  );
+  assert.ok(first.checkpoint.state.sharedObservability.samples
+    .every((sample) => !sample.reasons.includes("checkpoint")));
   assert.doesNotMatch(JSON.stringify(first.checkpoint), /heapUsedBytes|heapTotalBytes|rssBytes|unattributedBytes/);
+  assertSharedObservabilityCheckpointIntegrity(first.checkpoint.state.sharedObservability);
+  const firstReplay = exploreSharedResumable(compiled.storyJson, knots, [], {
+    ...options,
+    maxStates: 73,
+  });
+  assert.deepStrictEqual(firstReplay.checkpoint, first.checkpoint);
+  assert.strictEqual(
+    firstReplay.checkpoint.state.sharedObservability.integritySha256,
+    first.checkpoint.state.sharedObservability.integritySha256,
+    "the same logical checkpoint must have one stable integrity identity"
+  );
+
+  const reordered = structuredClone(first.checkpoint);
+  const reorderedObservability = reordered.state.sharedObservability;
+  reorderedObservability.samples[0] = Object.fromEntries(
+    Object.entries(reorderedObservability.samples[0]).reverse()
+  );
+  reordered.state.sharedObservability = Object.fromEntries(
+    Object.entries(reorderedObservability).reverse()
+  );
+  const reorderedResume = exploreSharedResumable(compiled.storyJson, knots, [], {
+    ...options,
+    maxStates: 74,
+  }, reordered);
+  const reemittedObservability = reorderedResume.checkpoint.state.sharedObservability;
+  assertSharedObservabilityCheckpointIntegrity(reemittedObservability);
+  assert.deepStrictEqual(
+    Object.keys(reemittedObservability),
+    Object.keys(first.checkpoint.state.sharedObservability),
+    "resuming reordered raw objects must re-emit the canonical envelope order"
+  );
+  assert.deepStrictEqual(
+    Object.keys(reemittedObservability.samples[0]),
+    Object.keys(first.checkpoint.state.sharedObservability.samples[0]),
+    "resuming reordered raw objects must re-emit canonical sample order"
+  );
 
   const serialized = JSON.parse(JSON.stringify(first.checkpoint));
   const resumed = exploreSharedResumable(compiled.storyJson, knots, [], options, serialized);
   assert.deepStrictEqual(resumed, uninterrupted);
+  const uninterruptedTelemetry = uninterrupted.result.passes[0].sharedObservability;
+  const resumedTelemetry = resumed.result.passes[0].sharedObservability;
+  assert.ok(uninterruptedTelemetry.samplesCompacted > 0);
+  assert.ok(resumedTelemetry.samplesCompacted > 0);
+  assert.deepStrictEqual(resumedTelemetry.timing, uninterruptedTelemetry.timing);
+  assert.deepStrictEqual(resumedTelemetry.yieldSummary, uninterruptedTelemetry.yieldSummary);
+  assertCanonicalSharedSamples(resumedTelemetry.samples);
   assert.strictEqual(resumed.checkpoint.state.totalGranted, 500);
 });
 
-test("shared checkpoints preserve useful milestones before the first retained sample", async () => {
+test("V1 observability migrates once and remains deterministic across V2 split resumes", async () => {
+  const compiled = await compile(LOW_DEDUP_WIDE);
+  const knots = scanKnots(LOW_DEDUP_WIDE);
+  const options = {
+    maxDepth: 150,
+    maxStates: 500,
+    seed: 7,
+    preserveTurnState: false,
+    preserveRandomState: false,
+    sharedObservabilityIntervalStates: 25,
+  };
+  const native = exploreSharedResumable(compiled.storyJson, knots, [], options);
+  const initial = exploreSharedResumable(compiled.storyJson, knots, [], {
+    ...options,
+    maxStates: 73,
+  });
+  const v1Checkpoint = withV1SharedObservability(initial.checkpoint);
+  assert.strictEqual(v1Checkpoint.state.sharedObservability.schemaVersion, 1);
+  assert.strictEqual("integritySha256" in v1Checkpoint.state.sharedObservability, false);
+  assert.deepStrictEqual(
+    v1Checkpoint.state.sharedObservability.samples.map((sample) => sample.state),
+    [25, 50]
+  );
+
+  const migrated = exploreSharedResumable(compiled.storyJson, knots, [], {
+    ...options,
+    maxStates: 73,
+  }, JSON.parse(JSON.stringify(v1Checkpoint)));
+  const migratedObservability = migrated.checkpoint.state.sharedObservability;
+  assert.strictEqual(migratedObservability.schemaVersion, 2);
+  assertSharedObservabilityCheckpointIntegrity(migratedObservability);
+  assert.strictEqual(migratedObservability.eventHistoryComplete, false);
+  assertCanonicalSharedSamples(migratedObservability.samples);
+  assert.ok(migratedObservability.samples.every((sample) => (
+    sample.triggerYield.every((count) => count === 0)
+  )), "V1 cadence migration records no invented event trigger evidence");
+  assert.strictEqual(migratedObservability.nextSampleState, v1Checkpoint.state.sharedObservability.nextSampleState);
+  assert.strictEqual(
+    migratedObservability.cadenceSamplesRecorded,
+    v1Checkpoint.state.sharedObservability.samplesRecorded
+  );
+  for (const state of [25, 50]) {
+    assert.deepStrictEqual(
+      migratedObservability.samples.find((sample) => sample.state === state).reasons,
+      ["cadence"]
+    );
+  }
+
+  const runSplit = () => {
+    const middle = exploreSharedResumable(compiled.storyJson, knots, [], {
+      ...options,
+      maxStates: 211,
+    }, structuredClone(migrated.checkpoint));
+    assertSharedObservabilityCheckpointIntegrity(middle.checkpoint.state.sharedObservability);
+    assert.ok(middle.checkpoint.state.sharedObservability.samples
+      .every((sample) => !sample.reasons.includes("checkpoint")));
+    return exploreSharedResumable(compiled.storyJson, knots, [], options,
+      JSON.parse(JSON.stringify(middle.checkpoint)));
+  };
+  const splitA = runSplit();
+  const splitB = runSplit();
+  assert.deepStrictEqual(splitA, splitB);
+  assert.deepStrictEqual(
+    withoutSharedObservability(splitA.result),
+    withoutSharedObservability(native.result)
+  );
+  const splitTelemetry = splitA.result.passes[0].sharedObservability;
+  assert.strictEqual(splitTelemetry.eventHistoryComplete, false);
+  assert.ok(splitTelemetry.samplesCompacted > 0);
+  assert.deepStrictEqual(splitTelemetry.timing, splitA.checkpoint.state.sharedObservability.timing);
+  assertCanonicalSharedSamples(splitTelemetry.samples);
+});
+
+test("shared observability sequence ordinals stay bounded across compaction and V1 two-hop migration", async () => {
+  const compiled = await compile(LOW_DEDUP_WIDE);
+  const knots = scanKnots(LOW_DEDUP_WIDE);
+  const options = {
+    maxDepth: 150,
+    maxStates: 300,
+    seed: 7,
+    sharedObservabilityIntervalStates: 1,
+  };
+  const native = exploreSharedResumable(compiled.storyJson, knots, [], options);
+  const checkpoint = native.checkpoint;
+  const observability = checkpoint.state.sharedObservability;
+  assert.strictEqual(checkpoint.state.statesExplored, 300);
+  assert.strictEqual(observability.samplesRecorded, 300);
+  assert.strictEqual(observability.cadenceSamplesRecorded, 300);
+  assert.ok(observability.samples.length <= MAX_SHARED_OBSERVABILITY_SAMPLES);
+  assert.ok(observability.samples.length < observability.samplesRecorded);
+  assertCanonicalSharedSamples(observability.samples);
+  assert.ok(observability.samples.every((sample) => sample.sequence === sample.state));
+
+  const rejectOrdinalTamper = (mutate) => {
+    const tampered = structuredClone(checkpoint);
+    mutate(tampered.state.sharedObservability);
+    assert.throws(
+      () => exploreSharedResumable(compiled.storyJson, knots, [], {
+        ...options,
+        maxStates: 350,
+      }, tampered),
+      /shared observability/
+    );
+  };
+  rejectOrdinalTamper((value) => {
+    value.samplesRecorded = 301;
+    value.samples.at(-1).sequence = 301;
+  });
+  rejectOrdinalTamper((value) => {
+    const interior = value.samples.find((sample) => sample.sequence === 9);
+    assert.ok(interior, "interval-one compaction fixture must retain ordinal 9");
+    interior.sequence = 8;
+  });
+
+  const preCompaction = exploreSharedResumable(compiled.storyJson, knots, [], {
+    ...options,
+    maxStates: 20,
+  }).checkpoint;
+  const preCompactionObservability = preCompaction.state.sharedObservability;
+  assert.strictEqual(preCompactionObservability.samplesRecorded, 20);
+  assert.strictEqual(preCompactionObservability.samples.length, 20);
+  const missingInterior = structuredClone(preCompaction);
+  missingInterior.state.sharedObservability.samples.splice(8, 1);
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], {
+      ...options,
+      maxStates: 30,
+    }, missingInterior),
+    /shared observability/
+  );
+
+  const compactedV1 = withV1SharedObservability(checkpoint);
+  assert.strictEqual(compactedV1.state.sharedObservability.schemaVersion, 1);
+  assert.strictEqual(compactedV1.state.sharedObservability.samplesRecorded, 300);
+  assert.ok(compactedV1.state.sharedObservability.samples.length < 300);
+  const runTwoHop = () => {
+    const firstHop = exploreSharedResumable(compiled.storyJson, knots, [], {
+      ...options,
+      maxStates: 350,
+    }, structuredClone(compactedV1));
+    const firstHopObservability = firstHop.checkpoint.state.sharedObservability;
+    assert.strictEqual(firstHopObservability.eventHistoryComplete, false);
+    assertCanonicalSharedSamples(firstHopObservability.samples);
+    assert.ok(firstHopObservability.samples.every((sample) => sample.sequence === sample.state));
+    assert.ok(firstHopObservability.samples
+      .filter((sample) => sample.state <= 300)
+      .every((sample) => sample.triggerYield.every((count) => count === 0)));
+    const secondHop = exploreSharedResumable(compiled.storyJson, knots, [], {
+      ...options,
+      maxStates: 400,
+    }, JSON.parse(JSON.stringify(firstHop.checkpoint)));
+    assertCanonicalSharedSamples(secondHop.checkpoint.state.sharedObservability.samples);
+    assert.ok(secondHop.checkpoint.state.sharedObservability.samples
+      .every((sample) => sample.sequence === sample.state));
+    return secondHop;
+  };
+  const first = runTwoHop();
+  const second = runTwoHop();
+  assert.deepStrictEqual(first, second);
+  const direct = exploreSharedResumable(compiled.storyJson, knots, [], {
+    ...options,
+    maxStates: 400,
+  });
+  assert.deepStrictEqual(withoutSharedObservability(first.result), withoutSharedObservability(direct.result));
+});
+
+test("shared checkpoints preserve useful milestones before the first cadence sample", async () => {
   const compiled = await compile(AUTHORED_DOG);
   const knots = scanKnots(AUTHORED_DOG);
   const options = {
@@ -610,13 +1171,15 @@ test("shared checkpoints preserve useful milestones before the first retained sa
   assert.strictEqual(observability.baseState, 0);
   assert.strictEqual(observability.sampleIntervalStates, 10);
   assert.strictEqual(observability.firstUsefulAtState, 1);
-  assert.strictEqual(observability.samples[0].state, 10);
-  assert.ok(observability.samples[0].yield.cumulative.authoredCoverage.knotsVisited > 0);
-  assert.ok(observability.firstUsefulAtState < observability.samples[0].state);
-  assert.ok(
-    observability.throughFirstUseful.authoredCoverage.knotsVisited
-      <= observability.samples[0].yield.cumulative.authoredCoverage.knotsVisited
-  );
+  const firstEvent = observability.samples[0];
+  const firstCadence = observability.samples.find((sample) => sample.reasons.includes("cadence"));
+  assert.strictEqual(firstEvent.state, 1);
+  assert.strictEqual(firstEvent.reasons.includes("cadence"), false);
+  assert.strictEqual(firstCadence.state, 10);
+  assert.ok(firstCadence.yield.cumulative.authoredCoverage.knotsVisited > 0);
+  assert.strictEqual(observability.firstUsefulAtState, firstEvent.state);
+  assert.ok(observability.firstUsefulAtState < firstCadence.state);
+  assert.deepStrictEqual(observability.throughFirstUseful, firstEvent.yield.cumulative);
 
   const resumed = exploreSharedResumable(compiled.storyJson, knots, [], {
     ...options,
@@ -625,24 +1188,25 @@ test("shared checkpoints preserve useful milestones before the first retained sa
   assert.ok(resumed.result.statesExplored >= first.result.statesExplored);
 
   const atFirstSample = structuredClone(first.checkpoint);
-  atFirstSample.state.sharedObservability.firstUsefulAtState = 10;
-  atFirstSample.state.sharedObservability.throughFirstUseful.rawTerritory.transitions = 10;
   assert.doesNotThrow(() => exploreSharedResumable(compiled.storyJson, knots, [], {
     ...options,
     maxStates: 200,
   }, atFirstSample));
 
   const exceedsFirstSample = structuredClone(first.checkpoint);
-  const firstSampleUniqueStates = exceedsFirstSample.state.sharedObservability
-    .samples[0].yield.cumulative.rawTerritory.uniqueStates;
+  const firstCadenceUniqueStates = exceedsFirstSample.state.sharedObservability
+    .samples.find((sample) => sample.reasons.includes("cadence"))
+    .yield.cumulative.rawTerritory.uniqueStates;
   assert.ok(
-    firstSampleUniqueStates
+    firstCadenceUniqueStates
       < exceedsFirstSample.state.sharedObservability.previousYield.rawTerritory.uniqueStates
   );
-  exceedsFirstSample.state.sharedObservability.firstUsefulAtState = 10;
-  exceedsFirstSample.state.sharedObservability.throughFirstUseful.rawTerritory.transitions = 10;
+  const firstEventUniqueStates = exceedsFirstSample.state.sharedObservability.samples
+    .find((sample) => sample.state === exceedsFirstSample.state.sharedObservability.firstUsefulAtState)
+    .yield.cumulative.rawTerritory.uniqueStates;
   exceedsFirstSample.state.sharedObservability.throughFirstUseful.rawTerritory.uniqueStates
-    = firstSampleUniqueStates + 1;
+    = firstEventUniqueStates + 1;
+  refreshSharedObservabilityCheckpointIntegrity(exceedsFirstSample.state.sharedObservability);
   assert.throws(
     () => exploreSharedResumable(compiled.storyJson, knots, [], {
       ...options,
@@ -651,10 +1215,11 @@ test("shared checkpoints preserve useful milestones before the first retained sa
     /useful milestone exceeds retained cumulative yield/
   );
 
-  for (const lateMilestone of [11, 50]) {
+  for (const lateMilestone of [2, 50]) {
     const tampered = structuredClone(first.checkpoint);
     tampered.state.sharedObservability.firstUsefulAtState = lateMilestone;
     tampered.state.sharedObservability.throughFirstUseful.rawTerritory.transitions = lateMilestone;
+    refreshSharedObservabilityCheckpointIntegrity(tampered.state.sharedObservability);
     assert.throws(
       () => exploreSharedResumable(compiled.storyJson, knots, [], {
         ...options,
@@ -736,9 +1301,10 @@ test("shared checkpoints fail closed on incompatible source, options, budget, an
   );
   const badObservability = clone();
   badObservability.state.sharedObservability.baseYield.rawTerritory.transitions = -1;
+  refreshSharedObservabilityCheckpointIntegrity(badObservability.state.sharedObservability);
   assert.throws(
     () => exploreSharedResumable(compiled.storyJson, knots, [], { ...options, maxStates: 100 }, badObservability),
-    /shared observability ledger is malformed/
+    /shared observability(?: v2)? ledger is malformed/
   );
   const observedOptions = { ...options, sharedObservabilityIntervalStates: 10 };
   const observedCheckpoint = exploreSharedResumable(
@@ -750,9 +1316,45 @@ test("shared checkpoints fail closed on incompatible source, options, budget, an
   assert.ok(observedCheckpoint.state.sharedObservability.samples.length >= 2);
   assert.strictEqual(observedCheckpoint.state.runtimeErrors.length, 0);
   assert.ok(observedCheckpoint.state.sharedObservability.firstUsefulAtState !== null);
+  assertSharedObservabilityCheckpointIntegrity(observedCheckpoint.state.sharedObservability);
+  for (const mutate of [
+    (observability) => { delete observability.integritySha256; },
+    (observability) => { observability.integritySha256 = "0".repeat(63); },
+    (observability) => { observability.integritySha256 = "G".repeat(64); },
+    (observability) => { observability.unrecognized = true; },
+  ]) {
+    const malformedIntegrity = structuredClone(observedCheckpoint);
+    mutate(malformedIntegrity.state.sharedObservability);
+    assert.throws(
+      () => exploreSharedResumable(compiled.storyJson, knots, [], {
+        ...observedOptions,
+        maxStates: 100,
+      }, malformedIntegrity),
+      /integrity checksum is missing or malformed/
+    );
+  }
+  const staleValidLookingIntegrity = structuredClone(observedCheckpoint);
+  staleValidLookingIntegrity.state.sharedObservability.integritySha256 = "0".repeat(64);
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], {
+      ...observedOptions,
+      maxStates: 100,
+    }, staleValidLookingIntegrity),
+    /integrity checksum mismatch/
+  );
+  const malformedCanonicalShape = structuredClone(observedCheckpoint);
+  malformedCanonicalShape.state.sharedObservability.samples[0].yield.unrecognized = true;
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], {
+      ...observedOptions,
+      maxStates: 100,
+    }, malformedCanonicalShape),
+    /canonical shape is malformed/
+  );
   const rejectObservedTamper = (mutate) => {
     const tampered = structuredClone(observedCheckpoint);
     mutate(tampered.state.sharedObservability, tampered.state);
+    refreshSharedObservabilityCheckpointIntegrity(tampered.state.sharedObservability);
     assert.throws(
       () => exploreSharedResumable(compiled.storyJson, knots, [], {
         ...observedOptions,
@@ -801,7 +1403,177 @@ test("shared checkpoints fail closed on incompatible source, options, budget, an
     observability.firstCriticalAtState = 1;
   });
   rejectObservedTamper((observability) => {
-    observability.samples[0].boundary = "termination";
+    observability.samples[0].reasons = ["unknown_reason"];
+  });
+  rejectObservedTamper((observability) => {
+    observability.samples[0].reasons = ["termination", "cadence"];
+  });
+  rejectObservedTamper((observability) => {
+    observability.samples[0].reasons = ["cadence", "cadence"];
+  });
+  rejectObservedTamper((observability) => {
+    const first = observability.samples.find((sample) => sample.sequence === 1);
+    assert.ok(first);
+    const reason = first.reasons.find((candidate) => [
+      "runtime_error", "assertion_violation", "goal_reached", "stage_reached",
+      "authored_knot", "visible_outcome", "semantic_transition", "terminal_variant",
+    ].includes(candidate));
+    assert.ok(reason);
+    first.reasons = first.reasons.filter((candidate) => candidate !== reason);
+  });
+  for (const reservedReason of ["checkpoint", "epoch", "pressure"]) {
+    rejectObservedTamper((observability) => {
+      observability.samples[0].reasons = [
+        ...observability.samples[0].reasons,
+        reservedReason,
+      ].sort((left, right) => SHARED_OBSERVABILITY_REASON_RANK.get(left)
+        - SHARED_OBSERVABILITY_REASON_RANK.get(right));
+    });
+  }
+
+  const compactedOptions = { ...observedOptions, maxStates: 500 };
+  const compactedCheckpoint = exploreSharedResumable(
+    compiled.storyJson,
+    knots,
+    [],
+    compactedOptions
+  ).checkpoint;
+  const compactedObservability = compactedCheckpoint.state.sharedObservability;
+  assert.ok(compactedObservability.samplesRecorded > compactedObservability.samples.length);
+  assertCanonicalSharedSamples(compactedObservability.samples);
+  const hasSequenceGapBefore = (samples, index) => (
+    index > 0 && samples[index].sequence > samples[index - 1].sequence + 1
+  );
+  const removalIndex = compactedObservability.samples.findIndex((sample, index, samples) => (
+    hasSequenceGapBefore(samples, index)
+    && sample.reasons.filter((reason) => [
+      "runtime_error", "assertion_violation", "goal_reached", "stage_reached",
+      "authored_knot", "visible_outcome", "semantic_transition", "terminal_variant",
+    ].includes(reason)).length >= 2
+  ));
+  const additionIndex = compactedObservability.samples.findIndex((sample, index, samples) => (
+    hasSequenceGapBefore(samples, index)
+    && !sample.reasons.includes("terminal_variant")
+    && sample.yield.delta.terminalVariants > 0
+  ));
+  assert.ok(removalIndex > 0, "fixture must retain a multi-reason boundary after a compaction gap");
+  assert.ok(additionIndex > 0, "fixture must aggregate a removed terminal trigger before a retained boundary");
+  const removeCompactedBoundaryTrigger = (observability) => {
+    const sample = observability.samples[removalIndex];
+    const removedReason = sample.reasons.find((reason) => (
+      SHARED_OBSERVABILITY_TRIGGER_YIELD_REASONS.includes(reason)
+    ));
+    assert.ok(removedReason);
+    const triggerIndex = SHARED_OBSERVABILITY_TRIGGER_YIELD_REASONS.indexOf(removedReason);
+    sample.reasons = sample.reasons.filter((reason) => reason !== removedReason);
+    sample.triggerMask = sharedObservabilityTriggerMask(sample.reasons);
+    sample.triggerYield[triggerIndex] = 0;
+  };
+  const coordinatedStaleIntegrity = structuredClone(compactedCheckpoint);
+  removeCompactedBoundaryTrigger(coordinatedStaleIntegrity.state.sharedObservability);
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], {
+      ...compactedOptions,
+      maxStates: 550,
+    }, coordinatedStaleIntegrity),
+    /integrity checksum mismatch/,
+    "a stale digest must reject a structurally self-consistent compacted reason, mask, and tuple edit"
+  );
+  const coordinatedRehashedIntegrity = structuredClone(compactedCheckpoint);
+  removeCompactedBoundaryTrigger(coordinatedRehashedIntegrity.state.sharedObservability);
+  refreshSharedObservabilityCheckpointIntegrity(
+    coordinatedRehashedIntegrity.state.sharedObservability
+  );
+  assert.doesNotThrow(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], {
+      ...compactedOptions,
+      maxStates: 550,
+    }, coordinatedRehashedIntegrity),
+    "the self-check is integrity, not authentication: a structurally valid writer can recompute it"
+  );
+  const staleCursorIntegrity = structuredClone(compactedCheckpoint);
+  const staleCursorObservability = staleCursorIntegrity.state.sharedObservability;
+  staleCursorObservability.samples[removalIndex].sequence++;
+  staleCursorObservability.samples[removalIndex].state++;
+  staleCursorObservability.samplesRecorded++;
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], {
+      ...compactedOptions,
+      maxStates: 550,
+    }, staleCursorIntegrity),
+    /integrity checksum mismatch/,
+    "sequence, state, and aggregate counters are independently bound"
+  );
+  const rehashedInvalidTrigger = structuredClone(compactedCheckpoint);
+  rehashedInvalidTrigger.state.sharedObservability.samples[removalIndex].triggerYield[0] = -1;
+  refreshSharedObservabilityCheckpointIntegrity(
+    rehashedInvalidTrigger.state.sharedObservability
+  );
+  assert.throws(
+    () => exploreSharedResumable(compiled.storyJson, knots, [], {
+      ...compactedOptions,
+      maxStates: 550,
+    }, rehashedInvalidTrigger),
+    /shared observability v2 samples are malformed or out of order/,
+    "a recomputed checksum must never substitute for semantic validation"
+  );
+  const rejectCompactedTamper = (mutate) => {
+    const tampered = structuredClone(compactedCheckpoint);
+    mutate(tampered.state.sharedObservability);
+    refreshSharedObservabilityCheckpointIntegrity(tampered.state.sharedObservability);
+    assert.throws(
+      () => exploreSharedResumable(compiled.storyJson, knots, [], {
+        ...compactedOptions,
+        maxStates: 550,
+      }, tampered),
+      /shared observability/
+    );
+  };
+  rejectCompactedTamper((observability) => {
+    observability.samplesRecorded++;
+    for (const sample of observability.samples) sample.sequence++;
+  });
+  rejectCompactedTamper((observability) => {
+    const sample = observability.samples[removalIndex];
+    const removed = sample.reasons.find((reason) => reason !== "terminal_variant");
+    assert.ok(removed);
+    sample.reasons = sample.reasons.filter((reason) => reason !== removed);
+  });
+  rejectCompactedTamper((observability) => {
+    const sample = observability.samples[additionIndex];
+    sample.reasons = [...sample.reasons, "terminal_variant"].sort(
+      (left, right) => SHARED_OBSERVABILITY_REASON_RANK.get(left)
+        - SHARED_OBSERVABILITY_REASON_RANK.get(right)
+    );
+  });
+  rejectCompactedTamper((observability) => {
+    const sample = observability.samples[removalIndex];
+    const removed = sample.reasons.find((reason) => reason !== "terminal_variant");
+    assert.ok(removed);
+    sample.reasons = sample.reasons.filter((reason) => reason !== removed);
+    sample.triggerMask = sharedObservabilityTriggerMask(sample.reasons);
+  });
+  rejectCompactedTamper((observability) => {
+    const sample = observability.samples[additionIndex];
+    sample.reasons = [...sample.reasons, "terminal_variant"].sort(
+      (left, right) => SHARED_OBSERVABILITY_REASON_RANK.get(left)
+        - SHARED_OBSERVABILITY_REASON_RANK.get(right)
+    );
+    sample.triggerMask = sharedObservabilityTriggerMask(sample.reasons);
+  });
+  rejectCompactedTamper((observability) => {
+    const sample = observability.samples[removalIndex];
+    sample.triggerYield[7] = sample.yield.delta.terminalVariants + 1;
+  });
+  const originalMask = compactedObservability.samples[removalIndex].triggerMask;
+  for (const invalidMask of [originalMask ^ 1, 1.5, 2 ** SHARED_OBSERVABILITY_REASON_ORDER.length]) {
+    rejectCompactedTamper((observability) => {
+      observability.samples[removalIndex].triggerMask = invalidMask;
+    });
+  }
+  rejectObservedTamper((observability) => {
+    observability.eventHistoryComplete = false;
+    observability.timing.critical.longestDryStates = 1;
   });
   rejectObservedTamper((observability) => {
     observability.samplesRecorded = 1_000_000;
@@ -822,11 +1594,35 @@ test("shared checkpoints fail closed on incompatible source, options, budget, an
     compiled.storyJson,
     knots,
     [],
-    { ...options, maxStates: 100 },
+    { ...options, maxStates: 74 },
     legacyCheckpoint
   );
   assert.strictEqual(legacyResume.result.passes[0].sharedObservability.historyComplete, false);
-  assert.strictEqual(legacyResume.result.statesExplored, 100);
+  assert.strictEqual(legacyResume.result.passes[0].sharedObservability.eventHistoryComplete, false);
+  assert.strictEqual(legacyResume.result.statesExplored, 74);
+  const migrated = legacyResume.checkpoint.state.sharedObservability;
+  assertSharedObservabilityCheckpointIntegrity(migrated);
+  for (const [category, reason] of [
+    ["authoredCoverage", "authored_knot"],
+    ["visibleOutcomes", "visible_outcome"],
+    ["terminalVariants", "terminal_variant"],
+  ]) {
+    assert.ok(migrated.timing[category].identities > 0);
+    assert.strictEqual(migrated.timing[category].firstAtState, null);
+    assert.strictEqual(migrated.timing[category].lastAtState, null);
+    assert.ok(migrated.samples.every((sample) => !sample.reasons.includes(reason)));
+  }
+  const secondLegacyResume = exploreSharedResumable(
+    compiled.storyJson,
+    knots,
+    [],
+    { ...options, maxStates: 100 },
+    structuredClone(legacyResume.checkpoint)
+  );
+  assert.strictEqual(secondLegacyResume.result.statesExplored, 100);
+  assertSharedObservabilityCheckpointIntegrity(
+    secondLegacyResume.checkpoint.state.sharedObservability
+  );
   assert.throws(
     () => exploreSharedResumable(compiled.storyJson, knots, [], { ...options, assertions: [{}] }),
     /only the base shared strategy/

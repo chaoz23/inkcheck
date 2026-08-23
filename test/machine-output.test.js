@@ -11,6 +11,18 @@ const {
   machineFindingSummaries,
   projectMachineReport,
 } = require("../dist/machine-output");
+const { SHARED_OBSERVABILITY_REASON_ORDER_V2 } = require("../dist/explore");
+
+const MAX_SHARED_OBSERVABILITY_TRIGGER_MASK_V2 =
+  (1 << SHARED_OBSERVABILITY_REASON_ORDER_V2.length) - 1;
+
+function sharedObservabilityTriggerMask(reasons) {
+  return reasons.reduce((mask, reason) => {
+    const rank = SHARED_OBSERVABILITY_REASON_ORDER_V2.indexOf(reason);
+    assert.notStrictEqual(rank, -1, `unknown shared-observability reason ${reason}`);
+    return mask | (1 << rank);
+  }, 0);
+}
 
 function finding(kind, index, extra = {}) {
   return {
@@ -171,6 +183,50 @@ function validSharedObservability() {
   };
 }
 
+function sharedTimingCategory(identities, firstAtState, lastAtState, state) {
+  return {
+    identities,
+    firstAtState,
+    lastAtState,
+    longestDryStates: lastAtState === null ? 0 : state - lastAtState,
+    currentDryStates: lastAtState === null ? null : state - lastAtState,
+    identitiesPerMillionTransitions: identities * 1_000_000 / state,
+  };
+}
+
+function validSharedObservabilityV2() {
+  const telemetry = validSharedObservability();
+  return {
+    ...telemetry,
+    schemaVersion: 2,
+    cadenceSamplesRecorded: 1,
+    eventHistoryComplete: true,
+    samples: telemetry.samples.map((sample, index) => ({
+      schemaVersion: 2,
+      sequence: index + 1,
+      reasons: index === 0 ? ["cadence"] : ["terminal_variant", "termination"],
+      triggerMask: sharedObservabilityTriggerMask(
+        index === 0 ? ["cadence"] : ["terminal_variant", "termination"]
+      ),
+      triggerYield: index === 0
+        ? [0, 0, 0, 0, 0, 0, 0, 0]
+        : [0, 0, 0, 0, 0, 0, 0, 1],
+      state: sample.state,
+      retention: sample.retention,
+      yield: sample.yield,
+    })),
+    timing: {
+      schemaVersion: 2,
+      critical: sharedTimingCategory(2, 4, 4, 12_000),
+      intent: sharedTimingCategory(4, 4, 4, 12_000),
+      authoredCoverage: sharedTimingCategory(2, 4, 4, 12_000),
+      visibleOutcomes: sharedTimingCategory(2, 4, 4, 12_000),
+      semanticTransitions: sharedTimingCategory(2, 4, 4, 12_000),
+      terminalVariants: sharedTimingCategory(2, 4, 12_000, 12_000),
+    },
+  };
+}
+
 test("default machine detail stays bounded and keeps response truncation separate from search truncation", () => {
   const report = largeReport();
   const projected = projectMachineReport(report);
@@ -264,6 +320,148 @@ test("compact shared observability recursively whitelists its latest sample and 
   assert.doesNotMatch(serialized, /PRIVATE NESTED OBSERVABILITY SECRET|privateFuture|privateOwnerMap|privateScore/);
   assert.doesNotMatch(serialized, /rssBytes|heapUsedBytes|observedProcess/);
   assert.ok(Buffer.byteLength(serialized, "utf8") <= MAX_STANDARD_MACHINE_RESPONSE_BYTES);
+});
+
+test("compact shared observability V2 whitelists reasons and timing without forwarding future fields", () => {
+  const report = largeReport();
+  const telemetry = validSharedObservabilityV2();
+  const secret = "PRIVATE V2 OBSERVABILITY SECRET ".repeat(10_000);
+  report.explore.passes[0].pass = "shared:deep-novelty-v1:seed=7";
+  report.explore.passes[0].sharedObservability = telemetry;
+  telemetry.samples.at(-1).privateReasonIdentity = secret;
+  telemetry.samples.at(-1).privateTriggerIdentity = secret;
+  telemetry.samples.at(-1).privateTriggerYieldIdentity = secret;
+  telemetry.timing.privateCategory = { secret };
+  telemetry.timing.critical.privateEvent = secret;
+  const projected = projectMachineReport(report, "summary");
+  const expectedLatest = structuredClone(telemetry.samples.at(-1));
+  delete expectedLatest.privateReasonIdentity;
+  delete expectedLatest.privateTriggerIdentity;
+  delete expectedLatest.privateTriggerYieldIdentity;
+  assert.deepStrictEqual(projected.explore.sharedObservability, [{
+    pass: "shared:deep-novelty-v1:seed=7",
+    schemaVersion: 2,
+    sampleIntervalStates: 10_000,
+    samplesRecorded: 2,
+    cadenceSamplesRecorded: 1,
+    samplesRetained: 2,
+    samplesCompacted: 0,
+    historyComplete: true,
+    eventHistoryComplete: true,
+    latestSample: expectedLatest,
+    yieldSummary: structuredClone(telemetry.yieldSummary),
+    timing: {
+      schemaVersion: 2,
+      critical: sharedTimingCategory(2, 4, 4, 12_000),
+      intent: sharedTimingCategory(4, 4, 4, 12_000),
+      authoredCoverage: sharedTimingCategory(2, 4, 4, 12_000),
+      visibleOutcomes: sharedTimingCategory(2, 4, 4, 12_000),
+      semanticTransitions: sharedTimingCategory(2, 4, 4, 12_000),
+      terminalVariants: sharedTimingCategory(2, 4, 12_000, 12_000),
+    },
+  }]);
+  const serialized = JSON.stringify(projected);
+  assert.doesNotMatch(serialized, /PRIVATE V2 OBSERVABILITY SECRET|privateCategory|privateEvent/);
+  assert.strictEqual(
+    projected.explore.sharedObservability[0].latestSample.triggerMask,
+    (1 << 8) | (1 << 14)
+  );
+  assert.deepStrictEqual(
+    projected.explore.sharedObservability[0].latestSample.triggerYield,
+    [0, 0, 0, 0, 0, 0, 0, 1]
+  );
+  assert.ok(Buffer.byteLength(serialized, "utf8") <= MAX_STANDARD_MACHINE_RESPONSE_BYTES);
+});
+
+test("compact shared observability requires exact bounded V2 trigger yield", () => {
+  const secret = "PRIVATE OVERSIZED TRIGGER YIELD ".repeat(10_000);
+  const mutations = [
+    ["wrong tuple length", (sample) => { sample.triggerYield = [0, 0, 0, 0, 0, 0, 1]; }],
+    ["fractional tuple count", (sample) => { sample.triggerYield[7] = 0.5; }],
+    ["negative tuple count", (sample) => { sample.triggerYield[7] = -1; }],
+    ["tuple exceeds interval delta", (sample) => { sample.triggerYield[7] = 2; }],
+    ["coordinated reason/mask addition without tuple evidence", (sample) => {
+      sample.reasons = ["runtime_error", "terminal_variant", "termination"];
+      sample.triggerMask = sharedObservabilityTriggerMask(sample.reasons);
+    }],
+    ["coordinated reason/mask removal with stale tuple evidence", (sample) => {
+      sample.reasons = ["termination"];
+      sample.triggerMask = sharedObservabilityTriggerMask(sample.reasons);
+    }],
+    ["oversized trigger-yield tuple", (sample) => {
+      sample.triggerYield = Array.from({ length: 10_000 }, () => secret);
+    }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const report = largeReport();
+    const telemetry = validSharedObservabilityV2();
+    mutate(telemetry.samples.at(-1));
+    report.explore.passes = [{
+      pass: "shared:deep-novelty-v1:seed=7",
+      sharedObservability: telemetry,
+    }];
+    const projected = projectMachineReport(report, "summary");
+    assert.strictEqual(projected.explore.sharedObservability, undefined, label);
+    assert.doesNotMatch(JSON.stringify(projected), /PRIVATE OVERSIZED TRIGGER YIELD/, label);
+  }
+});
+
+test("compact shared observability requires an exact bounded V2 trigger mask", () => {
+  assert.strictEqual(SHARED_OBSERVABILITY_REASON_ORDER_V2.length, 15);
+  assert.strictEqual(sharedObservabilityTriggerMask(["cadence"]), 1);
+  assert.strictEqual(sharedObservabilityTriggerMask(["termination"]), 1 << 14);
+  assert.strictEqual(
+    sharedObservabilityTriggerMask(SHARED_OBSERVABILITY_REASON_ORDER_V2),
+    MAX_SHARED_OBSERVABILITY_TRIGGER_MASK_V2
+  );
+
+  const secret = "PRIVATE OVERSIZED TRIGGER VECTOR ".repeat(10_000);
+  const mutations = [
+    ["zero mask", (sample) => { sample.triggerMask = 0; }],
+    ["unknown high bit", (sample) => { sample.triggerMask = 1 << 15; }],
+    ["non-integer mask", (sample) => { sample.triggerMask = 1.5; }],
+    ["mask/reason mismatch", (sample) => { sample.triggerMask ^= 1 << 8; }],
+    ["reason/mask mismatch", (sample) => { sample.reasons = ["termination"]; }],
+    ["oversized reason vector", (sample) => {
+      sample.reasons = Array.from({ length: 10_000 }, () => secret);
+    }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const report = largeReport();
+    const telemetry = validSharedObservabilityV2();
+    mutate(telemetry.samples.at(-1));
+    report.explore.passes = [{
+      pass: "shared:deep-novelty-v1:seed=7",
+      sharedObservability: telemetry,
+    }];
+    const projected = projectMachineReport(report, "summary");
+    assert.strictEqual(projected.explore.sharedObservability, undefined, label);
+    assert.doesNotMatch(JSON.stringify(projected), /PRIVATE OVERSIZED TRIGGER VECTOR/, label);
+  }
+});
+
+test("compact shared observability preserves nullable migrated V2 timing without inventing history", () => {
+  const report = largeReport();
+  const telemetry = validSharedObservabilityV2();
+  telemetry.eventHistoryComplete = false;
+  for (const category of Object.values(telemetry.timing).filter((value) => typeof value === "object")) {
+    category.firstAtState = null;
+    category.lastAtState = null;
+    category.longestDryStates = null;
+    category.currentDryStates = null;
+  }
+  report.explore.passes[0].pass = "shared:deep-novelty-v1:seed=7";
+  report.explore.passes[0].sharedObservability = telemetry;
+  const projected = projectMachineReport(report, "summary");
+  assert.strictEqual(projected.explore.sharedObservability[0].eventHistoryComplete, false);
+  assert.deepStrictEqual(projected.explore.sharedObservability[0].timing.critical, {
+    identities: 2,
+    firstAtState: null,
+    lastAtState: null,
+    longestDryStates: null,
+    currentDryStates: null,
+    identitiesPerMillionTransitions: 2 * 1_000_000 / 12_000,
+  });
 });
 
 test("compact shared observability rejects invalid numbers, private pass names, and oversized collections", () => {

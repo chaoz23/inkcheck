@@ -1,4 +1,4 @@
-import type { SharedResourceObservationV1 } from "./explore";
+import type { SharedResourceObservation } from "./explore";
 
 export type HumanProgressPhase = "compile" | "source_scan" | "explore" | "min_repro" | "report";
 export type ProgressStatus = "complete" | "cancelled" | "error";
@@ -44,7 +44,7 @@ export interface HumanProgressEvent {
   outcome?: ProgressOutcome;
   exhaustive?: boolean;
   /** Shared-search only; contains counts/bytes but no story content or identities. */
-  sharedObservability?: SharedResourceObservationV1;
+  sharedObservability?: SharedResourceObservation;
 }
 
 export interface TerminalWriter {

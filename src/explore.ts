@@ -793,11 +793,13 @@ export interface ExploreOptions {
   /** Receive replayable findings without waiting for the final report. */
   onEvidence?: (evidence: ExploreEvidence) => void;
   /**
-   * Shared search only: receive process-scoped heap/RSS beside each bounded,
-   * deterministic resource/yield sample. Process values are observational and
+   * Shared search only: receive process-scoped heap/RSS at the deterministic
+   * cadence and final termination boundary. The bounded report/checkpoint
+   * ledger records additional event boundaries without turning each discovery
+   * into process sampling or live output. Process values are observational and
    * are deliberately excluded from checkpoints and canonical reports.
    */
-  onSharedObservability?: (observation: SharedResourceObservationV1) => void;
+  onSharedObservability?: (observation: SharedResourceObservation) => void;
   /** Internal/test override for the normal 10,000-transition sample cadence. */
   sharedObservabilityIntervalStates?: number;
   /** Internal/test override for the normal 10,000-state progress cadence. */
@@ -951,7 +953,7 @@ export interface PassTelemetry {
   /** Shared search only: deterministic retained-payload accounting, not process heap usage. */
   sharedMemory?: SharedMemoryTelemetry;
   /** Shared search only: bounded deterministic retention and category-specific yield samples. */
-  sharedObservability?: SharedObservabilityTelemetryV1;
+  sharedObservability?: SharedObservabilityTelemetryV1 | SharedObservabilityTelemetryV2;
   /** Shared search only: distinct variable snapshots observed. */
   variableStatesObserved?: number;
   /** Shared search only: distinct variable changes observed. */
@@ -1043,6 +1045,79 @@ export interface ResourceSampleV1 {
   yield: YieldIntervalV1;
 }
 
+export const SHARED_OBSERVABILITY_REASON_ORDER_V2 = [
+  "cadence",
+  "runtime_error",
+  "assertion_violation",
+  "goal_reached",
+  "stage_reached",
+  "authored_knot",
+  "visible_outcome",
+  "semantic_transition",
+  "terminal_variant",
+  "frontier_compaction",
+  "frontier_ceiling",
+  "checkpoint",
+  "epoch",
+  "pressure",
+  "termination",
+] as const;
+
+export type SharedObservabilityReasonV2 = typeof SHARED_OBSERVABILITY_REASON_ORDER_V2[number];
+
+/**
+ * Exact semantic increments at one logical boundary. Tuple positions map to
+ * reason bits 1..8: runtime error through terminal variant.
+ */
+export type SharedObservabilityTriggerYieldV2 = [
+  runtimeErrors: number,
+  assertionViolations: number,
+  goalsReached: number,
+  stagesReached: number,
+  authoredKnots: number,
+  visibleOutcomes: number,
+  semanticTransitions: number,
+  terminalVariants: number,
+];
+
+export interface ResourceSampleV2 {
+  schemaVersion: 2;
+  /** Monotonic record number; coalescing another reason at this state does not advance it. */
+  sequence: number;
+  /** Canonically ordered, duplicate-free reasons observed at this transition position. */
+  reasons: SharedObservabilityReasonV2[];
+  /** Bit-for-bit trigger fingerprint using SHARED_OBSERVABILITY_REASON_ORDER_V2 indices. */
+  triggerMask: number;
+  /** Exact semantic yield increments at this boundary; compaction never widens this tuple. */
+  triggerYield: SharedObservabilityTriggerYieldV2;
+  state: number;
+  retention: RetentionBreakdownV1;
+  yield: YieldIntervalV1;
+}
+
+export interface SharedYieldTimingCategoryV2 {
+  /** Distinct identities observed in this category through the boundary. */
+  identities: number;
+  firstAtState: number | null;
+  lastAtState: number | null;
+  /** Null when migration cannot reconstruct the earlier event history. */
+  longestDryStates: number | null;
+  /** Null until a trustworthy last event position is known. */
+  currentDryStates: number | null;
+  /** Deterministic category identities per million completed transitions. */
+  identitiesPerMillionTransitions: number | null;
+}
+
+export interface SharedYieldTimingV2 {
+  schemaVersion: 2;
+  critical: SharedYieldTimingCategoryV2;
+  intent: SharedYieldTimingCategoryV2;
+  authoredCoverage: SharedYieldTimingCategoryV2;
+  visibleOutcomes: SharedYieldTimingCategoryV2;
+  semanticTransitions: SharedYieldTimingCategoryV2;
+  terminalVariants: SharedYieldTimingCategoryV2;
+}
+
 export interface SharedYieldPhaseSummaryV1 {
   schemaVersion: 1;
   /** First event in critical, intent, authored coverage, visible outcome, or semantic-transition categories. */
@@ -1067,6 +1142,24 @@ export interface SharedObservabilityTelemetryV1 {
   yieldSummary: SharedYieldPhaseSummaryV1;
 }
 
+export interface SharedObservabilityTelemetryV2 {
+  schemaVersion: 2;
+  sampleIntervalStates: number;
+  /** Unique transition positions recorded before deterministic compaction. */
+  samplesRecorded: number;
+  /** Fixed-cadence boundaries crossed; remains independently auditable. */
+  cadenceSamplesRecorded: number;
+  samplesRetained: number;
+  samplesCompacted: number;
+  /** False only when resuming a checkpoint that predates the cadence ledger. */
+  historyComplete: boolean;
+  /** False when migration cannot reconstruct prior off-cadence event positions. */
+  eventHistoryComplete: boolean;
+  samples: ResourceSampleV2[];
+  yieldSummary: SharedYieldPhaseSummaryV1;
+  timing: SharedYieldTimingV2;
+}
+
 /** Live-only observation. The process fields never enter exact resume/report identity. */
 export interface SharedResourceObservationV1 {
   schemaVersion: 1;
@@ -1076,6 +1169,17 @@ export interface SharedResourceObservationV1 {
   sample: ResourceSampleV1;
   process: ProcessMemoryObservationV1;
 }
+
+/** Live-only V2 observation; process fields remain outside deterministic identity. */
+export interface SharedResourceObservationV2 {
+  schemaVersion: 2;
+  pass: string;
+  runWideState: number;
+  sample: ResourceSampleV2;
+  process: ProcessMemoryObservationV1;
+}
+
+export type SharedResourceObservation = SharedResourceObservationV1 | SharedResourceObservationV2;
 
 function emptySharedYieldCounts(): SharedYieldCountsV1 {
   return {
@@ -1136,6 +1240,202 @@ function usefulYieldObserved(value: SharedYieldCountsV1): boolean {
     || value.authoredCoverage.knotsVisited > 0
     || value.visibleOutcomes > 0
     || value.semanticTransitions > 0;
+}
+
+const SHARED_OBSERVABILITY_REASON_RANK_V2 = new Map<SharedObservabilityReasonV2, number>(
+  SHARED_OBSERVABILITY_REASON_ORDER_V2.map((reason, index) => [reason, index])
+);
+const SHARED_OBSERVABILITY_TRIGGER_MASK_MAX_V2 = 2 ** SHARED_OBSERVABILITY_REASON_ORDER_V2.length - 1;
+
+function canonicalSharedObservabilityReasonsV2(
+  reasons: Iterable<SharedObservabilityReasonV2>
+): SharedObservabilityReasonV2[] {
+  return [...new Set(reasons)].sort((left, right) =>
+    SHARED_OBSERVABILITY_REASON_RANK_V2.get(left)! - SHARED_OBSERVABILITY_REASON_RANK_V2.get(right)!);
+}
+
+function sharedObservabilityTriggerMaskV2(
+  reasons: Iterable<SharedObservabilityReasonV2>
+): number {
+  let mask = 0;
+  for (const reason of reasons) {
+    mask |= 1 << SHARED_OBSERVABILITY_REASON_RANK_V2.get(reason)!;
+  }
+  return mask;
+}
+
+function emptySharedObservabilityTriggerYieldV2(): SharedObservabilityTriggerYieldV2 {
+  return [0, 0, 0, 0, 0, 0, 0, 0];
+}
+
+function sharedObservabilityTriggerYieldV2(
+  delta: SharedYieldCountsV1
+): SharedObservabilityTriggerYieldV2 {
+  return [
+    delta.critical.runtimeErrors,
+    delta.critical.assertionViolations,
+    delta.intent.goalsReached,
+    delta.intent.stagesReached,
+    delta.authoredCoverage.knotsVisited,
+    delta.visibleOutcomes,
+    delta.semanticTransitions,
+    delta.terminalVariants,
+  ];
+}
+
+function addSharedObservabilityTriggerYieldV2(
+  left: SharedObservabilityTriggerYieldV2,
+  right: SharedObservabilityTriggerYieldV2
+): SharedObservabilityTriggerYieldV2 {
+  return [
+    left[0] + right[0],
+    left[1] + right[1],
+    left[2] + right[2],
+    left[3] + right[3],
+    left[4] + right[4],
+    left[5] + right[5],
+    left[6] + right[6],
+    left[7] + right[7],
+  ];
+}
+
+function validSharedObservabilityTriggerYieldV2(
+  value: unknown
+): value is SharedObservabilityTriggerYieldV2 {
+  return Array.isArray(value) && value.length === 8
+    && value.every((count) => Number.isSafeInteger(count) && count >= 0);
+}
+
+function sharedObservabilityReasonsForTriggerYieldV2(
+  value: SharedObservabilityTriggerYieldV2
+): SharedObservabilityReasonV2[] {
+  const reasons: SharedObservabilityReasonV2[] = [];
+  for (let index = 0; index < value.length; index++) {
+    if (value[index] > 0) reasons.push(SHARED_OBSERVABILITY_REASON_ORDER_V2[index + 1]);
+  }
+  return reasons;
+}
+
+function sharedObservabilityTriggerYieldAtMostV2(
+  value: SharedObservabilityTriggerYieldV2,
+  interval: SharedYieldCountsV1
+): boolean {
+  const intervalVector = sharedObservabilityTriggerYieldV2(interval);
+  return value.every((count, index) => count <= intervalVector[index]);
+}
+
+function sharedObservabilityTriggerYieldEqualV2(
+  value: SharedObservabilityTriggerYieldV2,
+  interval: SharedYieldCountsV1
+): boolean {
+  const intervalVector = sharedObservabilityTriggerYieldV2(interval);
+  return value.every((count, index) => count === intervalVector[index]);
+}
+
+function sharedObservabilityReasonsForYieldDeltaV2(
+  delta: SharedYieldCountsV1
+): SharedObservabilityReasonV2[] {
+  const reasons: SharedObservabilityReasonV2[] = [];
+  if (delta.critical.runtimeErrors > 0) reasons.push("runtime_error");
+  if (delta.critical.assertionViolations > 0) reasons.push("assertion_violation");
+  if (delta.intent.goalsReached > 0) reasons.push("goal_reached");
+  if (delta.intent.stagesReached > 0) reasons.push("stage_reached");
+  if (delta.authoredCoverage.knotsVisited > 0) reasons.push("authored_knot");
+  if (delta.visibleOutcomes > 0) reasons.push("visible_outcome");
+  if (delta.semanticTransitions > 0) reasons.push("semantic_transition");
+  if (delta.terminalVariants > 0) reasons.push("terminal_variant");
+  return reasons;
+}
+
+type SharedYieldTimingKeyV2 = Exclude<keyof SharedYieldTimingV2, "schemaVersion">;
+
+const SHARED_YIELD_TIMING_KEYS_V2: SharedYieldTimingKeyV2[] = [
+  "critical", "intent", "authoredCoverage", "visibleOutcomes", "semanticTransitions", "terminalVariants",
+];
+
+function sharedYieldCategoryIdentitiesV2(
+  value: SharedYieldCountsV1,
+  key: SharedYieldTimingKeyV2
+): number {
+  switch (key) {
+    case "critical": return value.critical.runtimeErrors + value.critical.assertionViolations;
+    case "intent": return value.intent.goalsReached + value.intent.stagesReached;
+    case "authoredCoverage": return value.authoredCoverage.knotsVisited;
+    case "visibleOutcomes": return value.visibleOutcomes;
+    case "semanticTransitions": return value.semanticTransitions;
+    case "terminalVariants": return value.terminalVariants;
+  }
+}
+
+function emptySharedYieldTimingCategoryV2(): SharedYieldTimingCategoryV2 {
+  return {
+    identities: 0,
+    firstAtState: null,
+    lastAtState: null,
+    longestDryStates: 0,
+    currentDryStates: null,
+    identitiesPerMillionTransitions: null,
+  };
+}
+
+function emptySharedYieldTimingV2(): SharedYieldTimingV2 {
+  return {
+    schemaVersion: 2,
+    critical: emptySharedYieldTimingCategoryV2(),
+    intent: emptySharedYieldTimingCategoryV2(),
+    authoredCoverage: emptySharedYieldTimingCategoryV2(),
+    visibleOutcomes: emptySharedYieldTimingCategoryV2(),
+    semanticTransitions: emptySharedYieldTimingCategoryV2(),
+    terminalVariants: emptySharedYieldTimingCategoryV2(),
+  };
+}
+
+function cloneSharedYieldTimingV2(value: SharedYieldTimingV2): SharedYieldTimingV2 {
+  return {
+    schemaVersion: 2,
+    critical: { ...value.critical },
+    intent: { ...value.intent },
+    authoredCoverage: { ...value.authoredCoverage },
+    visibleOutcomes: { ...value.visibleOutcomes },
+    semanticTransitions: { ...value.semanticTransitions },
+    terminalVariants: { ...value.terminalVariants },
+  };
+}
+
+function timingRateV2(identities: number, state: number): number | null {
+  return state === 0 ? null : identities * 1_000_000 / state;
+}
+
+function snapshotSharedYieldTimingV2(
+  value: SharedYieldTimingV2,
+  state: number
+): SharedYieldTimingV2 {
+  const result = cloneSharedYieldTimingV2(value);
+  for (const key of SHARED_YIELD_TIMING_KEYS_V2) {
+    const category = result[key];
+    category.currentDryStates = category.lastAtState === null ? null : state - category.lastAtState;
+    if (category.longestDryStates !== null && category.currentDryStates !== null) {
+      category.longestDryStates = Math.max(category.longestDryStates, category.currentDryStates);
+    }
+    category.identitiesPerMillionTransitions = timingRateV2(category.identities, state);
+  }
+  return result;
+}
+
+function migratedSharedYieldTimingV2(value: SharedYieldCountsV1, state: number): SharedYieldTimingV2 {
+  const result = emptySharedYieldTimingV2();
+  for (const key of SHARED_YIELD_TIMING_KEYS_V2) {
+    const identities = sharedYieldCategoryIdentitiesV2(value, key);
+    result[key] = {
+      identities,
+      firstAtState: null,
+      lastAtState: null,
+      longestDryStates: null,
+      currentDryStates: null,
+      identitiesPerMillionTransitions: timingRateV2(identities, state),
+    };
+  }
+  return result;
 }
 
 export interface DiscoveryCounts {
@@ -1846,6 +2146,36 @@ export interface SharedObservabilityCheckpointV1 {
   historyComplete: boolean;
 }
 
+export interface SharedObservabilityCheckpointV2 {
+  schemaVersion: 2;
+  sampleIntervalStates: number;
+  samplesRecorded: number;
+  cadenceSamplesRecorded: number;
+  samples: ResourceSampleV2[];
+  baseState: number;
+  baseYield: SharedYieldCountsV1;
+  previousSampleState: number;
+  previousYield: SharedYieldCountsV1;
+  nextSampleState: number;
+  firstUsefulAtState: number | null;
+  firstCriticalAtState: number | null;
+  throughFirstUseful: SharedYieldCountsV1;
+  historyComplete: boolean;
+  eventHistoryComplete: boolean;
+  timing: SharedYieldTimingV2;
+  /**
+   * Canonical SHA-256 self-check over every preceding V2 ledger field. This
+   * detects stale or accidental mutation; it is not authentication because a
+   * writer that can change the checkpoint can also recompute the digest.
+   */
+  integritySha256: string;
+}
+
+type SharedObservabilityCheckpointV2Body = Omit<
+  SharedObservabilityCheckpointV2,
+  "integritySha256"
+>;
+
 function cloneJsonValue<T>(value: T): T {
   if (Array.isArray(value)) {
     return value.map((item) => item === undefined ? null : cloneJsonValue(item)) as T;
@@ -1921,7 +2251,7 @@ export interface SharedSearchCheckpoint {
     ancestryPayloadBytes: number;
     peakRetainedMemory: SharedRetainedMemory;
     /** Additive deterministic ledger; live heap/RSS observations are never persisted. */
-    sharedObservability?: SharedObservabilityCheckpointV1;
+    sharedObservability?: SharedObservabilityCheckpointV1 | SharedObservabilityCheckpointV2;
   };
 }
 
@@ -2018,6 +2348,307 @@ const SHARED_RETAINED_BYTE_KEYS: Array<keyof SharedRetainedMemory> = [
   "ancestryBytes", "dedupeBytes", "semanticIndexBytes", "frontierReferenceBytes", "findingBytes",
 ];
 
+const SHARED_OBSERVABILITY_CHECKPOINT_V2_BODY_KEYS = [
+  "schemaVersion", "sampleIntervalStates", "samplesRecorded", "cadenceSamplesRecorded", "samples",
+  "baseState", "baseYield", "previousSampleState", "previousYield", "nextSampleState",
+  "firstUsefulAtState", "firstCriticalAtState", "throughFirstUseful", "historyComplete",
+  "eventHistoryComplete", "timing",
+] as const;
+const SHARED_OBSERVABILITY_CHECKPOINT_V2_KEYS = [
+  ...SHARED_OBSERVABILITY_CHECKPOINT_V2_BODY_KEYS,
+  "integritySha256",
+] as const;
+const SHARED_OBSERVABILITY_SAMPLE_V2_KEYS = [
+  "schemaVersion", "sequence", "reasons", "triggerMask", "triggerYield", "state", "retention", "yield",
+] as const;
+const SHARED_OBSERVABILITY_RETENTION_V1_KEYS = [
+  "schemaVersion", "current", "peak", "releasedNodes", "frontierCompactions",
+] as const;
+const SHARED_OBSERVABILITY_YIELD_INTERVAL_V1_KEYS = [
+  "schemaVersion", "fromStateExclusive", "throughState", "delta", "cumulative",
+] as const;
+const SHARED_YIELD_COUNTS_V1_KEYS = [
+  "critical", "intent", "authoredCoverage", "visibleOutcomes", "semanticTransitions",
+  "terminalVariants", "rawTerritory",
+] as const;
+const SHARED_YIELD_CRITICAL_V1_KEYS = ["runtimeErrors", "assertionViolations"] as const;
+const SHARED_YIELD_INTENT_V1_KEYS = ["goalsReached", "stagesReached"] as const;
+const SHARED_YIELD_AUTHORED_V1_KEYS = ["knotsVisited"] as const;
+const SHARED_YIELD_RAW_TERRITORY_V1_KEYS = ["transitions", "uniqueStates", "dedupeHits"] as const;
+const SHARED_YIELD_TIMING_V2_KEYS = [
+  "schemaVersion", ...SHARED_YIELD_TIMING_KEYS_V2,
+] as const;
+const SHARED_YIELD_TIMING_CATEGORY_V2_KEYS = [
+  "identities", "firstAtState", "lastAtState", "longestDryStates", "currentDryStates",
+  "identitiesPerMillionTransitions",
+] as const;
+const SHARED_OBSERVABILITY_CHECKPOINT_V2_INTEGRITY_DOMAIN =
+  "inkcheck:shared-observability-checkpoint:v2\0";
+
+function exactCanonicalRecord(
+  value: unknown,
+  keys: readonly string[]
+): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.length !== keys.length || ownKeys.some((key) => typeof key !== "string")) return false;
+  const expected = new Set<string>(keys);
+  for (const key of ownKeys as string[]) {
+    if (!expected.has(key)) return false;
+  }
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) return false;
+  }
+  return true;
+}
+
+function boundedDenseCanonicalArray(value: unknown, maximum: number): value is unknown[] {
+  if (!Array.isArray(value) || value.length > maximum) return false;
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.length !== value.length + 1 || !ownKeys.includes("length")) return false;
+  for (let index = 0; index < value.length; index++) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) return false;
+  }
+  return ownKeys.every((key) => key === "length"
+    || (typeof key === "string" && /^(?:0|[1-9]\d*)$/.test(key) && Number(key) < value.length));
+}
+
+function canonicalCheckpointNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && !Object.is(value, -0);
+}
+
+function canonicalCheckpointNullableNumber(value: unknown): value is number | null {
+  return value === null || canonicalCheckpointNumber(value);
+}
+
+function orderedSharedYieldCountsV1(value: unknown): SharedYieldCountsV1 | undefined {
+  if (!exactCanonicalRecord(value, SHARED_YIELD_COUNTS_V1_KEYS)
+    || !exactCanonicalRecord(value.critical, SHARED_YIELD_CRITICAL_V1_KEYS)
+    || !exactCanonicalRecord(value.intent, SHARED_YIELD_INTENT_V1_KEYS)
+    || !exactCanonicalRecord(value.authoredCoverage, SHARED_YIELD_AUTHORED_V1_KEYS)
+    || !exactCanonicalRecord(value.rawTerritory, SHARED_YIELD_RAW_TERRITORY_V1_KEYS)) {
+    return undefined;
+  }
+  const numbers = [
+    value.critical.runtimeErrors, value.critical.assertionViolations,
+    value.intent.goalsReached, value.intent.stagesReached, value.authoredCoverage.knotsVisited,
+    value.visibleOutcomes, value.semanticTransitions, value.terminalVariants,
+    value.rawTerritory.transitions, value.rawTerritory.uniqueStates, value.rawTerritory.dedupeHits,
+  ];
+  if (!numbers.every(canonicalCheckpointNumber)) return undefined;
+  return {
+    critical: {
+      runtimeErrors: value.critical.runtimeErrors,
+      assertionViolations: value.critical.assertionViolations,
+    },
+    intent: {
+      goalsReached: value.intent.goalsReached,
+      stagesReached: value.intent.stagesReached,
+    },
+    authoredCoverage: { knotsVisited: value.authoredCoverage.knotsVisited },
+    visibleOutcomes: value.visibleOutcomes,
+    semanticTransitions: value.semanticTransitions,
+    terminalVariants: value.terminalVariants,
+    rawTerritory: {
+      transitions: value.rawTerritory.transitions,
+      uniqueStates: value.rawTerritory.uniqueStates,
+      dedupeHits: value.rawTerritory.dedupeHits,
+    },
+  } as SharedYieldCountsV1;
+}
+
+function orderedSharedRetainedMemory(value: unknown): SharedRetainedMemory | undefined {
+  if (!exactCanonicalRecord(value, SHARED_RETAINED_MEMORY_KEYS)
+    || !SHARED_RETAINED_MEMORY_KEYS.every((key) => canonicalCheckpointNumber(value[key]))) {
+    return undefined;
+  }
+  return Object.fromEntries(
+    SHARED_RETAINED_MEMORY_KEYS.map((key) => [key, value[key]])
+  ) as unknown as SharedRetainedMemory;
+}
+
+function orderedRetentionBreakdownV1(value: unknown): RetentionBreakdownV1 | undefined {
+  if (!exactCanonicalRecord(value, SHARED_OBSERVABILITY_RETENTION_V1_KEYS)
+    || !canonicalCheckpointNumber(value.schemaVersion)
+    || !canonicalCheckpointNumber(value.releasedNodes)
+    || !canonicalCheckpointNumber(value.frontierCompactions)) {
+    return undefined;
+  }
+  const current = orderedSharedRetainedMemory(value.current);
+  const peak = orderedSharedRetainedMemory(value.peak);
+  if (!current || !peak) return undefined;
+  return {
+    schemaVersion: value.schemaVersion as 1,
+    current,
+    peak,
+    releasedNodes: value.releasedNodes,
+    frontierCompactions: value.frontierCompactions,
+  };
+}
+
+function orderedYieldIntervalV1(value: unknown): YieldIntervalV1 | undefined {
+  if (!exactCanonicalRecord(value, SHARED_OBSERVABILITY_YIELD_INTERVAL_V1_KEYS)
+    || !canonicalCheckpointNumber(value.schemaVersion)
+    || !canonicalCheckpointNumber(value.fromStateExclusive)
+    || !canonicalCheckpointNumber(value.throughState)) {
+    return undefined;
+  }
+  const delta = orderedSharedYieldCountsV1(value.delta);
+  const cumulative = orderedSharedYieldCountsV1(value.cumulative);
+  if (!delta || !cumulative) return undefined;
+  return {
+    schemaVersion: value.schemaVersion as 1,
+    fromStateExclusive: value.fromStateExclusive,
+    throughState: value.throughState,
+    delta,
+    cumulative,
+  };
+}
+
+function orderedResourceSampleV2(value: unknown): ResourceSampleV2 | undefined {
+  if (!exactCanonicalRecord(value, SHARED_OBSERVABILITY_SAMPLE_V2_KEYS)
+    || !canonicalCheckpointNumber(value.schemaVersion)
+    || !canonicalCheckpointNumber(value.sequence)
+    || !canonicalCheckpointNumber(value.triggerMask)
+    || !canonicalCheckpointNumber(value.state)
+    || !boundedDenseCanonicalArray(value.reasons, SHARED_OBSERVABILITY_REASON_ORDER_V2.length)
+    || value.reasons.length === 0
+    || !value.reasons.every((reason) => typeof reason === "string" && reason.length <= 64)
+    || !boundedDenseCanonicalArray(value.triggerYield, 8)
+    || value.triggerYield.length !== 8
+    || !value.triggerYield.every(canonicalCheckpointNumber)) {
+    return undefined;
+  }
+  const retention = orderedRetentionBreakdownV1(value.retention);
+  const yieldInterval = orderedYieldIntervalV1(value.yield);
+  if (!retention || !yieldInterval) return undefined;
+  return {
+    schemaVersion: value.schemaVersion as 2,
+    sequence: value.sequence,
+    reasons: [...value.reasons] as SharedObservabilityReasonV2[],
+    triggerMask: value.triggerMask,
+    triggerYield: [...value.triggerYield] as SharedObservabilityTriggerYieldV2,
+    state: value.state,
+    retention,
+    yield: yieldInterval,
+  };
+}
+
+function orderedSharedYieldTimingCategoryV2(
+  value: unknown
+): SharedYieldTimingCategoryV2 | undefined {
+  if (!exactCanonicalRecord(value, SHARED_YIELD_TIMING_CATEGORY_V2_KEYS)
+    || !canonicalCheckpointNumber(value.identities)
+    || !canonicalCheckpointNullableNumber(value.firstAtState)
+    || !canonicalCheckpointNullableNumber(value.lastAtState)
+    || !canonicalCheckpointNullableNumber(value.longestDryStates)
+    || !canonicalCheckpointNullableNumber(value.currentDryStates)
+    || !canonicalCheckpointNullableNumber(value.identitiesPerMillionTransitions)) {
+    return undefined;
+  }
+  return {
+    identities: value.identities,
+    firstAtState: value.firstAtState,
+    lastAtState: value.lastAtState,
+    longestDryStates: value.longestDryStates,
+    currentDryStates: value.currentDryStates,
+    identitiesPerMillionTransitions: value.identitiesPerMillionTransitions,
+  };
+}
+
+function orderedSharedYieldTimingV2(value: unknown): SharedYieldTimingV2 | undefined {
+  if (!exactCanonicalRecord(value, SHARED_YIELD_TIMING_V2_KEYS)
+    || !canonicalCheckpointNumber(value.schemaVersion)) {
+    return undefined;
+  }
+  const categories = SHARED_YIELD_TIMING_KEYS_V2.map((key) => (
+    orderedSharedYieldTimingCategoryV2(value[key])
+  ));
+  if (categories.some((category) => category === undefined)) return undefined;
+  return {
+    schemaVersion: value.schemaVersion as 2,
+    critical: categories[0]!,
+    intent: categories[1]!,
+    authoredCoverage: categories[2]!,
+    visibleOutcomes: categories[3]!,
+    semanticTransitions: categories[4]!,
+    terminalVariants: categories[5]!,
+  };
+}
+
+function orderedSharedObservabilityCheckpointV2Body(
+  value: unknown,
+  expectIntegrity: boolean
+): SharedObservabilityCheckpointV2Body | undefined {
+  const keys = expectIntegrity
+    ? SHARED_OBSERVABILITY_CHECKPOINT_V2_KEYS
+    : SHARED_OBSERVABILITY_CHECKPOINT_V2_BODY_KEYS;
+  if (!exactCanonicalRecord(value, keys)
+    || !canonicalCheckpointNumber(value.schemaVersion)
+    || !canonicalCheckpointNumber(value.sampleIntervalStates)
+    || !canonicalCheckpointNumber(value.samplesRecorded)
+    || !canonicalCheckpointNumber(value.cadenceSamplesRecorded)
+    || !canonicalCheckpointNumber(value.baseState)
+    || !canonicalCheckpointNumber(value.previousSampleState)
+    || !canonicalCheckpointNumber(value.nextSampleState)
+    || !canonicalCheckpointNullableNumber(value.firstUsefulAtState)
+    || !canonicalCheckpointNullableNumber(value.firstCriticalAtState)
+    || typeof value.historyComplete !== "boolean"
+    || typeof value.eventHistoryComplete !== "boolean"
+    || !boundedDenseCanonicalArray(value.samples, MAX_SHARED_OBSERVABILITY_SAMPLES)) {
+    return undefined;
+  }
+  const samples: ResourceSampleV2[] = [];
+  for (const sampleValue of value.samples) {
+    const sample = orderedResourceSampleV2(sampleValue);
+    if (!sample) return undefined;
+    samples.push(sample);
+  }
+  const baseYield = orderedSharedYieldCountsV1(value.baseYield);
+  const previousYield = orderedSharedYieldCountsV1(value.previousYield);
+  const throughFirstUseful = orderedSharedYieldCountsV1(value.throughFirstUseful);
+  const timing = orderedSharedYieldTimingV2(value.timing);
+  if (!baseYield || !previousYield || !throughFirstUseful || !timing) return undefined;
+  return {
+    schemaVersion: value.schemaVersion as 2,
+    sampleIntervalStates: value.sampleIntervalStates,
+    samplesRecorded: value.samplesRecorded,
+    cadenceSamplesRecorded: value.cadenceSamplesRecorded,
+    samples,
+    baseState: value.baseState,
+    baseYield,
+    previousSampleState: value.previousSampleState,
+    previousYield,
+    nextSampleState: value.nextSampleState,
+    firstUsefulAtState: value.firstUsefulAtState,
+    firstCriticalAtState: value.firstCriticalAtState,
+    throughFirstUseful,
+    historyComplete: value.historyComplete,
+    eventHistoryComplete: value.eventHistoryComplete,
+    timing,
+  };
+}
+
+function sharedObservabilityCheckpointV2IntegritySha256(
+  value: unknown,
+  expectIntegrity: boolean
+): string | undefined {
+  try {
+    const ordered = orderedSharedObservabilityCheckpointV2Body(value, expectIntegrity);
+    if (!ordered) return undefined;
+    return createHash("sha256")
+      .update(SHARED_OBSERVABILITY_CHECKPOINT_V2_INTEGRITY_DOMAIN)
+      .update(JSON.stringify(ordered))
+      .digest("hex");
+  } catch {
+    return undefined;
+  }
+}
+
 function validSharedYieldCounts(value: SharedYieldCountsV1 | undefined): boolean {
   if (!value || !value.critical || !value.intent || !value.authoredCoverage || !value.rawTerritory) return false;
   return [
@@ -2060,6 +2691,67 @@ function sharedRetainedMemoryAtMost(left: SharedRetainedMemory, right: SharedRet
 function sharedRetainedCurrentTotalIsExact(value: SharedRetainedMemory): boolean {
   const total = SHARED_RETAINED_BYTE_KEYS.reduce((sum, key) => sum + value[key], 0);
   return Number.isSafeInteger(total) && value.totalAccountedBytes === total;
+}
+
+function validSharedObservabilityReasonsV2(value: unknown): value is SharedObservabilityReasonV2[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > SHARED_OBSERVABILITY_REASON_ORDER_V2.length) {
+    return false;
+  }
+  let priorRank = -1;
+  for (const reason of value) {
+    if (typeof reason !== "string") return false;
+    const rank = SHARED_OBSERVABILITY_REASON_RANK_V2.get(reason as SharedObservabilityReasonV2);
+    if (rank === undefined || rank <= priorRank) return false;
+    priorRank = rank;
+  }
+  return true;
+}
+
+function validSharedYieldTimingV2(
+  timing: SharedYieldTimingV2 | undefined,
+  cumulative: SharedYieldCountsV1,
+  state: number,
+  eventHistoryComplete: boolean
+): boolean {
+  if (!timing || timing.schemaVersion !== 2) return false;
+  for (const key of SHARED_YIELD_TIMING_KEYS_V2) {
+    const category = timing[key];
+    if (!category || !Number.isSafeInteger(category.identities) || category.identities < 0
+      || category.identities !== sharedYieldCategoryIdentitiesV2(cumulative, key)
+      || (category.firstAtState !== null
+        && (!Number.isSafeInteger(category.firstAtState) || category.firstAtState < 0 || category.firstAtState > state))
+      || (category.lastAtState !== null
+        && (!Number.isSafeInteger(category.lastAtState) || category.lastAtState < 0 || category.lastAtState > state))
+      || (category.firstAtState !== null && category.lastAtState !== null
+        && category.firstAtState > category.lastAtState)
+      || (category.longestDryStates !== null
+        && (!Number.isSafeInteger(category.longestDryStates)
+          || category.longestDryStates < 0 || category.longestDryStates > state))
+      || (category.currentDryStates !== null
+        && (!Number.isSafeInteger(category.currentDryStates) || category.currentDryStates < 0))
+      || (category.lastAtState === null
+        ? category.currentDryStates !== null
+        : category.currentDryStates !== state - category.lastAtState)
+      || (category.longestDryStates !== null && category.currentDryStates !== null
+        && category.longestDryStates < category.currentDryStates)
+      || (category.identities === 0
+        && (category.firstAtState !== null || category.lastAtState !== null
+          || category.currentDryStates !== null
+          || (eventHistoryComplete
+            ? category.longestDryStates !== 0
+            : category.longestDryStates !== null)))
+      || (category.firstAtState !== null && category.lastAtState === null)
+      || (category.identitiesPerMillionTransitions !== timingRateV2(category.identities, state))) {
+      return false;
+    }
+    if (eventHistoryComplete) {
+      if (category.identities > 0 && (category.firstAtState === null || category.lastAtState === null
+        || category.longestDryStates === null)) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 function sharedCheckpointYieldCounts(
@@ -2109,7 +2801,24 @@ function validateSharedCheckpoint(
     fail("source, strategy, limits, seeds, state sensitivity, randomness, frontier envelope, or external bindings changed");
   }
   const state = checkpoint.state;
-  if (!state || typeof state !== "object" || !Array.isArray(state.nodes)) fail("state and nodes are required");
+  if (!state || typeof state !== "object") fail("state and nodes are required");
+  const sharedObservability = state.sharedObservability;
+  if (sharedObservability?.schemaVersion === 2) {
+    if (!exactCanonicalRecord(sharedObservability, SHARED_OBSERVABILITY_CHECKPOINT_V2_KEYS)
+      || typeof sharedObservability.integritySha256 !== "string"
+      || !/^[0-9a-f]{64}$/.test(sharedObservability.integritySha256)) {
+      fail("shared observability v2 integrity checksum is missing or malformed");
+    }
+    const expectedIntegrity = sharedObservabilityCheckpointV2IntegritySha256(
+      sharedObservability,
+      true
+    );
+    if (!expectedIntegrity) fail("shared observability v2 canonical shape is malformed");
+    if (expectedIntegrity !== sharedObservability.integritySha256) {
+      fail("shared observability v2 integrity checksum mismatch");
+    }
+  }
+  if (!Array.isArray(state.nodes)) fail("state and nodes are required");
   const arrays: Array<[unknown, string]> = [
     [state.endings, "endings"], [state.visibleOutcomes, "visible outcomes"],
     [state.runtimeErrors, "runtime errors"], [state.runtimeWarnings, "runtime warnings"],
@@ -2158,8 +2867,8 @@ function validateSharedCheckpoint(
       fail(`active node ${id} is missing serialized state`);
     }
   }
-  if (state.sharedObservability !== undefined) {
-    const observation = state.sharedObservability;
+  if (sharedObservability?.schemaVersion === 1) {
+    const observation = sharedObservability;
     const currentYield = sharedCheckpointYieldCounts(state);
     if (observation.schemaVersion !== 1
       || !Number.isSafeInteger(observation.sampleIntervalStates) || observation.sampleIntervalStates < 1
@@ -2300,6 +3009,198 @@ function validateSharedCheckpoint(
       || previousFrontierCompactions > state.frontierCompactions) {
       fail("shared observability sample cursor does not match its ledger");
     }
+  }
+  if (sharedObservability?.schemaVersion === 2) {
+    const observation = sharedObservability;
+    const currentYield = sharedCheckpointYieldCounts(state);
+    const interval = observation.sampleIntervalStates;
+    const expectedCadenceSamples = Number.isSafeInteger(interval) && interval > 0
+      ? Math.floor(state.statesExplored / interval) - Math.floor(observation.baseState / interval)
+      : -1;
+    if (!Number.isSafeInteger(interval) || interval < 1 || interval > 10_000_000
+      || !Number.isSafeInteger(observation.samplesRecorded) || observation.samplesRecorded < 0
+      || !Number.isSafeInteger(observation.cadenceSamplesRecorded) || observation.cadenceSamplesRecorded < 0
+      || observation.cadenceSamplesRecorded !== expectedCadenceSamples
+      || observation.samplesRecorded < observation.cadenceSamplesRecorded
+      || !Array.isArray(observation.samples) || observation.samples.length > MAX_SHARED_OBSERVABILITY_SAMPLES
+      || observation.samplesRecorded < observation.samples.length
+      || (observation.samplesRecorded === 0) !== (observation.samples.length === 0)
+      || observation.samplesRecorded > state.statesExplored - observation.baseState
+      || (observation.samplesRecorded <= MAX_SHARED_OBSERVABILITY_SAMPLES
+        && observation.samples.length !== observation.samplesRecorded)
+      || (observation.samples.length > 0 && observation.samples[0]?.sequence !== 1)
+      || !Number.isSafeInteger(observation.baseState) || observation.baseState < 0
+      || observation.baseState > state.statesExplored
+      || !Number.isSafeInteger(observation.previousSampleState)
+      || observation.previousSampleState < observation.baseState
+      || observation.previousSampleState > state.statesExplored
+      || !Number.isSafeInteger(observation.nextSampleState)
+      || observation.nextSampleState !== (Math.floor(state.statesExplored / interval) + 1) * interval
+      || typeof observation.historyComplete !== "boolean"
+      || typeof observation.eventHistoryComplete !== "boolean"
+      || !validSharedYieldCounts(observation.baseYield)
+      || !validSharedYieldCounts(observation.previousYield)
+      || !validSharedYieldCounts(observation.throughFirstUseful)
+      || observation.baseYield.rawTerritory.transitions !== observation.baseState
+      || observation.previousYield.rawTerritory.transitions !== observation.previousSampleState
+      || !validSharedRetainedMemory(state.peakRetainedMemory)
+      || !sharedYieldCountsAtMost(observation.baseYield, observation.previousYield)
+      || !sharedYieldCountsAtMost(observation.previousYield, currentYield)
+      || !sharedYieldCountsAtMost(observation.throughFirstUseful, currentYield)
+      || (observation.historyComplete && observation.baseState !== 0)
+      || (observation.eventHistoryComplete && !observation.historyComplete)
+      || !validSharedYieldTimingV2(
+        observation.timing,
+        currentYield,
+        state.statesExplored,
+        observation.eventHistoryComplete
+      )
+      || (observation.firstUsefulAtState !== null
+        && (!Number.isSafeInteger(observation.firstUsefulAtState)
+          || observation.firstUsefulAtState < 0 || observation.firstUsefulAtState > state.statesExplored))
+      || (observation.firstCriticalAtState !== null
+        && (!Number.isSafeInteger(observation.firstCriticalAtState)
+          || observation.firstCriticalAtState < 0 || observation.firstCriticalAtState > state.statesExplored))) {
+      fail("shared observability v2 ledger is malformed");
+    }
+
+    const runtimeErrorStates = state.runtimeErrors.map(([, error]) => error?.firstDiscoveredAtState);
+    if (runtimeErrorStates.some((value) => !Number.isSafeInteger(value)
+      || value! < 0 || value! > state.statesExplored)) {
+      fail("runtime error discovery state is malformed");
+    }
+    const expectedFirstCritical = runtimeErrorStates.length > 0
+      ? Math.min(...runtimeErrorStates as number[])
+      : null;
+    const currentUseful = usefulYieldObserved(currentYield);
+    const baseUseful = usefulYieldObserved(observation.baseYield);
+    const firstUseful = observation.firstUsefulAtState;
+    const firstCritical = observation.firstCriticalAtState;
+    const emptyYield = emptySharedYieldCounts();
+    if (firstCritical !== expectedFirstCritical
+      || (firstCritical !== null && (firstUseful === null || firstUseful > firstCritical))) {
+      fail("shared observability v2 critical milestone is inconsistent");
+    }
+    if (!currentUseful) {
+      if (firstUseful !== null || !sharedYieldCountsEqual(observation.throughFirstUseful, emptyYield)) {
+        fail("shared observability v2 useful milestone is inconsistent");
+      }
+    } else if (firstUseful === null) {
+      fail("shared observability v2 useful milestone is missing");
+    } else if (baseUseful) {
+      if (firstUseful > observation.baseState
+        || !sharedYieldCountsEqual(observation.throughFirstUseful, observation.baseYield)) {
+        fail("shared observability v2 baseline milestone is inconsistent");
+      }
+    } else if (firstUseful <= observation.baseState
+      || !usefulYieldObserved(observation.throughFirstUseful)
+      || observation.throughFirstUseful.rawTerritory.transitions !== firstUseful) {
+      fail("shared observability v2 post-baseline milestone is inconsistent");
+    }
+
+    let previousState = observation.baseState;
+    let previousYield = observation.baseYield;
+    let previousSequence = 0;
+    let previousPeak: SharedRetainedMemory | undefined;
+    let previousReleasedNodes = 0;
+    let previousFrontierCompactions = 0;
+    for (const sample of observation.samples) {
+      const reasons = sample?.reasons;
+      const isCadence = Array.isArray(reasons) && reasons.includes("cadence");
+      const delta = sample?.yield?.delta;
+      const yieldReasons = Array.isArray(reasons)
+        ? reasons.filter((reason) => {
+            const rank = SHARED_OBSERVABILITY_REASON_RANK_V2.get(reason as SharedObservabilityReasonV2);
+            return rank !== undefined && rank >= 1 && rank <= 8;
+          })
+        : [];
+      const expectedYieldReasons = validSharedObservabilityTriggerYieldV2(sample?.triggerYield)
+        ? sharedObservabilityReasonsForTriggerYieldV2(sample.triggerYield)
+        : [];
+      const expectedTriggerMask = validSharedObservabilityReasonsV2(reasons)
+        ? sharedObservabilityTriggerMaskV2(reasons)
+        : 0;
+      const cadenceOrdinal = Number.isSafeInteger(sample?.state) && Number.isSafeInteger(interval) && interval > 0
+        ? Math.floor(sample.state / interval) - Math.floor(observation.baseState / interval)
+        : -1;
+      const minimumSequence = cadenceOrdinal + (isCadence ? 0 : 1);
+      const recordsAfter = observation.samplesRecorded - (sample?.sequence ?? observation.samplesRecorded + 1);
+      const cadenceRecordsAfter = expectedCadenceSamples - cadenceOrdinal;
+      if (!sample || sample.schemaVersion !== 2
+        || !Number.isSafeInteger(sample.sequence) || sample.sequence <= previousSequence
+        || sample.sequence > observation.samplesRecorded
+        || sample.sequence < minimumSequence
+        || sample.sequence > sample.state - observation.baseState
+        || recordsAfter < cadenceRecordsAfter
+        || recordsAfter > state.statesExplored - sample.state
+        || (observation.samplesRecorded <= MAX_SHARED_OBSERVABILITY_SAMPLES
+          && sample.sequence !== previousSequence + 1)
+        || !validSharedObservabilityReasonsV2(reasons)
+        || !Number.isSafeInteger(sample.triggerMask) || sample.triggerMask < 1
+        || sample.triggerMask > SHARED_OBSERVABILITY_TRIGGER_MASK_MAX_V2
+        || sample.triggerMask !== expectedTriggerMask
+        || !validSharedObservabilityTriggerYieldV2(sample.triggerYield)
+        || reasons.includes("termination") || reasons.includes("frontier_ceiling")
+        || reasons.includes("checkpoint") || reasons.includes("epoch") || reasons.includes("pressure")
+        || !Number.isSafeInteger(sample.state) || sample.state <= previousState
+        || sample.state > state.statesExplored
+        || (isCadence !== (sample.state % interval === 0))
+        || !sample.retention || sample.retention.schemaVersion !== 1
+        || !validSharedRetainedMemory(sample.retention.current)
+        || !validSharedRetainedMemory(sample.retention.peak)
+        || !sharedRetainedCurrentTotalIsExact(sample.retention.current)
+        || !sharedRetainedMemoryAtMost(sample.retention.current, sample.retention.peak)
+        || (previousPeak !== undefined && !sharedRetainedMemoryAtMost(previousPeak, sample.retention.peak))
+        || !Number.isSafeInteger(sample.retention.releasedNodes) || sample.retention.releasedNodes < previousReleasedNodes
+        || !Number.isSafeInteger(sample.retention.frontierCompactions)
+        || sample.retention.frontierCompactions < previousFrontierCompactions
+        || (reasons.includes("frontier_compaction")
+          && sample.retention.frontierCompactions === previousFrontierCompactions)
+        || !sample.yield || sample.yield.schemaVersion !== 1
+        || sample.yield.fromStateExclusive !== previousState
+        || sample.yield.throughState !== sample.state
+        || !validSharedYieldCounts(delta)
+        || !validSharedYieldCounts(sample.yield.cumulative)
+        || sample.yield.cumulative.rawTerritory.transitions !== sample.state
+        || !sharedYieldCountsAtMost(previousYield, sample.yield.cumulative)
+        || !sharedYieldCountsEqual(delta, subtractSharedYieldCounts(sample.yield.cumulative, previousYield))
+        || (observation.eventHistoryComplete && sample.sequence === previousSequence + 1
+          ? !sharedObservabilityTriggerYieldEqualV2(sample.triggerYield, delta)
+          : !sharedObservabilityTriggerYieldAtMostV2(sample.triggerYield, delta))
+        || yieldReasons.length !== expectedYieldReasons.length
+        || yieldReasons.some((reason, index) => reason !== expectedYieldReasons[index])) {
+        fail("shared observability v2 samples are malformed or out of order");
+      }
+      if (!baseUseful && firstUseful !== null) {
+        if (sample.state < firstUseful && usefulYieldObserved(sample.yield.cumulative)) {
+          fail("shared observability v2 useful milestone is later than retained useful yield");
+        }
+        if (sample.state >= firstUseful
+          && !sharedYieldCountsAtMost(observation.throughFirstUseful, sample.yield.cumulative)) {
+          fail("shared observability v2 useful milestone exceeds retained cumulative yield");
+        }
+      }
+      previousState = sample.state;
+      previousYield = sample.yield.cumulative;
+      previousSequence = sample.sequence;
+      previousPeak = sample.retention.peak;
+      previousReleasedNodes = sample.retention.releasedNodes;
+      previousFrontierCompactions = sample.retention.frontierCompactions;
+    }
+    if ((observation.samples.length > 0 && previousSequence !== observation.samplesRecorded)
+      || previousState !== observation.previousSampleState
+      || !sharedYieldCountsEqual(previousYield, observation.previousYield)
+      || (previousPeak !== undefined && !sharedRetainedMemoryAtMost(previousPeak, state.peakRetainedMemory))
+      || previousReleasedNodes > state.releasedNodes
+      || previousFrontierCompactions > state.frontierCompactions) {
+      fail("shared observability v2 sample cursor does not match its ledger");
+    }
+  }
+  if (sharedObservability !== undefined
+    && ![1, 2].includes((sharedObservability as { schemaVersion: number }).schemaVersion)) {
+    fail(`unsupported shared observability schema ${String(
+      (sharedObservability as { schemaVersion: number }).schemaVersion
+    )}`);
   }
   const childCounts = new Array<number>(state.nodes.length).fill(0);
   for (const node of state.nodes) {
@@ -2556,8 +3457,56 @@ function createSharedEngine(
   };
 
   const restoredObservability = restored?.sharedObservability;
-  let observabilitySamples = restoredObservability?.samples.map((sample) => cloneJsonValue(sample)) ?? [];
-  let observabilitySamplesRecorded = restoredObservability?.samplesRecorded ?? 0;
+  const restoredObservabilityV2: SharedObservabilityCheckpointV2Body | undefined =
+    restoredObservability?.schemaVersion === 2
+      ? restoredObservability
+      : restoredObservability?.schemaVersion === 1
+        ? {
+            schemaVersion: 2,
+            sampleIntervalStates: restoredObservability.sampleIntervalStates,
+            samplesRecorded: restoredObservability.samplesRecorded,
+            cadenceSamplesRecorded: restoredObservability.samplesRecorded,
+            samples: restoredObservability.samples.map((sample): ResourceSampleV2 => {
+              const reasons = canonicalSharedObservabilityReasonsV2([
+                ...(sample.boundary === "interval" || sample.boundary === "interval_and_termination"
+                  ? ["cadence" as const] : []),
+                ...(sample.boundary === "termination" || sample.boundary === "interval_and_termination"
+                  ? ["termination" as const] : []),
+              ]);
+              return {
+                schemaVersion: 2,
+                sequence: Math.floor(sample.state / restoredObservability.sampleIntervalStates)
+                  - Math.floor(restoredObservability.baseState / restoredObservability.sampleIntervalStates),
+                reasons,
+                triggerMask: sharedObservabilityTriggerMaskV2(reasons),
+                // V1 recorded only cadence boundaries. Zero means no V1 event
+                // trigger was recorded, not that no event occurred in the interval.
+                triggerYield: emptySharedObservabilityTriggerYieldV2(),
+                state: sample.state,
+                retention: cloneJsonValue(sample.retention),
+                yield: cloneJsonValue(sample.yield),
+              };
+            }),
+            baseState: restoredObservability.baseState,
+            baseYield: cloneSharedYieldCounts(restoredObservability.baseYield),
+            previousSampleState: restoredObservability.previousSampleState,
+            previousYield: cloneSharedYieldCounts(restoredObservability.previousYield),
+            nextSampleState: restoredObservability.nextSampleState,
+            firstUsefulAtState: restoredObservability.firstUsefulAtState,
+            firstCriticalAtState: restoredObservability.firstCriticalAtState,
+            throughFirstUseful: cloneSharedYieldCounts(restoredObservability.throughFirstUseful),
+            historyComplete: restoredObservability.historyComplete,
+            eventHistoryComplete: false,
+            timing: migratedSharedYieldTimingV2(
+              sharedCheckpointYieldCounts(restored!),
+              restored?.statesExplored ?? 0
+            ),
+          }
+        : undefined;
+  let observabilitySamples: ResourceSampleV2[] = restoredObservabilityV2?.samples
+    .map((sample) => cloneJsonValue(sample)) ?? [];
+  let observabilitySamplesRecorded = restoredObservabilityV2?.samplesRecorded ?? 0;
+  let observabilityCadenceSamplesRecorded = restoredObservabilityV2?.cadenceSamplesRecorded ?? 0;
   let observabilityBaseState = restoredObservability?.baseState ?? statesExplored;
   let observabilityBaseYield = restoredObservability
     ? cloneSharedYieldCounts(restoredObservability.baseYield)
@@ -2574,6 +3523,10 @@ function createSharedEngine(
     ? cloneSharedYieldCounts(restoredObservability.throughFirstUseful)
     : emptySharedYieldCounts();
   const observabilityHistoryComplete = restoredObservability?.historyComplete ?? !checkpoint;
+  const observabilityEventHistoryComplete = restoredObservabilityV2?.eventHistoryComplete ?? !checkpoint;
+  let observabilityTiming = restoredObservabilityV2
+    ? cloneSharedYieldTimingV2(restoredObservabilityV2.timing)
+    : emptySharedYieldTimingV2();
 
   const sharedYieldCounts = (): SharedYieldCountsV1 => ({
     critical: {
@@ -2606,6 +3559,31 @@ function createSharedEngine(
     }
   };
 
+  let lastEventObservedYield = restored
+    ? cloneSharedYieldCounts(sharedCheckpointYieldCounts(restored!))
+    : emptySharedYieldCounts();
+
+  const updateSharedYieldTiming = (current: SharedYieldCountsV1): void => {
+    for (const key of SHARED_YIELD_TIMING_KEYS_V2) {
+      const nextIdentities = sharedYieldCategoryIdentitiesV2(current, key);
+      const category = observabilityTiming[key];
+      if (nextIdentities <= category.identities) continue;
+      if (category.identities === 0 && category.firstAtState === null) {
+        category.firstAtState = statesExplored;
+      }
+      if (category.lastAtState !== null && category.longestDryStates !== null) {
+        category.longestDryStates = Math.max(
+          category.longestDryStates,
+          statesExplored - category.lastAtState
+        );
+      }
+      category.lastAtState = statesExplored;
+      category.identities = nextIdentities;
+      category.currentDryStates = 0;
+      category.identitiesPerMillionTransitions = timingRateV2(nextIdentities, statesExplored);
+    }
+  };
+
   const rebuildRetainedYieldIntervals = (): void => {
     let previousState = observabilityBaseState;
     let previousYield = observabilityBaseYield;
@@ -2623,20 +3601,58 @@ function createSharedEngine(
     const last = observabilitySamples[observabilitySamples.length - 1];
     const interior = observabilitySamples.slice(1, -1).filter((_, index) => index % 2 === 1);
     observabilitySamples = [first, ...interior, last];
+    // Retained trigger masks and semantic tuples stay boundary-local; only the
+    // interval yield widens across records removed by deterministic compaction.
     rebuildRetainedYieldIntervals();
   };
 
+  let pendingLiveObservation: ResourceSampleV2 | undefined;
+  const emitPendingLiveObservation = (): void => {
+    if (!pendingLiveObservation) return;
+    const sample = pendingLiveObservation;
+    pendingLiveObservation = undefined;
+    opts.onSharedObservability?.({
+      schemaVersion: 2,
+      pass: foundBy,
+      runWideState: sample.state,
+      sample: cloneJsonValue(sample),
+      process: observeProcessMemory(sample.retention.current.totalAccountedBytes),
+    });
+  };
+  const emitClosedLiveObservation = (): void => {
+    if (pendingLiveObservation && statesExplored > pendingLiveObservation.state) {
+      emitPendingLiveObservation();
+    }
+  };
+
   const recordObservabilitySample = (
-    boundary: ResourceSampleV1["boundary"]
-  ): ResourceSampleV1 => {
-    refreshFindingBytes();
+    requestedReasons: Iterable<SharedObservabilityReasonV2>,
+    triggerYield = emptySharedObservabilityTriggerYieldV2()
+  ): ResourceSampleV2 => {
+    const reasons = canonicalSharedObservabilityReasonsV2(requestedReasons);
+    if (reasons.length === 0) throw new Error("shared observability sample requires a reason");
+    if (reasons.includes("cadence") || reasons.includes("termination")) refreshFindingBytes();
     observeRetainedMemory();
     const currentRetention = retainedMemory();
     const cumulativeYield = sharedYieldCounts();
     observeYieldMilestones(cumulativeYield);
-    const sample: ResourceSampleV1 = {
-      schemaVersion: 1,
-      boundary,
+    const latest = observabilitySamples.at(-1);
+    const sameState = latest?.state === statesExplored;
+    const priorYield = sameState
+      ? subtractSharedYieldCounts(latest.yield.cumulative, latest.yield.delta)
+      : previousObservabilityYield;
+    const sampleReasons = sameState
+      ? canonicalSharedObservabilityReasonsV2([...latest.reasons, ...reasons])
+      : reasons;
+    const sampleTriggerYield = sameState
+      ? addSharedObservabilityTriggerYieldV2(latest.triggerYield, triggerYield)
+      : [...triggerYield] as SharedObservabilityTriggerYieldV2;
+    const sample: ResourceSampleV2 = {
+      schemaVersion: 2,
+      sequence: sameState ? latest.sequence : observabilitySamplesRecorded + 1,
+      reasons: sampleReasons,
+      triggerMask: sharedObservabilityTriggerMaskV2(sampleReasons),
+      triggerYield: sampleTriggerYield,
       state: statesExplored,
       retention: {
         schemaVersion: 1,
@@ -2647,51 +3663,50 @@ function createSharedEngine(
       },
       yield: {
         schemaVersion: 1,
-        fromStateExclusive: previousObservabilityState,
+        fromStateExclusive: sameState ? latest.yield.fromStateExclusive : previousObservabilityState,
         throughState: statesExplored,
-        delta: subtractSharedYieldCounts(cumulativeYield, previousObservabilityYield),
+        delta: subtractSharedYieldCounts(cumulativeYield, priorYield),
         cumulative: cloneSharedYieldCounts(cumulativeYield),
       },
     };
-    const latest = observabilitySamples.at(-1);
-    if (latest?.state === statesExplored && boundary === "termination") {
-      sample.boundary = latest.boundary === "interval" ? "interval_and_termination" : "termination";
-      sample.yield.fromStateExclusive = latest.yield.fromStateExclusive;
-      sample.yield.delta = cloneSharedYieldCounts(latest.yield.delta);
+    if (sameState) {
       observabilitySamples[observabilitySamples.length - 1] = sample;
     } else {
       observabilitySamples.push(sample);
       observabilitySamplesRecorded++;
-      previousObservabilityState = statesExplored;
-      previousObservabilityYield = cloneSharedYieldCounts(cumulativeYield);
       compactObservabilitySamples();
     }
-    opts.onSharedObservability?.({
-      schemaVersion: 1,
-      pass: foundBy,
-      runWideState: statesExplored,
-      sample: cloneJsonValue(sample),
-      process: observeProcessMemory(currentRetention.totalAccountedBytes),
-    });
+    previousObservabilityState = statesExplored;
+    previousObservabilityYield = cloneSharedYieldCounts(cumulativeYield);
+    if (reasons.includes("cadence") || pendingLiveObservation?.sequence === sample.sequence) {
+      pendingLiveObservation = sample;
+    }
+    if (reasons.includes("termination")) {
+      pendingLiveObservation = sample;
+      emitPendingLiveObservation();
+    }
     return sample;
   };
 
   const maybeRecordObservabilityInterval = (): void => {
     if (statesExplored < nextObservabilityState) return;
-    recordObservabilitySample("interval");
+    observabilityCadenceSamplesRecorded++;
+    recordObservabilitySample(["cadence"]);
     nextObservabilityState = (Math.floor(statesExplored / observabilityIntervalStates) + 1)
       * observabilityIntervalStates;
   };
 
-  const sharedObservabilityTelemetry = (): SharedObservabilityTelemetryV1 => {
+  const sharedObservabilityTelemetry = (): SharedObservabilityTelemetryV2 => {
     const cumulative = sharedYieldCounts();
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sampleIntervalStates: observabilityIntervalStates,
       samplesRecorded: observabilitySamplesRecorded,
+      cadenceSamplesRecorded: observabilityCadenceSamplesRecorded,
       samplesRetained: observabilitySamples.length,
       samplesCompacted: Math.max(0, observabilitySamplesRecorded - observabilitySamples.length),
       historyComplete: observabilityHistoryComplete,
+      eventHistoryComplete: observabilityEventHistoryComplete,
       samples: observabilitySamples.map((sample) => cloneJsonValue(sample)),
       yieldSummary: {
         schemaVersion: 1,
@@ -2703,6 +3718,7 @@ function createSharedEngine(
           : subtractSharedYieldCounts(cumulative, throughFirstUseful),
         cumulative: cloneSharedYieldCounts(cumulative),
       },
+      timing: snapshotSharedYieldTimingV2(observabilityTiming, statesExplored),
     };
   };
 
@@ -2717,11 +3733,19 @@ function createSharedEngine(
       stagesReached: goals.reachedStageCount(),
       uniqueStatesObserved: seenStates.size,
     });
-    observeYieldMilestones();
+    const currentYield = sharedYieldCounts();
+    observeYieldMilestones(currentYield);
     if (observed) {
       lastDiscoveryAtState = statesExplored;
       refreshFindingBytes();
       observeRetainedMemory();
+    }
+    const eventDelta = subtractSharedYieldCounts(currentYield, lastEventObservedYield);
+    const reasons = sharedObservabilityReasonsForYieldDeltaV2(eventDelta);
+    updateSharedYieldTiming(currentYield);
+    lastEventObservedYield = cloneSharedYieldCounts(currentYield);
+    if (reasons.length > 0 && statesExplored > observabilityBaseState) {
+      recordObservabilitySample(reasons, sharedObservabilityTriggerYieldV2(eventDelta));
     }
   };
 
@@ -2802,7 +3826,10 @@ function createSharedEngine(
     novelty.compact(valid);
     variablePriority.compact(valid);
     goalPriority.compact(valid);
-    if (frontierReferenceCount() < references) frontierCompactions++;
+    if (frontierReferenceCount() < references) {
+      frontierCompactions++;
+      recordObservabilitySample(["frontier_compaction"]);
+    }
     observeRetainedMemory();
   };
 
@@ -2826,6 +3853,7 @@ function createSharedEngine(
       frontierStopped = true;
       truncated = true;
       truncatedBy.frontier = true;
+      recordObservabilitySample(["frontier_ceiling"]);
       return false;
     }
     const id = nodes.length;
@@ -2962,6 +3990,8 @@ function createSharedEngine(
     const baseline = sharedYieldCounts();
     observabilityBaseYield = cloneSharedYieldCounts(baseline);
     previousObservabilityYield = cloneSharedYieldCounts(baseline);
+    lastEventObservedYield = cloneSharedYieldCounts(baseline);
+    observabilityTiming = migratedSharedYieldTimingV2(baseline, statesExplored);
     const priorFirst = discoveryCurve.summary(statesExplored).firstDiscoveryAtState;
     if (usefulYieldObserved(baseline)) {
       // Older schema-v1 checkpoints may prove that useful evidence already
@@ -3259,6 +4289,34 @@ function createSharedEngine(
     if (done() || memoryStopped || timeStopped) {
       throw new RangeError("Shared search cannot checkpoint after completion or a resource stop");
     }
+    const sharedObservabilityBody: SharedObservabilityCheckpointV2Body = {
+      schemaVersion: 2,
+      sampleIntervalStates: observabilityIntervalStates,
+      samplesRecorded: observabilitySamplesRecorded,
+      cadenceSamplesRecorded: observabilityCadenceSamplesRecorded,
+      samples: observabilitySamples.map((sample) => cloneJsonValue(sample)),
+      baseState: observabilityBaseState,
+      baseYield: cloneSharedYieldCounts(observabilityBaseYield),
+      previousSampleState: previousObservabilityState,
+      previousYield: cloneSharedYieldCounts(previousObservabilityYield),
+      nextSampleState: nextObservabilityState,
+      firstUsefulAtState,
+      firstCriticalAtState,
+      throughFirstUseful: cloneSharedYieldCounts(throughFirstUseful),
+      historyComplete: observabilityHistoryComplete,
+      eventHistoryComplete: observabilityEventHistoryComplete,
+      timing: snapshotSharedYieldTimingV2(observabilityTiming, statesExplored),
+    };
+    const orderedSharedObservabilityBody = orderedSharedObservabilityCheckpointV2Body(
+      sharedObservabilityBody,
+      false
+    );
+    const integritySha256 = orderedSharedObservabilityBody
+      ? sharedObservabilityCheckpointV2IntegritySha256(orderedSharedObservabilityBody, false)
+      : undefined;
+    if (!orderedSharedObservabilityBody || !integritySha256) {
+      throw new Error("Shared observability v2 checkpoint could not be canonicalized");
+    }
     const value: SharedSearchCheckpoint = {
       schemaVersion: SHARED_SEARCH_CHECKPOINT_SCHEMA_VERSION,
       engine: "shared:deep-novelty-v1",
@@ -3308,21 +4366,7 @@ function createSharedEngine(
         findingBytes,
         ancestryPayloadBytes,
         peakRetainedMemory: { ...peakRetainedMemory },
-        sharedObservability: {
-          schemaVersion: 1,
-          sampleIntervalStates: observabilityIntervalStates,
-          samplesRecorded: observabilitySamplesRecorded,
-          samples: observabilitySamples.map((sample) => cloneJsonValue(sample)),
-          baseState: observabilityBaseState,
-          baseYield: cloneSharedYieldCounts(observabilityBaseYield),
-          previousSampleState: previousObservabilityState,
-          previousYield: cloneSharedYieldCounts(previousObservabilityYield),
-          nextSampleState: nextObservabilityState,
-          firstUsefulAtState,
-          firstCriticalAtState,
-          throughFirstUseful: cloneSharedYieldCounts(throughFirstUseful),
-          historyComplete: observabilityHistoryComplete,
-        },
+        sharedObservability: { ...orderedSharedObservabilityBody, integritySha256 },
       },
     };
     return cloneJsonValue(value);
@@ -3347,7 +4391,13 @@ function createSharedEngine(
             break;
           }
         }
-        if (!advance()) break;
+        const advanced = advance();
+        // A successful transition closes the preceding pass-local state. Emit
+        // its pending cadence observation only after the new transition is
+        // fully integrated, so callback failure cannot strand a half-applied
+        // story step. A no-work advance leaves it pending for termination.
+        emitClosedLiveObservation();
+        if (!advanced) break;
         // Compaction timing is part of frontier order. Tie it to cumulative
         // work, not caller chunk boundaries, so pause/resume cannot perturb it.
         if (statesExplored > 0 && statesExplored % 1_000 === 0) compactFrontiers();
@@ -3373,7 +4423,7 @@ function createSharedEngine(
         truncatedBy.maxStates = true;
       }
       compactFrontiers(true);
-      recordObservabilitySample("termination");
+      recordObservabilitySample(["termination"]);
       return buildResult();
     },
     telemetry(): PassTelemetry {
