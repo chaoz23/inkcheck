@@ -97,6 +97,76 @@ function assertSharedObservabilityCheckpointIntegrity(observability) {
   );
 }
 
+function sharedOwnerLedgerProjection(observability) {
+  const timingCategory = (value) => ({
+    identities: value.identities,
+    firstAtState: value.firstAtState,
+    lastAtState: value.lastAtState,
+    longestDryStates: value.longestDryStates,
+  });
+  return {
+    schemaVersion: observability.schemaVersion,
+    sampleIntervalStates: observability.sampleIntervalStates,
+    samplesRecorded: observability.samplesRecorded,
+    cadenceSamplesRecorded: observability.cadenceSamplesRecorded,
+    samples: observability.samples.map((sample) => ({
+      schemaVersion: sample.schemaVersion,
+      sequence: sample.sequence,
+      reasons: [...sample.reasons],
+      triggerMask: sample.triggerMask,
+      triggerYield: [...sample.triggerYield],
+      state: sample.state,
+      yield: structuredClone(sample.yield),
+    })),
+    baseState: observability.baseState,
+    baseYield: structuredClone(observability.baseYield),
+    previousSampleState: observability.previousSampleState,
+    previousYield: structuredClone(observability.previousYield),
+    nextSampleState: observability.nextSampleState,
+    firstUsefulAtState: observability.firstUsefulAtState,
+    firstCriticalAtState: observability.firstCriticalAtState,
+    throughFirstUseful: structuredClone(observability.throughFirstUseful),
+    historyComplete: observability.historyComplete,
+    eventHistoryComplete: observability.eventHistoryComplete,
+    timing: {
+      schemaVersion: observability.timing.schemaVersion,
+      critical: timingCategory(observability.timing.critical),
+      intent: timingCategory(observability.timing.intent),
+      authoredCoverage: timingCategory(observability.timing.authoredCoverage),
+      visibleOutcomes: timingCategory(observability.timing.visibleOutcomes),
+      semanticTransitions: timingCategory(observability.timing.semanticTransitions),
+      terminalVariants: timingCategory(observability.timing.terminalVariants),
+    },
+  };
+}
+
+function sharedOwnerLedgerLogicalUtf8Bytes(observability) {
+  return Buffer.byteLength(JSON.stringify(sharedOwnerLedgerProjection(observability)), "utf8");
+}
+
+function sharedCheckpointCurrentRetainedBytes(state) {
+  return state.pendingBytes
+    + state.pendingVariableBytes
+    + state.activeStateBytes
+    + state.activeVariableBytes
+    + state.ancestryPayloadBytes
+    + state.nodes.length * 8
+    + state.dedupeBytes
+    + state.semanticIndexBytes
+    + (state.deep.length + state.random.length) * 8
+    + state.novelty.length * 24
+    + state.findingBytes;
+}
+
+const SHARED_RETAINED_BYTE_COMPONENT_KEYS = [
+  "pendingStateBytes", "pendingVariableBytes", "activeStateBytes", "activeVariableBytes",
+  "ancestryBytes", "dedupeBytes", "semanticIndexBytes", "frontierReferenceBytes", "findingBytes",
+];
+
+function sharedRetainedByteComponentSum(retained) {
+  return SHARED_RETAINED_BYTE_COMPONENT_KEYS.reduce((sum, key) => sum + retained[key], 0);
+}
+
 function assertCanonicalSharedSamples(samples) {
   let previousSequence = -1;
   let previousState = -1;
@@ -139,7 +209,10 @@ function assertCanonicalSharedSamples(samples) {
 
 function withoutSharedObservability(report) {
   const copy = structuredClone(report);
-  for (const pass of copy.passes) delete pass.sharedObservability;
+  for (const pass of copy.passes) {
+    delete pass.sharedObservability;
+    delete pass.sharedOwnerAccounting;
+  }
   return copy;
 }
 
@@ -169,6 +242,7 @@ function subtractSharedYieldForV1(current, previous) {
 
 function withV1SharedObservability(checkpoint) {
   const migrated = structuredClone(checkpoint);
+  delete migrated.state.ownerAccounting;
   const v2 = migrated.state.sharedObservability;
   const cadenceSamples = v2.samples.filter((sample) => sample.reasons.includes("cadence"));
   let previousState = v2.baseState;
@@ -400,6 +474,13 @@ test("resource guards expose explicit caps without choosing an efficiency stop",
   const guards = createResourceGuards({ maxMemoryMb: 512, maxTimeMs: 10_000, startedAtMs: 1_000 });
   assert.strictEqual(guards.memoryCapBytes, 512 * 1024 * 1024);
   assert.strictEqual(guards.memorySearchLimitBytes, 512 * 1024 * 1024);
+  assert.deepStrictEqual(guards.finalizationReserve, {
+    schemaVersion: 1,
+    kind: "configured_headroom",
+    allocated: false,
+    memoryBytes: 0,
+    timeMs: 0,
+  });
   assert.strictEqual(guards.deadlineMs, 11_000);
   assert.strictEqual(typeof guards.memoryGuard, "function");
   assert.strictEqual(typeof guards.timeGuard, "function");
@@ -414,6 +495,39 @@ test("resource guards expose explicit caps without choosing an efficiency stop",
   assert.strictEqual(reserved.memoryCapBytes, 512 * 1024 * 1024);
   assert.strictEqual(reserved.memorySearchLimitBytes, 384 * 1024 * 1024);
   assert.strictEqual(reserved.deadlineMs, 10_500);
+  assert.deepStrictEqual(reserved.finalizationReserve, {
+    schemaVersion: 1,
+    kind: "configured_headroom",
+    allocated: false,
+    memoryBytes: 128 * 1024 * 1024,
+    timeMs: 500,
+  });
+  assert.strictEqual(
+    reserved.memorySearchLimitBytes + reserved.finalizationReserve.memoryBytes,
+    reserved.memoryCapBytes,
+    "configured finalization capacity is withheld, not added to retained ownership"
+  );
+
+  const clamped = createResourceGuards({
+    maxMemoryMb: 1,
+    maxTimeMs: 10_000,
+    startedAtMs: 1_000,
+    finalizationMemoryReserveMb: 2,
+    finalizationTimeReserveMs: 20_000,
+  });
+  assert.strictEqual(clamped.finalizationReserve.memoryBytes, 1024 * 1024 - 1);
+  assert.strictEqual(clamped.memorySearchLimitBytes, 1);
+  assert.strictEqual(clamped.finalizationReserve.timeMs, 10_000);
+  assert.strictEqual(clamped.deadlineMs, 1_000);
+
+  const noDeadline = createResourceGuards({
+    maxMemoryMb: 512,
+    finalizationTimeReserveMs: 500,
+  });
+  assert.strictEqual(noDeadline.finalizationReserve.timeMs, 0,
+    "time cannot be withheld from an execution that has no overall time envelope");
+  assert.strictEqual(noDeadline.deadlineMs, undefined);
+  assert.strictEqual(noDeadline.timeGuard, undefined);
 });
 
 test("shared benchmark summaries retain serialized-frontier high-water evidence", async () => {
@@ -627,6 +741,55 @@ test("shared retained-memory ladders characterize low-dedup and deep-branching g
   }
 });
 
+test("shared owner peaks capture a 200 KiB active payload with semantic-index growth before depth release", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-owner-overlap-"));
+  const story = path.join(tmp, "owner-overlap.ink");
+  const payloadCharacters = 200 * 1024;
+  try {
+    fs.writeFileSync(story, [
+      `VAR payload = "${"a".repeat(payloadCharacters)}"`,
+      "-> start",
+      "=== start ===",
+      "+ [Change]",
+      `    ~ payload = "${"b".repeat(payloadCharacters)}"`,
+      "    -> start",
+      "",
+    ].join("\n"));
+    const compiled = await compile(story);
+    const report = exploreShared(compiled.storyJson, scanKnots(story), [], {
+      maxDepth: 1,
+      maxStates: 1,
+      seed: 7,
+      sharedObservabilityIntervalStates: 10_000_000,
+    });
+    const memory = report.passes[0].sharedMemory;
+    const owner = report.passes[0].sharedOwnerAccounting;
+    assert.strictEqual(report.statesExplored, 1);
+    assert.strictEqual(report.truncatedBy.maxDepth, true);
+    assert.strictEqual(memory.current.activeStateBytes, 0);
+    assert.strictEqual(memory.current.activeVariableBytes, 0);
+    assert.ok(memory.peak.activeStateBytes > 0);
+    assert.ok(memory.peak.activeVariableBytes > 0);
+    assert.ok(
+      memory.peak.activeStateBytes + memory.peak.activeVariableBytes >= payloadCharacters,
+      "the transferred active owners must retain the 200 KiB payload"
+    );
+    const simultaneousRetainedFloor = memory.peak.activeStateBytes
+      + memory.peak.activeVariableBytes
+      + memory.current.semanticIndexBytes;
+    assert.ok(
+      memory.peak.totalAccountedBytes >= simultaneousRetainedFloor,
+      "the retained peak must observe active payload and the grown semantic index simultaneously"
+    );
+    assert.ok(
+      owner.peak.totalAccountedBytes >= simultaneousRetainedFloor,
+      "the combined owner peak must be taken at the same retained-owner boundary"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("shared checkpoint envelopes bind cleanly on adversarial growth shapes", async () => {
   const wideCompiled = await compile(LOW_DEDUP_WIDE);
   const countBound = exploreShared(wideCompiled.storyJson, scanKnots(LOW_DEDUP_WIDE), [], {
@@ -696,6 +859,24 @@ test("shared observability keeps deterministic retention and yield separate from
   assert.strictEqual(telemetry.historyComplete, true);
   assert.strictEqual(telemetry.eventHistoryComplete, true);
   assert.strictEqual(telemetry.timing.schemaVersion, 2);
+  const owner = report.passes[0].sharedOwnerAccounting;
+  const retained = report.passes[0].sharedMemory;
+  assert.strictEqual(owner.schemaVersion, 1);
+  assert.strictEqual(owner.basis, "deterministic_logical_utf8");
+  assert.strictEqual(owner.historyComplete, true);
+  assert.strictEqual(owner.current.observabilityLedger.count, telemetry.samplesRetained);
+  assert.strictEqual(
+    owner.current.totalAccountedBytes,
+    retained.current.totalAccountedBytes + owner.current.observabilityLedger.logicalUtf8Bytes
+  );
+  assert.ok(owner.peak.observabilityLedger.count >= owner.current.observabilityLedger.count);
+  assert.ok(owner.peak.observabilityLedger.count <= MAX_SHARED_OBSERVABILITY_SAMPLES);
+  assert.ok(owner.peak.observabilityLedger.logicalUtf8Bytes
+    >= owner.current.observabilityLedger.logicalUtf8Bytes);
+  assert.ok(owner.peak.totalAccountedBytes >= owner.current.totalAccountedBytes);
+  assert.ok(owner.peak.totalAccountedBytes >= owner.peak.observabilityLedger.logicalUtf8Bytes);
+  assert.ok(owner.peak.totalAccountedBytes
+    <= retained.peak.totalAccountedBytes + owner.peak.observabilityLedger.logicalUtf8Bytes);
   assertCanonicalSharedSamples(telemetry.samples);
   assert.deepStrictEqual(
     telemetry.samples.at(-1).yield.cumulative,
@@ -729,6 +910,7 @@ test("shared observability keeps deterministic retention and yield separate from
   assert.strictEqual(
     latest.process.comparedLogicalAccountedBytes,
     latest.sample.retention.current.totalAccountedBytes
+      + owner.current.observabilityLedger.logicalUtf8Bytes
   );
   assert.ok(Number.isInteger(latest.process.unattributedBytes));
   assert.doesNotMatch(JSON.stringify(observations), /path_code|wide tree leaf|"Left"|"Center"|"Right"/i);
@@ -866,6 +1048,92 @@ test("shared observability coalesces cadence, events, and termination determinis
   }
   assert.strictEqual(firstTelemetry.samplesRecorded, firstTelemetry.samplesRetained);
   assert.strictEqual(firstTelemetry.cadenceSamplesRecorded, 1);
+  assert.strictEqual(first.passes[0].sharedOwnerAccounting.current.observabilityLedger.count, 1);
+  assert.deepStrictEqual(
+    first.passes[0].sharedOwnerAccounting,
+    second.passes[0].sharedOwnerAccounting
+  );
+});
+
+test("shared owner accounting is exact, non-recursive, and bounded across compaction", async () => {
+  const compiled = await compile(LOW_DEDUP_WIDE);
+  const knots = scanKnots(LOW_DEDUP_WIDE);
+  const options = {
+    maxDepth: 150,
+    maxStates: 20,
+    seed: 7,
+    sharedObservabilityIntervalStates: 1,
+  };
+  const preCompaction = exploreSharedResumable(compiled.storyJson, knots, [], options).checkpoint;
+  const observability = preCompaction.state.sharedObservability;
+  const owner = preCompaction.state.ownerAccounting;
+  const projection = sharedOwnerLedgerProjection(observability);
+  const oracleBytes = sharedOwnerLedgerLogicalUtf8Bytes(observability);
+  const currentRetainedBytes = sharedCheckpointCurrentRetainedBytes(preCompaction.state);
+
+  assert.ok(projection.samples.every((sample) => !("retention" in sample)));
+  assert.strictEqual("integritySha256" in projection, false);
+  assert.strictEqual("ownerAccounting" in projection, false);
+  assert.doesNotMatch(JSON.stringify(projection), /totalAccountedBytes/);
+  assert.strictEqual(owner.schemaVersion, 1);
+  assert.strictEqual(owner.historyComplete, true);
+  assert.strictEqual(owner.peakObservabilityLedgerCount, observability.samples.length);
+  assert.strictEqual(
+    owner.peakObservabilityLedgerLogicalUtf8Bytes,
+    oracleBytes,
+    "incremental sample-byte caching must match the full canonical projection oracle"
+  );
+  assert.ok(owner.peakTotalAccountedBytes >= currentRetainedBytes + oracleBytes);
+  assert.ok(owner.peakTotalAccountedBytes >= owner.peakObservabilityLedgerLogicalUtf8Bytes);
+  assert.ok(owner.peakTotalAccountedBytes
+    <= preCompaction.state.peakRetainedMemory.totalAccountedBytes
+      + owner.peakObservabilityLedgerLogicalUtf8Bytes);
+
+  const compacted = exploreSharedResumable(compiled.storyJson, knots, [], {
+    ...options,
+    maxStates: 300,
+  }).checkpoint;
+  const compactedOwner = compacted.state.ownerAccounting;
+  const compactedObservability = compacted.state.sharedObservability;
+  const compactedOracleBytes = sharedOwnerLedgerLogicalUtf8Bytes(compactedObservability);
+  assert.ok(compactedObservability.samplesRecorded > compactedObservability.samples.length);
+  assert.strictEqual(compactedOwner.peakObservabilityLedgerCount, MAX_SHARED_OBSERVABILITY_SAMPLES);
+  assert.ok(compactedOwner.peakObservabilityLedgerCount >= compactedObservability.samples.length);
+  assert.ok(compactedOwner.peakObservabilityLedgerLogicalUtf8Bytes >= compactedOracleBytes);
+  assert.ok(compactedOwner.peakTotalAccountedBytes
+    >= sharedCheckpointCurrentRetainedBytes(compacted.state) + compactedOracleBytes);
+});
+
+test("shared owner accounting retains bounded container bytes with zero samples", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-owner-zero-"));
+  const story = path.join(tmp, "loop.ink");
+  try {
+    fs.writeFileSync(story, [
+      "-> start",
+      "=== start ===",
+      "* [Again]",
+      "    -> start",
+      "* [Wait]",
+      "    -> start",
+      "",
+    ].join("\n"));
+    const compiled = await compile(story);
+    const run = exploreSharedResumable(compiled.storyJson, scanKnots(story), [], {
+      maxDepth: 20,
+      maxStates: 1,
+      seed: 7,
+      sharedObservabilityIntervalStates: 10_000_000,
+    });
+    assert.ok(run.checkpoint, "two-choice loop must retain resumable work after one transition");
+    assert.strictEqual(run.checkpoint.state.sharedObservability.samples.length, 0);
+    assert.strictEqual(run.checkpoint.state.ownerAccounting.peakObservabilityLedgerCount, 0);
+    assert.ok(run.checkpoint.state.ownerAccounting.peakObservabilityLedgerLogicalUtf8Bytes > 0);
+    assert.ok(run.checkpoint.state.ownerAccounting.peakTotalAccountedBytes
+      >= sharedCheckpointCurrentRetainedBytes(run.checkpoint.state)
+        + sharedOwnerLedgerLogicalUtf8Bytes(run.checkpoint.state.sharedObservability));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("complete adjacent V2 boundaries require exact semantic trigger yield", async () => {
@@ -1021,6 +1289,8 @@ test("V1 observability migrates once and remains deterministic across V2 split r
   assert.strictEqual(migratedObservability.schemaVersion, 2);
   assertSharedObservabilityCheckpointIntegrity(migratedObservability);
   assert.strictEqual(migratedObservability.eventHistoryComplete, false);
+  assert.strictEqual(migrated.result.passes[0].sharedOwnerAccounting.historyComplete, false);
+  assert.strictEqual(migrated.checkpoint.state.ownerAccounting.historyComplete, false);
   assertCanonicalSharedSamples(migratedObservability.samples);
   assert.ok(migratedObservability.samples.every((sample) => (
     sample.triggerYield.every((count) => count === 0)
@@ -1317,6 +1587,60 @@ test("shared checkpoints fail closed on incompatible source, options, budget, an
   assert.strictEqual(observedCheckpoint.state.runtimeErrors.length, 0);
   assert.ok(observedCheckpoint.state.sharedObservability.firstUsefulAtState !== null);
   assertSharedObservabilityCheckpointIntegrity(observedCheckpoint.state.sharedObservability);
+  const ownerlessCheckpoint = structuredClone(observedCheckpoint);
+  delete ownerlessCheckpoint.state.ownerAccounting;
+  const ownerlessResume = exploreSharedResumable(compiled.storyJson, knots, [], {
+    ...observedOptions,
+    maxStates: 100,
+  }, ownerlessCheckpoint);
+  assert.strictEqual(ownerlessResume.result.passes[0].sharedOwnerAccounting.historyComplete, false);
+  assert.strictEqual(ownerlessResume.checkpoint.state.ownerAccounting.historyComplete, false);
+
+  const rejectOwnerTamper = (mutate, pattern = /shared owner accounting/) => {
+    const tampered = structuredClone(observedCheckpoint);
+    mutate(tampered.state.ownerAccounting, tampered.state);
+    refreshSharedObservabilityCheckpointIntegrity(tampered.state.sharedObservability);
+    assertSharedObservabilityCheckpointIntegrity(tampered.state.sharedObservability);
+    assert.throws(
+      () => exploreSharedResumable(compiled.storyJson, knots, [], {
+        ...observedOptions,
+        maxStates: 100,
+      }, tampered),
+      pattern
+    );
+  };
+  rejectOwnerTamper((owner) => { owner.unrecognized = true; });
+  rejectOwnerTamper((owner, state) => {
+    owner.peakObservabilityLedgerCount = state.sharedObservability.samples.length - 1;
+  });
+  rejectOwnerTamper((owner, state) => {
+    const maximumCredibleCount = Math.min(
+      state.sharedObservability.samplesRecorded,
+      MAX_SHARED_OBSERVABILITY_SAMPLES
+    );
+    assert.ok(maximumCredibleCount < MAX_SHARED_OBSERVABILITY_SAMPLES);
+    owner.peakObservabilityLedgerCount = maximumCredibleCount + 1;
+  });
+  rejectOwnerTamper((owner, state) => {
+    owner.peakObservabilityLedgerLogicalUtf8Bytes =
+      sharedOwnerLedgerLogicalUtf8Bytes(state.sharedObservability) - 1;
+  });
+  rejectOwnerTamper((owner, state) => {
+    owner.peakTotalAccountedBytes = sharedCheckpointCurrentRetainedBytes(state)
+      + sharedOwnerLedgerLogicalUtf8Bytes(state.sharedObservability) - 1;
+  });
+  rejectOwnerTamper((owner) => {
+    owner.peakTotalAccountedBytes = owner.peakObservabilityLedgerLogicalUtf8Bytes - 1;
+  });
+  rejectOwnerTamper((owner, state) => {
+    owner.peakTotalAccountedBytes = state.peakRetainedMemory.totalAccountedBytes
+      + owner.peakObservabilityLedgerLogicalUtf8Bytes + 1;
+  });
+  rejectOwnerTamper((owner, state) => {
+    owner.peakObservabilityLedgerLogicalUtf8Bytes = 10_000_000;
+    owner.peakTotalAccountedBytes = state.peakRetainedMemory.totalAccountedBytes
+      + owner.peakObservabilityLedgerLogicalUtf8Bytes;
+  });
   for (const mutate of [
     (observability) => { delete observability.integritySha256; },
     (observability) => { observability.integritySha256 = "0".repeat(63); },
@@ -1372,6 +1696,10 @@ test("shared checkpoints fail closed on incompatible source, options, budget, an
   rejectObservedTamper((observability) => {
     const sample = observability.samples[0];
     sample.retention.current.pendingStates = sample.retention.peak.pendingStates + 1;
+  });
+  rejectObservedTamper((observability) => {
+    const peak = observability.samples[0].retention.peak;
+    peak.pendingStateBytes = peak.totalAccountedBytes + 1;
   });
   rejectObservedTamper((observability) => {
     const [firstSample, secondSample] = observability.samples;
@@ -1586,8 +1914,17 @@ test("shared checkpoints fail closed on incompatible source, options, budget, an
     assert.ok(latestPeak.pendingStates > 0);
     state.peakRetainedMemory.pendingStates = latestPeak.pendingStates - 1;
   });
+  rejectObservedTamper((_observability, state) => {
+    state.peakRetainedMemory.pendingStateBytes =
+      state.peakRetainedMemory.totalAccountedBytes + 1;
+  });
+  rejectObservedTamper((_observability, state) => {
+    state.peakRetainedMemory.totalAccountedBytes =
+      sharedRetainedByteComponentSum(state.peakRetainedMemory) + 1;
+  });
   const legacyCheckpoint = clone();
   delete legacyCheckpoint.state.sharedObservability;
+  delete legacyCheckpoint.state.ownerAccounting;
   delete legacyCheckpoint.state.meaningfulVariableTransitions;
   delete legacyCheckpoint.state.discoveryCurve.countedVisibleOutcomes;
   const legacyResume = exploreSharedResumable(
@@ -1599,6 +1936,13 @@ test("shared checkpoints fail closed on incompatible source, options, budget, an
   );
   assert.strictEqual(legacyResume.result.passes[0].sharedObservability.historyComplete, false);
   assert.strictEqual(legacyResume.result.passes[0].sharedObservability.eventHistoryComplete, false);
+  assert.strictEqual(legacyResume.result.passes[0].sharedOwnerAccounting.historyComplete, false);
+  assert.strictEqual(legacyResume.checkpoint.state.ownerAccounting.historyComplete, false);
+  assert.strictEqual(
+    legacyResume.result.passes[0].sharedOwnerAccounting.current.totalAccountedBytes,
+    legacyResume.result.passes[0].sharedMemory.current.totalAccountedBytes
+      + legacyResume.result.passes[0].sharedOwnerAccounting.current.observabilityLedger.logicalUtf8Bytes
+  );
   assert.strictEqual(legacyResume.result.statesExplored, 74);
   const migrated = legacyResume.checkpoint.state.sharedObservability;
   assertSharedObservabilityCheckpointIntegrity(migrated);

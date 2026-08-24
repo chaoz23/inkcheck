@@ -948,7 +948,15 @@ async function main() {
   const finalizationTimeReserveMs = maxTimeSec === undefined
     ? undefined
     : Math.min(60_000, Math.max(250, Math.floor(maxTimeSec * 1_000 * 0.10)));
-  const { memoryCapBytes, memorySearchLimitBytes, deadlineMs, memoryGuard, timeGuard, peakMemoryBytes } = createResourceGuards({
+  const {
+    memoryCapBytes,
+    memorySearchLimitBytes,
+    finalizationReserve,
+    deadlineMs,
+    memoryGuard,
+    timeGuard,
+    peakMemoryBytes,
+  } = createResourceGuards({
     maxMemoryMb,
     ...(finalizationMemoryReserveMb === undefined ? {} : { finalizationMemoryReserveMb }),
     ...(maxTimeSec === undefined ? {} : {
@@ -1211,6 +1219,27 @@ async function main() {
   const artifact = saveReport ? persistReport(outputReport!) : undefined;
   emitProgress("phase_start", { phase: "report" });
   if (asJsonStream) {
+    const sharedRetainedPasses = (report.passes ?? [])
+      .filter((pass) => pass.sharedOwnerAccounting !== undefined)
+      .slice(0, 8)
+      .map((pass) => ({
+        pass: pass.pass,
+        ...pass.sharedOwnerAccounting!,
+      }));
+    let terminalLogicalAccountedBytes = 0;
+    for (let index = (report.passes?.length ?? 0) - 1; index >= 0; index--) {
+      const pass = report.passes![index];
+      if (pass.sharedOwnerAccounting) {
+        terminalLogicalAccountedBytes = pass.sharedOwnerAccounting.current.totalAccountedBytes;
+        break;
+      }
+      if (pass.sharedMemory) {
+        terminalLogicalAccountedBytes = pass.sharedMemory.current.totalAccountedBytes;
+        break;
+      }
+    }
+    terminalLogicalAccountedBytes = latestSharedObservation
+      ?.process.comparedLogicalAccountedBytes ?? terminalLogicalAccountedBytes;
     // Ensure alternate execution surfaces or future search engines cannot
     // omit a finding from a clean terminal stream.
     for (const ending of report.endingsFound) streamEvidence({ kind: "ending", finding: ending });
@@ -1241,16 +1270,21 @@ async function main() {
       resources: {
         memoryCapBytes,
         memorySearchLimitBytes,
-        finalizationMemoryReserveBytes: memoryCapBytes - memorySearchLimitBytes,
+        finalizationMemoryReserveBytes: finalizationReserve.memoryBytes,
         peakMemoryBytes: peakMemoryBytes(),
         deadlineMs: maxTimeSec === undefined ? null : startedAt + maxTimeSec * 1_000,
         searchDeadlineMs: deadlineMs ?? null,
-        finalizationTimeReserveMs: finalizationTimeReserveMs ?? 0,
-        observedProcessAtTermination: observeProcessMemory(
-          latestSharedObservation?.sample.retention.current.totalAccountedBytes
-            ?? report.passes?.find((pass) => pass.sharedMemory)?.sharedMemory?.current.totalAccountedBytes
-            ?? 0
-        ),
+        finalizationTimeReserveMs: finalizationReserve.timeMs,
+        ownerAccounting: {
+          schemaVersion: 1,
+          configuredReserve: finalizationReserve,
+          ...(sharedRetainedPasses.length > 0 ? { sharedRetainedPasses } : {}),
+          ...(checkpointOutput && "accounting" in checkpointOutput
+            ? { checkpointCommit: checkpointOutput.accounting }
+            : {}),
+          ...(artifact ? { reportFinalization: artifact.accounting } : {}),
+        },
+        observedProcessAtTermination: observeProcessMemory(terminalLogicalAccountedBytes),
       },
       evidence: { endingsEmitted: streamedEndings, runtimeErrorsEmitted: streamedRuntimeErrors, benchmarkSignalsEmitted: streamedBenchmarkSignals },
     });

@@ -1,4 +1,7 @@
-import { SHARED_OBSERVABILITY_REASON_ORDER_V2 } from "./explore";
+import {
+  SHARED_OBSERVABILITY_REASON_ORDER_V2,
+  sharedObservabilityLedgerLogicalUtf8BytesUpperBoundV1,
+} from "./explore";
 
 export type MachineDetail = "summary" | "standard" | "full";
 
@@ -178,6 +181,11 @@ const SHARED_RETAINED_MEMORY_FIELDS = [
   "ancestryBytes", "dedupeBytes", "semanticIndexBytes", "frontierReferenceBytes",
   "findingBytes", "totalAccountedBytes", "pendingStates", "retainedNodes", "frontierReferences",
 ] as const;
+const SHARED_RETAINED_MEMORY_BYTE_FIELDS = [
+  "pendingStateBytes", "pendingVariableBytes", "activeStateBytes", "activeVariableBytes",
+  "ancestryBytes", "dedupeBytes", "semanticIndexBytes", "frontierReferenceBytes",
+  "findingBytes",
+] as const;
 
 function nonNegativeSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -201,6 +209,37 @@ function sharedRetainedMemory(value: unknown): Record<string, number> | undefine
     projected[field] = count;
   }
   return projected;
+}
+
+function sharedRetainedCurrentTotalIsExact(memory: Record<string, number>): boolean {
+  let total = 0;
+  for (const field of SHARED_RETAINED_MEMORY_BYTE_FIELDS) {
+    if (memory[field] > Number.MAX_SAFE_INTEGER - total) return false;
+    total += memory[field];
+  }
+  return memory.totalAccountedBytes === total;
+}
+
+function sharedRetainedByteComponentsAtMostTotal(memory: Record<string, number>): boolean {
+  return SHARED_RETAINED_MEMORY_BYTE_FIELDS.every(
+    (field) => memory[field] <= memory.totalAccountedBytes
+  );
+}
+
+function sharedRetainedTotalAtMostByteComponentSum(memory: Record<string, number>): boolean {
+  let total = 0;
+  for (const field of SHARED_RETAINED_MEMORY_BYTE_FIELDS) {
+    if (memory[field] > Number.MAX_SAFE_INTEGER - total) return false;
+    total += memory[field];
+  }
+  return memory.totalAccountedBytes <= total;
+}
+
+function sharedRetainedMemoryAtMost(
+  current: Record<string, number>,
+  peak: Record<string, number>
+): boolean {
+  return SHARED_RETAINED_MEMORY_FIELDS.every((field) => current[field] <= peak[field]);
 }
 
 function sharedYieldCounts(value: unknown): Record<string, unknown> | undefined {
@@ -317,6 +356,10 @@ function sharedResourceSample(value: unknown): Record<string, unknown> | undefin
       || !triggerYield || !triggerYieldMatchesReasons))
     || !nonNegativeSafeInteger(sample.state)
     || !retention || retention.schemaVersion !== 1 || !current || !peak
+    || !sharedRetainedCurrentTotalIsExact(current)
+    || !sharedRetainedByteComponentsAtMostTotal(peak)
+    || !sharedRetainedTotalAtMostByteComponentSum(peak)
+    || !sharedRetainedMemoryAtMost(current, peak)
     || !nonNegativeSafeInteger(retention.releasedNodes)
     || !nonNegativeSafeInteger(retention.frontierCompactions)
     || !interval || interval.schemaVersion !== 1
@@ -456,6 +499,95 @@ function sharedObservabilitySummary(value: unknown) {
   return summaries.length ? summaries : undefined;
 }
 
+function sharedOwnerAccountingSummary(value: unknown) {
+  const summaries: Record<string, unknown>[] = [];
+  for (const passValue of array(value)) {
+    if (summaries.length >= MAX_COMPACT_SHARED_OBSERVABILITY_PASSES) break;
+    const pass = record(passValue);
+    const projectedPass = sharedPass(pass?.pass);
+    const accounting = record(pass?.sharedOwnerAccounting);
+    const current = record(accounting?.current);
+    const peak = record(accounting?.peak);
+    const currentLedger = record(current?.observabilityLedger);
+    const peakLedger = record(peak?.observabilityLedger);
+    const sharedMemory = record(pass?.sharedMemory);
+    const retainedCurrent = sharedRetainedMemory(sharedMemory?.current);
+    const retainedPeak = sharedRetainedMemory(sharedMemory?.peak);
+    const observability = record(pass?.sharedObservability);
+    const maximumCurrentLedgerBytes = nonNegativeSafeInteger(currentLedger?.count)
+      ? sharedObservabilityLedgerLogicalUtf8BytesUpperBoundV1(currentLedger.count as number)
+      : undefined;
+    const maximumPeakLedgerBytes = nonNegativeSafeInteger(peakLedger?.count)
+      ? sharedObservabilityLedgerLogicalUtf8BytesUpperBoundV1(peakLedger.count as number)
+      : undefined;
+    if (!pass || !projectedPass || !accounting || accounting.schemaVersion !== 1
+      || accounting.basis !== "deterministic_logical_utf8"
+      || typeof accounting.historyComplete !== "boolean"
+      || !current || !peak || !currentLedger || !peakLedger
+      || !retainedCurrent || !retainedPeak || !observability
+      || observability.schemaVersion !== 2
+      || !nonNegativeSafeInteger(currentLedger.count)
+      || !nonNegativeSafeInteger(currentLedger.logicalUtf8Bytes)
+      || !nonNegativeSafeInteger(current.totalAccountedBytes)
+      || !nonNegativeSafeInteger(peakLedger.count)
+      || !nonNegativeSafeInteger(peakLedger.logicalUtf8Bytes)
+      || !nonNegativeSafeInteger(peak.totalAccountedBytes)
+      || maximumCurrentLedgerBytes === undefined
+      || currentLedger.logicalUtf8Bytes > maximumCurrentLedgerBytes
+      || maximumPeakLedgerBytes === undefined
+      || peakLedger.logicalUtf8Bytes > maximumPeakLedgerBytes
+      || !nonNegativeSafeInteger(observability.samplesRecorded)
+      || !nonNegativeSafeInteger(observability.samplesRetained)
+      || array(observability.samples).length !== observability.samplesRetained
+      || currentLedger.count !== observability.samplesRetained
+      || currentLedger.count > MAX_SHARED_OBSERVABILITY_SAMPLES
+      || peakLedger.count < currentLedger.count
+      || peakLedger.count > Math.min(
+        observability.samplesRecorded as number,
+        MAX_SHARED_OBSERVABILITY_SAMPLES
+      )
+      || peakLedger.logicalUtf8Bytes < currentLedger.logicalUtf8Bytes
+      || !sharedRetainedCurrentTotalIsExact(retainedCurrent)
+      || !sharedRetainedByteComponentsAtMostTotal(retainedPeak)
+      || !sharedRetainedTotalAtMostByteComponentSum(retainedPeak)
+      || !sharedRetainedMemoryAtMost(retainedCurrent, retainedPeak)
+      || currentLedger.logicalUtf8Bytes
+        > Number.MAX_SAFE_INTEGER - retainedCurrent.totalAccountedBytes
+      || current.totalAccountedBytes
+        !== retainedCurrent.totalAccountedBytes + currentLedger.logicalUtf8Bytes
+      || peak.totalAccountedBytes < current.totalAccountedBytes
+      || peak.totalAccountedBytes < peakLedger.logicalUtf8Bytes
+      || peakLedger.logicalUtf8Bytes
+        > Number.MAX_SAFE_INTEGER - retainedPeak.totalAccountedBytes
+      || peak.totalAccountedBytes
+        > retainedPeak.totalAccountedBytes + peakLedger.logicalUtf8Bytes
+      || (accounting.historyComplete
+        && (observability.historyComplete !== true
+          || peak.totalAccountedBytes < retainedPeak.totalAccountedBytes))) continue;
+    summaries.push({
+      pass: projectedPass,
+      schemaVersion: 1,
+      basis: "deterministic_logical_utf8",
+      historyComplete: accounting.historyComplete,
+      current: {
+        observabilityLedger: {
+          count: currentLedger.count,
+          logicalUtf8Bytes: currentLedger.logicalUtf8Bytes,
+        },
+        totalAccountedBytes: current.totalAccountedBytes,
+      },
+      peak: {
+        observabilityLedger: {
+          count: peakLedger.count,
+          logicalUtf8Bytes: peakLedger.logicalUtf8Bytes,
+        },
+        totalAccountedBytes: peak.totalAccountedBytes,
+      },
+    });
+  }
+  return summaries.length ? summaries : undefined;
+}
+
 function explorationSummary(explore: Record<string, unknown> | undefined) {
   if (!explore) return undefined;
   const assertionResults = array(explore.assertionResults).map(record).filter(Boolean) as Record<string, unknown>[];
@@ -464,6 +596,7 @@ function explorationSummary(explore: Record<string, unknown> | undefined) {
     0
   );
   const sharedObservability = sharedObservabilitySummary(explore.passes);
+  const sharedOwnerAccounting = sharedOwnerAccountingSummary(explore.passes);
   return {
     statesExplored: explore.statesExplored,
     runtimeErrorCount: array(explore.runtimeErrors).length,
@@ -482,6 +615,7 @@ function explorationSummary(explore: Record<string, unknown> | undefined) {
     limits: explore.limits,
     ...(explore.execution ? { execution: executionSummary(explore.execution) } : {}),
     ...(sharedObservability ? { sharedObservability } : {}),
+    ...(sharedOwnerAccounting ? { sharedOwnerAccounting } : {}),
   };
 }
 

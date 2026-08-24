@@ -954,6 +954,8 @@ export interface PassTelemetry {
   sharedMemory?: SharedMemoryTelemetry;
   /** Shared search only: bounded deterministic retention and category-specific yield samples. */
   sharedObservability?: SharedObservabilityTelemetryV1 | SharedObservabilityTelemetryV2;
+  /** Shared search only: non-recursive retained-owner accounting for the observability ledger. */
+  sharedOwnerAccounting?: SharedOwnerAccountingV1;
   /** Shared search only: distinct variable snapshots observed. */
   variableStatesObserved?: number;
   /** Shared search only: distinct variable changes observed. */
@@ -990,6 +992,28 @@ export interface SharedMemoryTelemetry {
   };
   releasedNodes: number;
   frontierCompactions: number;
+}
+
+export interface SharedOwnerAccountingSnapshotV1 {
+  /** Retained sample records in the bounded observability ledger. */
+  observabilityLedger: {
+    count: number;
+    /** Compact canonical UTF-8 bytes, excluding recursive retention and derived point-in-time views. */
+    logicalUtf8Bytes: number;
+  };
+  /** Simultaneous retained search bytes plus non-recursive observability-ledger bytes. */
+  totalAccountedBytes: number;
+}
+
+/** Deterministic logical ownership; this is neither V8 heap nor process RSS. */
+export interface SharedOwnerAccountingV1 {
+  schemaVersion: 1;
+  basis: "deterministic_logical_utf8";
+  /** False after reopening a checkpoint that predates owner accounting. */
+  historyComplete: boolean;
+  current: SharedOwnerAccountingSnapshotV1;
+  /** Owner high-water marks; total is an observed simultaneous maximum. */
+  peak: SharedOwnerAccountingSnapshotV1;
 }
 
 export interface SharedYieldCountsV1 {
@@ -2176,6 +2200,18 @@ type SharedObservabilityCheckpointV2Body = Omit<
   "integritySha256"
 >;
 
+export interface SharedOwnerAccountingCheckpointV1 {
+  schemaVersion: 1;
+  /** False after migrating a checkpoint that did not retain prior owner peaks. */
+  historyComplete: boolean;
+  /** Largest retained observability-record count seen since accounting began. */
+  peakObservabilityLedgerCount: number;
+  /** Largest canonical non-recursive ledger footprint observed at a retained boundary. */
+  peakObservabilityLedgerLogicalUtf8Bytes: number;
+  /** Largest simultaneous retained-search plus ledger footprint observed. */
+  peakTotalAccountedBytes: number;
+}
+
 function cloneJsonValue<T>(value: T): T {
   if (Array.isArray(value)) {
     return value.map((item) => item === undefined ? null : cloneJsonValue(item)) as T;
@@ -2252,6 +2288,8 @@ export interface SharedSearchCheckpoint {
     peakRetainedMemory: SharedRetainedMemory;
     /** Additive deterministic ledger; live heap/RSS observations are never persisted. */
     sharedObservability?: SharedObservabilityCheckpointV1 | SharedObservabilityCheckpointV2;
+    /** Additive exact high-water state; absent in checkpoints written before owner accounting. */
+    ownerAccounting?: SharedOwnerAccountingCheckpointV1;
   };
 }
 
@@ -2384,6 +2422,10 @@ const SHARED_YIELD_TIMING_CATEGORY_V2_KEYS = [
 ] as const;
 const SHARED_OBSERVABILITY_CHECKPOINT_V2_INTEGRITY_DOMAIN =
   "inkcheck:shared-observability-checkpoint:v2\0";
+const SHARED_OWNER_ACCOUNTING_CHECKPOINT_V1_KEYS = [
+  "schemaVersion", "historyComplete", "peakObservabilityLedgerCount",
+  "peakObservabilityLedgerLogicalUtf8Bytes", "peakTotalAccountedBytes",
+] as const;
 
 function exactCanonicalRecord(
   value: unknown,
@@ -2649,6 +2691,180 @@ function sharedObservabilityCheckpointV2IntegritySha256(
   }
 }
 
+function sharedObservabilityOwnerSampleProjectionV1(sample: ResourceSampleV2): object {
+  return {
+    schemaVersion: sample.schemaVersion,
+    sequence: sample.sequence,
+    reasons: [...sample.reasons],
+    triggerMask: sample.triggerMask,
+    triggerYield: [...sample.triggerYield],
+    state: sample.state,
+    yield: cloneJsonValue(sample.yield),
+  };
+}
+
+function sharedObservabilityOwnerTimingProjectionV1(timing: SharedYieldTimingV2): object {
+  const category = (value: SharedYieldTimingCategoryV2) => ({
+    identities: value.identities,
+    firstAtState: value.firstAtState,
+    lastAtState: value.lastAtState,
+    longestDryStates: value.longestDryStates,
+  });
+  return {
+    schemaVersion: timing.schemaVersion,
+    critical: category(timing.critical),
+    intent: category(timing.intent),
+    authoredCoverage: category(timing.authoredCoverage),
+    visibleOutcomes: category(timing.visibleOutcomes),
+    semanticTransitions: category(timing.semanticTransitions),
+    terminalVariants: category(timing.terminalVariants),
+  };
+}
+
+function sharedObservabilityOwnerMetadataProjectionV1(
+  ordered: SharedObservabilityCheckpointV2Body,
+  timing = ordered.timing
+): object {
+  return {
+    schemaVersion: ordered.schemaVersion,
+    sampleIntervalStates: ordered.sampleIntervalStates,
+    samplesRecorded: ordered.samplesRecorded,
+    cadenceSamplesRecorded: ordered.cadenceSamplesRecorded,
+    // Sample bytes are maintained separately so an event-heavy run does not
+    // serialize the entire bounded ledger for every appended record.
+    samples: [],
+    baseState: ordered.baseState,
+    baseYield: cloneSharedYieldCounts(ordered.baseYield),
+    previousSampleState: ordered.previousSampleState,
+    previousYield: cloneSharedYieldCounts(ordered.previousYield),
+    nextSampleState: ordered.nextSampleState,
+    firstUsefulAtState: ordered.firstUsefulAtState,
+    firstCriticalAtState: ordered.firstCriticalAtState,
+    throughFirstUseful: cloneSharedYieldCounts(ordered.throughFirstUseful),
+    historyComplete: ordered.historyComplete,
+    eventHistoryComplete: ordered.eventHistoryComplete,
+    // Point-in-time dry counters and rates are emitted views, not retained
+    // ledger owners. Stable event timing and its longest observed gap remain.
+    timing: sharedObservabilityOwnerTimingProjectionV1(timing),
+  };
+}
+
+function logicalUtf8Bytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+const SHARED_OWNER_ACCOUNTING_MAX_YIELD_V1: SharedYieldCountsV1 = {
+  critical: {
+    runtimeErrors: Number.MAX_SAFE_INTEGER,
+    assertionViolations: Number.MAX_SAFE_INTEGER,
+  },
+  intent: {
+    goalsReached: Number.MAX_SAFE_INTEGER,
+    stagesReached: Number.MAX_SAFE_INTEGER,
+  },
+  authoredCoverage: { knotsVisited: Number.MAX_SAFE_INTEGER },
+  visibleOutcomes: Number.MAX_SAFE_INTEGER,
+  semanticTransitions: Number.MAX_SAFE_INTEGER,
+  terminalVariants: Number.MAX_SAFE_INTEGER,
+  rawTerritory: {
+    transitions: Number.MAX_SAFE_INTEGER,
+    uniqueStates: Number.MAX_SAFE_INTEGER,
+    dedupeHits: Number.MAX_SAFE_INTEGER,
+  },
+};
+
+const SHARED_OWNER_ACCOUNTING_MAX_SAMPLE_LOGICAL_UTF8_BYTES = logicalUtf8Bytes({
+  schemaVersion: 2,
+  sequence: Number.MAX_SAFE_INTEGER,
+  reasons: SHARED_OBSERVABILITY_REASON_ORDER_V2.filter(
+    (reason) => !["checkpoint", "epoch", "pressure"].includes(reason)
+  ),
+  triggerMask: SHARED_OBSERVABILITY_TRIGGER_MASK_MAX_V2,
+  triggerYield: new Array(8).fill(Number.MAX_SAFE_INTEGER),
+  state: Number.MAX_SAFE_INTEGER,
+  yield: {
+    schemaVersion: 1,
+    fromStateExclusive: Number.MAX_SAFE_INTEGER,
+    throughState: Number.MAX_SAFE_INTEGER,
+    delta: SHARED_OWNER_ACCOUNTING_MAX_YIELD_V1,
+    cumulative: SHARED_OWNER_ACCOUNTING_MAX_YIELD_V1,
+  },
+});
+
+const SHARED_OWNER_ACCOUNTING_MAX_TIMING_CATEGORY_V1 = {
+  identities: Number.MAX_SAFE_INTEGER,
+  firstAtState: Number.MAX_SAFE_INTEGER,
+  lastAtState: Number.MAX_SAFE_INTEGER,
+  longestDryStates: Number.MAX_SAFE_INTEGER,
+};
+
+const SHARED_OWNER_ACCOUNTING_MAX_METADATA_LOGICAL_UTF8_BYTES = logicalUtf8Bytes({
+  schemaVersion: 2,
+  sampleIntervalStates: Number.MAX_SAFE_INTEGER,
+  samplesRecorded: Number.MAX_SAFE_INTEGER,
+  cadenceSamplesRecorded: Number.MAX_SAFE_INTEGER,
+  samples: [],
+  baseState: Number.MAX_SAFE_INTEGER,
+  baseYield: SHARED_OWNER_ACCOUNTING_MAX_YIELD_V1,
+  previousSampleState: Number.MAX_SAFE_INTEGER,
+  previousYield: SHARED_OWNER_ACCOUNTING_MAX_YIELD_V1,
+  nextSampleState: Number.MAX_SAFE_INTEGER,
+  firstUsefulAtState: Number.MAX_SAFE_INTEGER,
+  firstCriticalAtState: Number.MAX_SAFE_INTEGER,
+  throughFirstUseful: SHARED_OWNER_ACCOUNTING_MAX_YIELD_V1,
+  historyComplete: false,
+  eventHistoryComplete: false,
+  timing: {
+    schemaVersion: 2,
+    critical: SHARED_OWNER_ACCOUNTING_MAX_TIMING_CATEGORY_V1,
+    intent: SHARED_OWNER_ACCOUNTING_MAX_TIMING_CATEGORY_V1,
+    authoredCoverage: SHARED_OWNER_ACCOUNTING_MAX_TIMING_CATEGORY_V1,
+    visibleOutcomes: SHARED_OWNER_ACCOUNTING_MAX_TIMING_CATEGORY_V1,
+    semanticTransitions: SHARED_OWNER_ACCOUNTING_MAX_TIMING_CATEGORY_V1,
+    terminalVariants: SHARED_OWNER_ACCOUNTING_MAX_TIMING_CATEGORY_V1,
+  },
+});
+
+/** Schema-derived ceiling used to validate retained owner high-water claims. */
+export function sharedObservabilityLedgerLogicalUtf8BytesUpperBoundV1(
+  retainedSampleCount: number
+): number | undefined {
+  if (!Number.isSafeInteger(retainedSampleCount)
+    || retainedSampleCount < 0
+    || retainedSampleCount > MAX_SHARED_OBSERVABILITY_SAMPLES) {
+    return undefined;
+  }
+  const bytes = SHARED_OWNER_ACCOUNTING_MAX_METADATA_LOGICAL_UTF8_BYTES
+    + retainedSampleCount * SHARED_OWNER_ACCOUNTING_MAX_SAMPLE_LOGICAL_UTF8_BYTES
+    + Math.max(0, retainedSampleCount - 1);
+  return Number.isSafeInteger(bytes) ? bytes : undefined;
+}
+
+function sharedObservabilityLedgerOwnershipV1(
+  value: unknown,
+  expectIntegrity: boolean
+): { count: number; logicalUtf8Bytes: number } | undefined {
+  try {
+    const ordered = orderedSharedObservabilityCheckpointV2Body(value, expectIntegrity);
+    if (!ordered) return undefined;
+    // Deliberately omit every retention snapshot. Including those totals would
+    // make the ledger account for the bytes that account for the ledger itself.
+    // The checksum and sibling owner state are also outside this projection.
+    const sampleBytes = ordered.samples.reduce(
+      (total, sample) => total + logicalUtf8Bytes(sharedObservabilityOwnerSampleProjectionV1(sample)),
+      0
+    );
+    const separators = Math.max(0, ordered.samples.length - 1);
+    const logicalBytes = logicalUtf8Bytes(sharedObservabilityOwnerMetadataProjectionV1(ordered))
+      + sampleBytes + separators;
+    return Number.isSafeInteger(logicalBytes)
+      ? { count: ordered.samples.length, logicalUtf8Bytes: logicalBytes }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function validSharedYieldCounts(value: SharedYieldCountsV1 | undefined): boolean {
   if (!value || !value.critical || !value.intent || !value.authoredCoverage || !value.rawTerritory) return false;
   return [
@@ -2679,9 +2895,21 @@ function sharedYieldCountsEqual(left: SharedYieldCountsV1, right: SharedYieldCou
 }
 
 function validSharedRetainedMemory(value: SharedRetainedMemory | undefined): boolean {
-  return !!value && SHARED_RETAINED_MEMORY_KEYS.every(
-    (key) => Number.isSafeInteger(value[key]) && value[key] >= 0
+  if (!value
+    || !SHARED_RETAINED_MEMORY_KEYS.every(
+      (key) => Number.isSafeInteger(value[key]) && value[key] >= 0
+    )
+    || !SHARED_RETAINED_BYTE_KEYS.every(
+      (key) => value[key] <= value.totalAccountedBytes
+    )) {
+    return false;
+  }
+  const independentComponentBytes = SHARED_RETAINED_BYTE_KEYS.reduce(
+    (sum, key) => sum + value[key],
+    0
   );
+  return Number.isSafeInteger(independentComponentBytes)
+    && value.totalAccountedBytes <= independentComponentBytes;
 }
 
 function sharedRetainedMemoryAtMost(left: SharedRetainedMemory, right: SharedRetainedMemory): boolean {
@@ -2776,6 +3004,33 @@ function sharedCheckpointYieldCounts(
       dedupeHits: state.dedupeHits,
     },
   };
+}
+
+function sharedCheckpointCurrentRetainedMemory(
+  state: SharedSearchCheckpoint["state"]
+): SharedRetainedMemory | undefined {
+  const frontierReferences = state.deep.length + state.random.length + state.novelty.length;
+  const snapshot: SharedRetainedMemory = {
+    pendingStateBytes: state.pendingBytes,
+    pendingVariableBytes: state.pendingVariableBytes,
+    activeStateBytes: state.activeStateBytes,
+    activeVariableBytes: state.activeVariableBytes,
+    ancestryBytes: state.ancestryPayloadBytes + state.nodes.length * 8,
+    dedupeBytes: state.dedupeBytes,
+    semanticIndexBytes: state.semanticIndexBytes,
+    frontierReferenceBytes:
+      (state.deep.length + state.random.length) * 8 + state.novelty.length * 24,
+    findingBytes: state.findingBytes,
+    totalAccountedBytes: 0,
+    pendingStates: state.pendingStates,
+    retainedNodes: state.retainedNodes,
+    frontierReferences,
+  };
+  snapshot.totalAccountedBytes = SHARED_RETAINED_BYTE_KEYS.reduce(
+    (sum, key) => sum + snapshot[key],
+    0
+  );
+  return validSharedRetainedMemory(snapshot) ? snapshot : undefined;
 }
 
 /**
@@ -3258,6 +3513,69 @@ function validateSharedCheckpoint(
       fail(`pending node ${id} is absent from every frontier view`);
     }
   }
+  const ownerAccounting = state.ownerAccounting;
+  if (ownerAccounting !== undefined) {
+    if (!exactCanonicalRecord(ownerAccounting, SHARED_OWNER_ACCOUNTING_CHECKPOINT_V1_KEYS)
+      || ownerAccounting.schemaVersion !== 1
+      || typeof ownerAccounting.historyComplete !== "boolean"
+      || !Number.isSafeInteger(ownerAccounting.peakObservabilityLedgerCount)
+      || ownerAccounting.peakObservabilityLedgerCount < 0
+      || ownerAccounting.peakObservabilityLedgerCount > MAX_SHARED_OBSERVABILITY_SAMPLES
+      || !Number.isSafeInteger(ownerAccounting.peakObservabilityLedgerLogicalUtf8Bytes)
+      || ownerAccounting.peakObservabilityLedgerLogicalUtf8Bytes < 0
+      || !Number.isSafeInteger(ownerAccounting.peakTotalAccountedBytes)
+      || ownerAccounting.peakTotalAccountedBytes < 0) {
+      fail("shared owner accounting is malformed");
+    }
+    if (sharedObservability?.schemaVersion !== 2) {
+      fail("shared owner accounting requires a v2 observability ledger");
+    }
+    const ownerObservability = sharedObservability as SharedObservabilityCheckpointV2;
+    const currentLedger = sharedObservabilityLedgerOwnershipV1(ownerObservability, true);
+    const currentRetained = sharedCheckpointCurrentRetainedMemory(state);
+    if (!currentLedger || !currentRetained) {
+      fail("shared owner accounting cannot be derived from the retained graph");
+    }
+    const derivedLedger = currentLedger!;
+    const derivedRetained = currentRetained!;
+    if (!validSharedRetainedMemory(state.peakRetainedMemory)
+      || !sharedRetainedMemoryAtMost(derivedRetained, state.peakRetainedMemory)) {
+      fail("shared owner accounting cannot be derived from the retained graph");
+    }
+    const currentTotal = derivedRetained.totalAccountedBytes + derivedLedger.logicalUtf8Bytes;
+    const maximumPossibleLedgerCount = Math.min(
+      ownerObservability.samplesRecorded,
+      MAX_SHARED_OBSERVABILITY_SAMPLES
+    );
+    const maximumPossibleLedgerLogicalUtf8Bytes =
+      sharedObservabilityLedgerLogicalUtf8BytesUpperBoundV1(
+        ownerAccounting.peakObservabilityLedgerCount
+      ) ?? fail("shared owner accounting peaks are inconsistent with the retained graph");
+    // The schema ceiling independently validates the claimed ledger peak;
+    // once credible, that actual peak remains the tight upper bound for the
+    // simultaneous combined total. Neither claimed field can inflate the
+    // other into validity.
+    const maximumPossiblePeak = state.peakRetainedMemory.totalAccountedBytes
+      + ownerAccounting.peakObservabilityLedgerLogicalUtf8Bytes;
+    if (!Number.isSafeInteger(currentTotal)
+      || !Number.isSafeInteger(maximumPossiblePeak)
+      || ownerAccounting.peakObservabilityLedgerCount < derivedLedger.count
+      || ownerAccounting.peakObservabilityLedgerCount > maximumPossibleLedgerCount
+      || ownerAccounting.peakObservabilityLedgerLogicalUtf8Bytes
+        < derivedLedger.logicalUtf8Bytes
+      || ownerAccounting.peakObservabilityLedgerLogicalUtf8Bytes
+        > maximumPossibleLedgerLogicalUtf8Bytes
+      || ownerAccounting.peakTotalAccountedBytes < currentTotal
+      || ownerAccounting.peakTotalAccountedBytes
+        < ownerAccounting.peakObservabilityLedgerLogicalUtf8Bytes
+      || ownerAccounting.peakTotalAccountedBytes > maximumPossiblePeak
+      || (ownerAccounting.historyComplete
+        && (!ownerObservability.historyComplete
+          || ownerAccounting.peakTotalAccountedBytes
+            < state.peakRetainedMemory.totalAccountedBytes))) {
+      fail("shared owner accounting peaks are inconsistent with the retained graph");
+    }
+  }
 }
 
 function createSharedEngine(
@@ -3440,11 +3758,16 @@ function createSharedEngine(
       + snapshot.findingBytes;
     return snapshot;
   };
+  // Replaced once the observability ledger has been restored below. Retained
+  // graph mutations call this hook so the combined high-water mark is always
+  // a simultaneous observation, never a sum of independent owner peaks.
+  let observeOwnerAccounting = (): void => {};
   const observeRetainedMemory = (): void => {
     const currentMemory = retainedMemory();
     for (const key of Object.keys(currentMemory) as Array<keyof SharedRetainedMemory>) {
       peakRetainedMemory[key] = Math.max(peakRetainedMemory[key], currentMemory[key]);
     }
+    observeOwnerAccounting();
   };
   const refreshFindingBytes = (): void => {
     findingBytes = byteLength(JSON.stringify({
@@ -3528,6 +3851,165 @@ function createSharedEngine(
     ? cloneSharedYieldTimingV2(restoredObservabilityV2.timing)
     : emptySharedYieldTimingV2();
 
+  const sharedObservabilityCheckpointBody = (): SharedObservabilityCheckpointV2Body => ({
+    schemaVersion: 2,
+    sampleIntervalStates: observabilityIntervalStates,
+    samplesRecorded: observabilitySamplesRecorded,
+    cadenceSamplesRecorded: observabilityCadenceSamplesRecorded,
+    samples: observabilitySamples.map((sample) => cloneJsonValue(sample)),
+    baseState: observabilityBaseState,
+    baseYield: cloneSharedYieldCounts(observabilityBaseYield),
+    previousSampleState: previousObservabilityState,
+    previousYield: cloneSharedYieldCounts(previousObservabilityYield),
+    nextSampleState: nextObservabilityState,
+    firstUsefulAtState,
+    firstCriticalAtState,
+    throughFirstUseful: cloneSharedYieldCounts(throughFirstUseful),
+    historyComplete: observabilityHistoryComplete,
+    eventHistoryComplete: observabilityEventHistoryComplete,
+    timing: snapshotSharedYieldTimingV2(observabilityTiming, statesExplored),
+  });
+
+  const sharedObservabilityOwnerMetadataBody = (): SharedObservabilityCheckpointV2Body => ({
+    schemaVersion: 2,
+    sampleIntervalStates: observabilityIntervalStates,
+    samplesRecorded: observabilitySamplesRecorded,
+    cadenceSamplesRecorded: observabilityCadenceSamplesRecorded,
+    samples: [],
+    baseState: observabilityBaseState,
+    baseYield: cloneSharedYieldCounts(observabilityBaseYield),
+    previousSampleState: previousObservabilityState,
+    previousYield: cloneSharedYieldCounts(previousObservabilityYield),
+    nextSampleState: nextObservabilityState,
+    firstUsefulAtState,
+    firstCriticalAtState,
+    throughFirstUseful: cloneSharedYieldCounts(throughFirstUseful),
+    historyComplete: observabilityHistoryComplete,
+    eventHistoryComplete: observabilityEventHistoryComplete,
+    // Account the retained timing state. Point-in-time values are normalized
+    // out by the projection and longest gaps materialize at ledger boundaries.
+    timing: cloneSharedYieldTimingV2(observabilityTiming),
+  });
+
+  const ownerSampleLogicalUtf8Bytes = new Map<number, number>();
+  let ownerSamplesLogicalUtf8Bytes = 0;
+  const rebuildOwnerSampleBytes = (): void => {
+    ownerSampleLogicalUtf8Bytes.clear();
+    ownerSamplesLogicalUtf8Bytes = 0;
+    for (const sample of observabilitySamples) {
+      const bytes = logicalUtf8Bytes(sharedObservabilityOwnerSampleProjectionV1(sample));
+      ownerSampleLogicalUtf8Bytes.set(sample.sequence, bytes);
+      ownerSamplesLogicalUtf8Bytes += bytes;
+    }
+  };
+  const replaceOwnerSampleBytes = (
+    sample: ResourceSampleV2,
+    previous?: ResourceSampleV2
+  ): void => {
+    if (previous) {
+      ownerSamplesLogicalUtf8Bytes -= ownerSampleLogicalUtf8Bytes.get(previous.sequence) ?? 0;
+      ownerSampleLogicalUtf8Bytes.delete(previous.sequence);
+    }
+    const bytes = logicalUtf8Bytes(sharedObservabilityOwnerSampleProjectionV1(sample));
+    ownerSampleLogicalUtf8Bytes.set(sample.sequence, bytes);
+    ownerSamplesLogicalUtf8Bytes += bytes;
+  };
+  rebuildOwnerSampleBytes();
+  let currentOwnerObservabilityLedger = {
+    count: observabilitySamples.length,
+    logicalUtf8Bytes: 0,
+  };
+  const refreshOwnerLedgerAccounting = (): void => {
+    const metadataBytes = logicalUtf8Bytes(sharedObservabilityOwnerMetadataProjectionV1(
+      sharedObservabilityOwnerMetadataBody(),
+      observabilityTiming
+    ));
+    const separators = Math.max(0, observabilitySamples.length - 1);
+    const bytes = metadataBytes + ownerSamplesLogicalUtf8Bytes + separators;
+    if (!Number.isSafeInteger(bytes)) {
+      throw new RangeError("Shared observability-ledger bytes exceed the safe integer range");
+    }
+    currentOwnerObservabilityLedger = {
+      count: observabilitySamples.length,
+      logicalUtf8Bytes: bytes,
+    };
+  };
+  refreshOwnerLedgerAccounting();
+
+  const currentOwnerAccounting = (): SharedOwnerAccountingSnapshotV1 => {
+    const retained = retainedMemory();
+    const totalAccountedBytes = retained.totalAccountedBytes
+      + currentOwnerObservabilityLedger.logicalUtf8Bytes;
+    if (!Number.isSafeInteger(totalAccountedBytes)) {
+      throw new RangeError("Shared owner-accounted bytes exceed the safe integer range");
+    }
+    return {
+      observabilityLedger: { ...currentOwnerObservabilityLedger },
+      totalAccountedBytes,
+    };
+  };
+
+  const restoredOwnerAccounting = restored?.ownerAccounting;
+  const ownerAccountingHistoryComplete = restoredOwnerAccounting?.historyComplete ?? !checkpoint;
+  const initialOwnerAccounting = currentOwnerAccounting();
+  let peakOwnerObservabilityLedgerCount =
+    restoredOwnerAccounting?.peakObservabilityLedgerCount
+    ?? initialOwnerAccounting.observabilityLedger.count;
+  let peakOwnerObservabilityLedgerLogicalUtf8Bytes =
+    restoredOwnerAccounting?.peakObservabilityLedgerLogicalUtf8Bytes
+    ?? initialOwnerAccounting.observabilityLedger.logicalUtf8Bytes;
+  let peakOwnerTotalAccountedBytes = restoredOwnerAccounting?.peakTotalAccountedBytes
+    ?? initialOwnerAccounting.totalAccountedBytes;
+  observeOwnerAccounting = (): void => {
+    const current = currentOwnerAccounting();
+    peakOwnerObservabilityLedgerCount = Math.max(
+      peakOwnerObservabilityLedgerCount,
+      current.observabilityLedger.count
+    );
+    peakOwnerObservabilityLedgerLogicalUtf8Bytes = Math.max(
+      peakOwnerObservabilityLedgerLogicalUtf8Bytes,
+      current.observabilityLedger.logicalUtf8Bytes
+    );
+    peakOwnerTotalAccountedBytes = Math.max(
+      peakOwnerTotalAccountedBytes,
+      current.totalAccountedBytes
+    );
+  };
+  const sharedOwnerAccountingTelemetry = (): SharedOwnerAccountingV1 => ({
+    schemaVersion: 1,
+    basis: "deterministic_logical_utf8",
+    historyComplete: ownerAccountingHistoryComplete,
+    current: currentOwnerAccounting(),
+    peak: {
+      observabilityLedger: {
+        count: peakOwnerObservabilityLedgerCount,
+        logicalUtf8Bytes: peakOwnerObservabilityLedgerLogicalUtf8Bytes,
+      },
+      totalAccountedBytes: peakOwnerTotalAccountedBytes,
+    },
+  });
+  const sharedOwnerAccountingCheckpoint = (
+    emittedLedger: { count: number; logicalUtf8Bytes: number }
+  ): SharedOwnerAccountingCheckpointV1 => {
+    const emittedTotal = retainedMemory().totalAccountedBytes + emittedLedger.logicalUtf8Bytes;
+    if (!Number.isSafeInteger(emittedTotal)) {
+      throw new RangeError("Shared checkpoint owner-accounted bytes exceed the safe integer range");
+    }
+    return {
+      schemaVersion: 1,
+      historyComplete: ownerAccountingHistoryComplete,
+      peakObservabilityLedgerCount: Math.max(
+        peakOwnerObservabilityLedgerCount,
+        emittedLedger.count
+      ),
+      peakObservabilityLedgerLogicalUtf8Bytes: Math.max(
+        peakOwnerObservabilityLedgerLogicalUtf8Bytes,
+        emittedLedger.logicalUtf8Bytes
+      ),
+      peakTotalAccountedBytes: Math.max(peakOwnerTotalAccountedBytes, emittedTotal),
+    };
+  };
+
   const sharedYieldCounts = (): SharedYieldCountsV1 => ({
     critical: {
       runtimeErrors: runtimeErrors.size,
@@ -3604,23 +4086,27 @@ function createSharedEngine(
     // Retained trigger masks and semantic tuples stay boundary-local; only the
     // interval yield widens across records removed by deterministic compaction.
     rebuildRetainedYieldIntervals();
+    rebuildOwnerSampleBytes();
   };
 
-  let pendingLiveObservation: ResourceSampleV2 | undefined;
+  let pendingLiveObservation: {
+    sample: ResourceSampleV2;
+    ownerTotalAccountedBytes: number;
+  } | undefined;
   const emitPendingLiveObservation = (): void => {
     if (!pendingLiveObservation) return;
-    const sample = pendingLiveObservation;
+    const { sample, ownerTotalAccountedBytes } = pendingLiveObservation;
     pendingLiveObservation = undefined;
     opts.onSharedObservability?.({
       schemaVersion: 2,
       pass: foundBy,
       runWideState: sample.state,
       sample: cloneJsonValue(sample),
-      process: observeProcessMemory(sample.retention.current.totalAccountedBytes),
+      process: observeProcessMemory(ownerTotalAccountedBytes),
     });
   };
   const emitClosedLiveObservation = (): void => {
-    if (pendingLiveObservation && statesExplored > pendingLiveObservation.state) {
+    if (pendingLiveObservation && statesExplored > pendingLiveObservation.sample.state) {
       emitPendingLiveObservation();
     }
   };
@@ -3631,6 +4117,9 @@ function createSharedEngine(
   ): ResourceSampleV2 => {
     const reasons = canonicalSharedObservabilityReasonsV2(requestedReasons);
     if (reasons.length === 0) throw new Error("shared observability sample requires a reason");
+    // Materialize the longest dry interval only at a ledger boundary. The
+    // point-in-time dry/rate views are omitted from owner accounting below.
+    observabilityTiming = snapshotSharedYieldTimingV2(observabilityTiming, statesExplored);
     if (reasons.includes("cadence") || reasons.includes("termination")) refreshFindingBytes();
     observeRetainedMemory();
     const currentRetention = retainedMemory();
@@ -3671,18 +4160,24 @@ function createSharedEngine(
     };
     if (sameState) {
       observabilitySamples[observabilitySamples.length - 1] = sample;
+      replaceOwnerSampleBytes(sample, latest);
     } else {
       observabilitySamples.push(sample);
+      replaceOwnerSampleBytes(sample);
       observabilitySamplesRecorded++;
       compactObservabilitySamples();
     }
     previousObservabilityState = statesExplored;
     previousObservabilityYield = cloneSharedYieldCounts(cumulativeYield);
-    if (reasons.includes("cadence") || pendingLiveObservation?.sequence === sample.sequence) {
-      pendingLiveObservation = sample;
+    refreshOwnerLedgerAccounting();
+    observeOwnerAccounting();
+    const ownerTotalAccountedBytes = currentOwnerAccounting().totalAccountedBytes;
+    if (reasons.includes("cadence")
+      || pendingLiveObservation?.sample.sequence === sample.sequence) {
+      pendingLiveObservation = { sample, ownerTotalAccountedBytes };
     }
     if (reasons.includes("termination")) {
-      pendingLiveObservation = sample;
+      pendingLiveObservation = { sample, ownerTotalAccountedBytes };
       emitPendingLiveObservation();
     }
     return sample;
@@ -3694,6 +4189,8 @@ function createSharedEngine(
     recordObservabilitySample(["cadence"]);
     nextObservabilityState = (Math.floor(statesExplored / observabilityIntervalStates) + 1)
       * observabilityIntervalStates;
+    refreshOwnerLedgerAccounting();
+    observeOwnerAccounting();
   };
 
   const sharedObservabilityTelemetry = (): SharedObservabilityTelemetryV2 => {
@@ -4056,6 +4553,10 @@ function createSharedEngine(
     observabilityBaseYield = sharedYieldCounts();
     previousObservabilityYield = cloneSharedYieldCounts(observabilityBaseYield);
   }
+  // Capture the fully initialized or migrated baseline. Checkpoint creation
+  // itself remains a read-only snapshot and never advances these peaks.
+  refreshOwnerLedgerAccounting();
+  observeOwnerAccounting();
 
   const finishCurrent = () => {
     if (!current) return;
@@ -4085,6 +4586,10 @@ function createSharedEngine(
       pendingVariableBytes -= node.variableBytes;
       activeStateBytes = node.stateBytes;
       activeVariableBytes = node.variableBytes;
+      // Pending payload becomes active ownership before restore can fail or a
+      // depth/dedupe path can release it. Observe that simultaneous transfer
+      // without serializing the ledger on the transition hot path.
+      observeRetainedMemory();
       resetSession();
       try {
         session.story.state.LoadJson(node.stateJson!);
@@ -4170,6 +4675,7 @@ function createSharedEngine(
     const variableState = variableStateKey(nextVariables);
     const previousVariableStateObservations = variableStateCounts.get(variableState) ?? 0;
     const newVariableState = previousVariableStateObservations === 0;
+    const semanticIndexBytesBefore = semanticIndexBytes;
     observeSemanticKey(variableStateCounts, variableState);
     const changes = variableChanges(node.variables ?? {}, nextVariables);
     let rarestTransitionWeight = 0;
@@ -4181,6 +4687,12 @@ function createSharedEngine(
         meaningfulVariableTransitions++;
       }
       observeSemanticKey(variableTransitionCounts, key);
+    }
+    if (semanticIndexBytes > semanticIndexBytesBefore) {
+      // This growth can be followed immediately by an error, depth cap, or
+      // dedupe release. Capture its overlap with the active payload now; the
+      // observation is O(1) and does not serialize retained samples.
+      observeRetainedMemory();
     }
 
     if (session.errors.length > 0) {
@@ -4255,6 +4767,9 @@ function createSharedEngine(
     } else {
       rememberDedupeKey(seenStates, key);
       rememberDedupeKey(seenChoiceSets, choiceSet);
+      // Dedupe owners are retained after the node insertion observation.
+      // Close the same logical mutation with an exact simultaneous snapshot.
+      observeRetainedMemory();
       finishIfLast();
     }
     return true;
@@ -4289,24 +4804,7 @@ function createSharedEngine(
     if (done() || memoryStopped || timeStopped) {
       throw new RangeError("Shared search cannot checkpoint after completion or a resource stop");
     }
-    const sharedObservabilityBody: SharedObservabilityCheckpointV2Body = {
-      schemaVersion: 2,
-      sampleIntervalStates: observabilityIntervalStates,
-      samplesRecorded: observabilitySamplesRecorded,
-      cadenceSamplesRecorded: observabilityCadenceSamplesRecorded,
-      samples: observabilitySamples.map((sample) => cloneJsonValue(sample)),
-      baseState: observabilityBaseState,
-      baseYield: cloneSharedYieldCounts(observabilityBaseYield),
-      previousSampleState: previousObservabilityState,
-      previousYield: cloneSharedYieldCounts(previousObservabilityYield),
-      nextSampleState: nextObservabilityState,
-      firstUsefulAtState,
-      firstCriticalAtState,
-      throughFirstUseful: cloneSharedYieldCounts(throughFirstUseful),
-      historyComplete: observabilityHistoryComplete,
-      eventHistoryComplete: observabilityEventHistoryComplete,
-      timing: snapshotSharedYieldTimingV2(observabilityTiming, statesExplored),
-    };
+    const sharedObservabilityBody = sharedObservabilityCheckpointBody();
     const orderedSharedObservabilityBody = orderedSharedObservabilityCheckpointV2Body(
       sharedObservabilityBody,
       false
@@ -4314,7 +4812,10 @@ function createSharedEngine(
     const integritySha256 = orderedSharedObservabilityBody
       ? sharedObservabilityCheckpointV2IntegritySha256(orderedSharedObservabilityBody, false)
       : undefined;
-    if (!orderedSharedObservabilityBody || !integritySha256) {
+    const emittedLedger = orderedSharedObservabilityBody
+      ? sharedObservabilityLedgerOwnershipV1(orderedSharedObservabilityBody, false)
+      : undefined;
+    if (!orderedSharedObservabilityBody || !integritySha256 || !emittedLedger) {
       throw new Error("Shared observability v2 checkpoint could not be canonicalized");
     }
     const value: SharedSearchCheckpoint = {
@@ -4367,6 +4868,7 @@ function createSharedEngine(
         ancestryPayloadBytes,
         peakRetainedMemory: { ...peakRetainedMemory },
         sharedObservability: { ...orderedSharedObservabilityBody, integritySha256 },
+        ownerAccounting: sharedOwnerAccountingCheckpoint(emittedLedger),
       },
     };
     return cloneJsonValue(value);
@@ -4459,6 +4961,7 @@ function createSharedEngine(
           frontierCompactions,
         },
         sharedObservability: sharedObservabilityTelemetry(),
+        sharedOwnerAccounting: sharedOwnerAccountingTelemetry(),
         variableStatesObserved: variableStateCounts.size,
         variableTransitionsObserved: variableTransitionCounts.size,
         rareVariableTransitions: [...variableTransitionCounts.values()].filter((count) => count === 1).length,

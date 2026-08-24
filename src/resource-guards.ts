@@ -6,17 +6,32 @@ export interface ResourceGuardOptions {
   startedAtMs?: number;
   /** Heap headroom retained for constructing and flushing the final report. */
   finalizationMemoryReserveMb?: number;
-  /** Time retained for constructing and flushing the final report. */
+  /** Time retained for finalization when maxTimeMs supplies an overall envelope. */
   finalizationTimeReserveMs?: number;
 }
 
 export interface ResourceGuards {
   memoryCapBytes: number;
   memorySearchLimitBytes: number;
+  /** Configured capacity held outside the search envelope; it is not allocated memory. */
+  finalizationReserve: ConfiguredFinalizationReserveV1;
   deadlineMs?: number;
   memoryGuard: () => boolean;
   timeGuard?: () => boolean;
   peakMemoryBytes: () => number;
+}
+
+/**
+ * Capacity deliberately withheld from search so bounded result construction
+ * and persistence can finish. This is configuration, not retained ownership
+ * or an observation of process memory.
+ */
+export interface ConfiguredFinalizationReserveV1 {
+  schemaVersion: 1;
+  kind: "configured_headroom";
+  allocated: false;
+  memoryBytes: number;
+  timeMs: number;
 }
 
 /**
@@ -64,7 +79,10 @@ export function createResourceGuards(options: ResourceGuardOptions = {}): Resour
     Math.max(0, memoryCapBytes - 1)
   );
   const memorySearchLimitBytes = memoryCapBytes - memoryReserveBytes;
-  const timeReserveMs = Math.max(0, options.finalizationTimeReserveMs ?? 0);
+  const requestedTimeReserveMs = Math.max(0, options.finalizationTimeReserveMs ?? 0);
+  const timeReserveMs = options.maxTimeMs === undefined
+    ? 0
+    : Math.min(requestedTimeReserveMs, Math.max(0, options.maxTimeMs));
   const deadlineMs = options.maxTimeMs === undefined
     ? undefined
     : (options.startedAtMs ?? Date.now()) + Math.max(0, options.maxTimeMs - timeReserveMs);
@@ -77,6 +95,13 @@ export function createResourceGuards(options: ResourceGuardOptions = {}): Resour
   return {
     memoryCapBytes,
     memorySearchLimitBytes,
+    finalizationReserve: {
+      schemaVersion: 1,
+      kind: "configured_headroom",
+      allocated: false,
+      memoryBytes: memoryReserveBytes,
+      timeMs: timeReserveMs,
+    },
     ...(deadlineMs === undefined ? {} : { deadlineMs }),
     memoryGuard: () => sampleMemory() < memorySearchLimitBytes,
     ...(deadlineMs === undefined ? {} : { timeGuard: () => Date.now() < deadlineMs }),

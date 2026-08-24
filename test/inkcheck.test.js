@@ -1359,9 +1359,16 @@ test("CLI saves, lists, and reopens source-bound report artifacts by stable ID",
     const saved = JSON.parse(savedRun.stdout);
     assert.match(saved.artifact.id, /^report-[0-9a-f]{24}$/);
     assert.strictEqual(saved.artifact.path, `.inkcheck/reports/${saved.artifact.id}.json`);
+    assert.strictEqual(saved.artifact.accounting.schemaVersion, 1);
+    assert.strictEqual(saved.artifact.accounting.outcome, "created");
+    assert.strictEqual(saved.artifact.accounting.serialization.status, "applied");
     assert.match(savedRun.stderr, new RegExp(`saved report ${saved.artifact.id}`));
     const artifactFile = path.join(tmp, ...saved.artifact.path.split("/"));
     assert.strictEqual(fs.existsSync(artifactFile), true);
+    assert.strictEqual(
+      saved.artifact.accounting.durable.artifactBytes,
+      fs.statSync(artifactFile).size
+    );
     if (process.platform !== "win32") {
       assert.strictEqual(fs.statSync(path.dirname(artifactFile)).mode & 0o777, 0o700);
       assert.strictEqual(fs.statSync(artifactFile).mode & 0o777, 0o600);
@@ -1371,7 +1378,15 @@ test("CLI saves, lists, and reopens source-bound report artifacts by stable ID",
     assert.deepStrictEqual(withoutReference, JSON.parse(ordinary.stdout));
 
     const repeated = spawnSync(process.execPath, [...args, "--save-report"], { cwd: tmp, encoding: "utf8" });
-    assert.strictEqual(JSON.parse(repeated.stdout).artifact.id, saved.artifact.id);
+    const repeatedOutput = JSON.parse(repeated.stdout);
+    assert.strictEqual(repeatedOutput.artifact.id, saved.artifact.id);
+    assert.strictEqual(repeatedOutput.artifact.accounting.outcome, "reused");
+    assert.strictEqual(repeatedOutput.artifact.accounting.serialization.status, "not_applied");
+    assert.strictEqual(repeatedOutput.artifact.accounting.serialization.logicalArtifactUtf8Bytes, 0);
+    assert.strictEqual(
+      repeatedOutput.artifact.accounting.durable.artifactBytes,
+      saved.artifact.accounting.durable.artifactBytes
+    );
     assert.deepStrictEqual(
       fs.readdirSync(path.dirname(artifactFile)).filter((name) => name.endsWith(".json")),
       [`${saved.artifact.id}.json`]
@@ -1428,6 +1443,21 @@ test("report artifacts fail closed on tampering, incompatible versions, and corr
     const mismatch = spawnSync(process.execPath, [CLI, "artifacts", "show", reference.id, "--json"], { cwd: tmp, encoding: "utf8" });
     assert.strictEqual(mismatch.status, 2);
     assert.match(mismatch.stderr, /content does not match its stable ID/);
+
+    const metadataMismatch = JSON.parse(original);
+    metadataMismatch.effectiveConfiguration = { tampered: true };
+    fs.writeFileSync(artifactFile, JSON.stringify(metadataMismatch));
+    const metadata = spawnSync(process.execPath, [CLI, "artifacts", "show", reference.id, "--json"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(metadata.status, 2);
+    assert.match(metadata.stderr, /metadata does not match its saved report/);
+
+    const reorderedMetadata = JSON.parse(original);
+    reorderedMetadata.effectiveConfiguration = Object.fromEntries(
+      Object.entries(reorderedMetadata.effectiveConfiguration).reverse()
+    );
+    fs.writeFileSync(artifactFile, JSON.stringify(reorderedMetadata));
+    const reordered = spawnSync(process.execPath, [CLI, "artifacts", "show", reference.id, "--json"], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(reordered.status, 0, reordered.stderr);
 
     const incompatible = JSON.parse(original);
     incompatible.artifactSchemaVersion = 999;
@@ -1604,14 +1634,74 @@ test("report storage quotas refuse growth without deleting or leaking temporary 
     const directory = path.join(tmp, ".inkcheck", "reports");
     assert.deepStrictEqual(fs.readdirSync(directory), []);
 
-    const first = saveReportArtifact(tmp, story, report("first"));
+    const firstMarker = `first-${"é🧪".repeat(128)}`;
+    const first = saveReportArtifact(tmp, story, report(firstMarker));
     const firstFile = path.join(tmp, ...first.path.split("/"));
     const firstBytes = fs.statSync(firstFile).size;
+    const firstPayload = fs.readFileSync(firstFile);
+    const firstRaw = firstPayload.toString("utf8");
+    assert.ok(Buffer.byteLength(firstRaw, "utf8") > firstRaw.length,
+      "the adversarial report distinguishes UTF-8 bytes from JavaScript code units");
+    assert.strictEqual(first.accounting.schemaVersion, 1);
+    assert.strictEqual(first.accounting.outcome, "created");
+    assert.strictEqual(first.accounting.reportIdentity.count, 1);
+    assert.ok(first.accounting.reportIdentity.logicalUtf8Bytes > 0);
+    assert.strictEqual(first.accounting.serialization.status, "applied");
+    assert.strictEqual(first.accounting.serialization.logicalArtifactUtf8Bytes, firstBytes);
+    assert.strictEqual(
+      first.accounting.serialization.conservativePotentialStringUtf8Bytes,
+      first.accounting.reportIdentity.logicalUtf8Bytes + firstBytes
+    );
+    assert.strictEqual(first.accounting.serialization.currentStringUtf8Bytes, 0);
+    assert.deepStrictEqual(first.accounting.readback, {
+      status: "not_applied",
+      rawArtifactString: { count: 0, logicalUtf8Bytes: 0 },
+      validationIdentity: { count: 0, logicalUtf8Bytes: 0 },
+    });
+    assert.deepStrictEqual(first.accounting.durable, { count: 1, artifactBytes: firstBytes });
+    const originalReadFileSync = fs.readFileSync;
+    let artifactReadbacks = 0;
+    fs.readFileSync = (candidate, ...args) => {
+      if (path.resolve(String(candidate)) === path.resolve(firstFile)) artifactReadbacks++;
+      return originalReadFileSync(candidate, ...args);
+    };
+    let reused;
+    try {
+      reused = saveReportArtifact(tmp, story, report(firstMarker), {
+        maxReportBytes: 1,
+        maxProjectBytes: 1,
+      });
+    } finally {
+      fs.readFileSync = originalReadFileSync;
+    }
+    assert.strictEqual(artifactReadbacks, 1,
+      "reuse accounts from the one validation read instead of materializing the artifact again");
     assert.deepStrictEqual(
-      saveReportArtifact(tmp, story, report("first"), { maxReportBytes: 1, maxProjectBytes: 1 }),
-      first,
+      { id: reused.id, path: reused.path },
+      { id: first.id, path: first.path },
       "an idempotent save does not grow storage or lose an existing stable report"
     );
+    assert.strictEqual(reused.accounting.outcome, "reused");
+    assert.strictEqual(reused.accounting.serialization.status, "not_applied");
+    assert.strictEqual(reused.accounting.serialization.logicalArtifactUtf8Bytes, 0);
+    assert.strictEqual(reused.accounting.readback.status, "applied");
+    assert.deepStrictEqual(reused.accounting.readback.rawArtifactString, {
+      count: 1,
+      logicalUtf8Bytes: Buffer.byteLength(firstRaw, "utf8"),
+    });
+    assert.deepStrictEqual(reused.accounting.readback.validationIdentity, {
+      count: 1,
+      logicalUtf8Bytes: reused.accounting.reportIdentity.logicalUtf8Bytes,
+    });
+    assert.strictEqual(
+      reused.accounting.serialization.conservativePotentialStringUtf8Bytes,
+      reused.accounting.reportIdentity.logicalUtf8Bytes
+        + reused.accounting.readback.rawArtifactString.logicalUtf8Bytes
+        + reused.accounting.readback.validationIdentity.logicalUtf8Bytes
+    );
+    assert.strictEqual(reused.accounting.durable.artifactBytes, firstBytes);
+    assert.deepStrictEqual(fs.readFileSync(firstFile), firstPayload,
+      "reuse accounting does not alter the stable report payload");
     assert.throws(
       () => saveReportArtifact(tmp, story, report("second"), { maxProjectBytes: firstBytes + 1 }),
       /project report quota; delete or prune reports explicitly/
@@ -1743,6 +1833,55 @@ test("checkpoint artifacts are private, source-bound, idempotent, and determinis
     const firstManifest = firstFile.replace(/\.json(?:\.gz)?$/, ".meta.json");
     assert.strictEqual(fs.existsSync(firstManifest), true);
     if (process.platform !== "win32") assert.strictEqual(fs.statSync(firstManifest).mode & 0o777, 0o600);
+    const firstPayloadBytes = fs.statSync(firstFile).size;
+    const firstManifestBytes = fs.statSync(firstManifest).size;
+    assert.strictEqual(first.accounting.schemaVersion, 1);
+    assert.strictEqual(first.accounting.outcome, "created");
+    assert.strictEqual(first.accounting.checkpointGraph.count, 1);
+    assert.strictEqual(
+      first.accounting.checkpointGraph.logicalUtf8Bytes,
+      Buffer.byteLength(JSON.stringify(makeCheckpoint(10)), "utf8")
+    );
+    assert.ok(first.accounting.checkpointGraph.peakSourceChunkUtf8Bytes > 0);
+    assert.ok(
+      first.accounting.checkpointGraph.peakSourceChunkUtf8Bytes
+        <= first.accounting.checkpointGraph.logicalUtf8Bytes
+    );
+    assert.strictEqual(first.accounting.serialization.status, "applied");
+    assert.ok(
+      first.accounting.serialization.logicalArtifactUtf8BytesEmitted
+        > first.accounting.checkpointGraph.logicalUtf8Bytes
+    );
+    assert.strictEqual(first.accounting.compression.status, "applied");
+    assert.strictEqual(first.accounting.compression.storedBytesEmitted, firstPayloadBytes);
+    assert.ok(first.accounting.compression.peakOutputChunkBytes > 0);
+    assert.strictEqual(
+      first.accounting.compression.configuredCapacity.streamTotalBytes,
+      Object.values(first.accounting.compression.configuredCapacity.streamHighWaterMarksBytes)
+        .reduce((total, bytes) => total + bytes, 0)
+    );
+    assert.strictEqual(
+      first.accounting.compression.configuredCapacity.totalBytes,
+      first.accounting.compression.configuredCapacity.zlibWorkspaceBytes
+        + first.accounting.compression.configuredCapacity.streamTotalBytes
+    );
+    assert.deepStrictEqual(first.accounting.durable, {
+      payloadBytes: firstPayloadBytes,
+      manifestBytes: firstManifestBytes,
+      totalPairBytes: firstPayloadBytes + firstManifestBytes,
+    });
+    assert.strictEqual(repeated.accounting.outcome, "reused");
+    assert.deepStrictEqual(repeated.accounting.serialization, {
+      status: "not_applied",
+      logicalArtifactUtf8BytesEmitted: 0,
+      peakSourceChunkUtf8Bytes: 0,
+    });
+    assert.deepStrictEqual(repeated.accounting.compression, {
+      status: "not_applied",
+      storedBytesEmitted: 0,
+      peakOutputChunkBytes: 0,
+    });
+    assert.deepStrictEqual(repeated.accounting.durable, first.accounting.durable);
     assert.strictEqual((await openCheckpointArtifact(tmp, first.id)).artifact.freshness, "current");
     assert.strictEqual((await loadCheckpointForResume(tmp, first.id)).checkpoint.state.totalGranted, 10);
 
@@ -2294,6 +2433,13 @@ test("checkpoint publication preserves concurrent same-process nonce owners", as
 
     const references = await Promise.all(pending);
     assert.strictEqual(new Set(references.map((reference) => reference.id)).size, 1);
+    assert.strictEqual(references.filter((reference) => reference.accounting.outcome === "created").length, 1);
+    assert.strictEqual(references.filter((reference) => reference.accounting.outcome === "reused").length, 3);
+    assert.ok(references.every((reference) => reference.accounting.serialization.status === "applied"));
+    assert.ok(references.every((reference) => reference.accounting.compression.status === "applied"));
+    assert.strictEqual(new Set(references.map((reference) => (
+      JSON.stringify(reference.accounting.durable)
+    ))).size, 1);
     const id = references[0].id;
     names = fs.readdirSync(directory);
     assert.deepStrictEqual(names.filter((name) => name.includes(id)).sort(), [
@@ -2378,6 +2524,13 @@ test("checkpoint publication serializes cross-process same-ID writers and recove
     for (const worker of workers) assert.strictEqual(worker.status, 0, worker.stderr);
     const references = workers.map((worker) => JSON.parse(worker.stdout));
     assert.strictEqual(new Set(references.map((reference) => reference.id)).size, 1);
+    assert.strictEqual(references.filter((reference) => reference.accounting.outcome === "created").length, 1);
+    assert.strictEqual(references.filter((reference) => reference.accounting.outcome === "reused").length, 5);
+    assert.ok(references.every((reference) => reference.accounting.serialization.status === "applied"));
+    assert.ok(references.every((reference) => reference.accounting.compression.status === "applied"));
+    assert.strictEqual(new Set(references.map((reference) => (
+      JSON.stringify(reference.accounting.durable)
+    ))).size, 1);
     const id = references[0].id;
     names = fs.readdirSync(directory);
     assert.deepStrictEqual(names.filter((name) => name.includes(id)).sort(), [`${id}.json.gz`, `${id}.meta.json`]);
@@ -2818,6 +2971,11 @@ test("CLI persists and resumes an exact base-shared trajectory across processes"
     const first = JSON.parse(firstRun.stdout);
     assert.strictEqual(first.checkpoint.saved, true);
     assert.match(first.checkpoint.id, /^checkpoint-[0-9a-f]{24}$/);
+    assert.strictEqual(first.checkpoint.accounting.schemaVersion, 1);
+    assert.strictEqual(first.checkpoint.accounting.outcome, "created");
+    assert.strictEqual(first.checkpoint.accounting.serialization.status, "applied");
+    assert.strictEqual(first.checkpoint.accounting.compression.status, "applied");
+    assert.ok(first.checkpoint.accounting.durable.totalPairBytes > 0);
     assert.match(firstRun.stderr, new RegExp(`saved checkpoint ${first.checkpoint.id}`));
 
     const listed = spawnSync(process.execPath, [CLI, "checkpoints", "list", "--json"], { cwd: tmp, encoding: "utf8" });
@@ -2845,6 +3003,12 @@ test("CLI persists and resumes an exact base-shared trajectory across processes"
     assert.deepStrictEqual(resumed.explore, full.explore);
     assert.deepStrictEqual(resumed.shadowDecision, full.shadowDecision);
     assert.strictEqual(resumed.checkpoint.id, full.checkpoint.id);
+    assert.strictEqual(resumed.checkpoint.accounting.outcome, "created");
+    assert.strictEqual(resumed.checkpoint.accounting.serialization.status, "applied");
+    assert.strictEqual(full.checkpoint.accounting.outcome, "reused");
+    assert.strictEqual(full.checkpoint.accounting.serialization.status, "not_applied");
+    assert.strictEqual(full.checkpoint.accounting.compression.status, "not_applied");
+    assert.deepStrictEqual(full.checkpoint.accounting.durable, resumed.checkpoint.accounting.durable);
 
     const equalGrant = spawnSync(process.execPath, [CLI, "resume", first.checkpoint.id, "--max-states", "73", "--json"], {
       cwd: tmp,
@@ -4591,6 +4755,8 @@ test("shared CLI progress emits bounded resource observations without changing c
   assert.strictEqual(
     observation.process.comparedLogicalAccountedBytes,
     observation.sample.retention.current.totalAccountedBytes
+      + report.explore.passes[0]
+        .sharedOwnerAccounting.current.observabilityLedger.logicalUtf8Bytes
   );
   assert.deepStrictEqual(events.at(-1).sharedObservability, terminalObservation);
   assert.doesNotMatch(JSON.stringify(resources), /path_code|wide tree leaf|"Left"|"Center"|"Right"/i);
@@ -4636,6 +4802,30 @@ test("CLI resource progress stays global across additive shared-goal work", () =
       assert.strictEqual(events.at(-1).statesExplored, 150, baseline);
       assert.strictEqual(events.at(-1).sharedObservability.sample.state, 50, baseline);
       assert.strictEqual(events.at(-1).sharedObservability.runWideState, 150, baseline);
+
+      if (baseline === "shared") {
+        const streamed = spawnSync(process.execPath, [
+          CLI, "--search=shared", "--json-stream", "--progress=ndjson",
+        ], { cwd: tmp, encoding: "utf8" });
+        assert.strictEqual(streamed.status, 0, streamed.stderr);
+        const terminal = streamed.stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+        const streamedResources = streamed.stderr.trim().split("\n")
+          .map((line) => JSON.parse(line))
+          .filter((event) => event.type === "resource");
+        const finalObservation = streamedResources.at(-1).sharedObservability;
+        const ownerPasses = terminal.resources.ownerAccounting.sharedRetainedPasses;
+        assert.ok(ownerPasses.length >= 2);
+        assert.match(ownerPasses.at(-1).pass, /^shared:goal-directed-v1/);
+        assert.strictEqual(
+          terminal.resources.observedProcessAtTermination.comparedLogicalAccountedBytes,
+          finalObservation.process.comparedLogicalAccountedBytes,
+          "terminal comparison follows the adjacent directed pass rather than the stale base pass"
+        );
+        assert.strictEqual(
+          terminal.resources.observedProcessAtTermination.comparedLogicalAccountedBytes,
+          ownerPasses.at(-1).current.totalAccountedBytes
+        );
+      }
     }
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -4645,7 +4835,7 @@ test("CLI resource progress stays global across additive shared-goal work", () =
 test("--json-stream emits replayable evidence and a bounded terminal summary", () => {
   const proc = spawnSync(
     process.execPath,
-    [CLI, CLEAN_BRANCH, "--max-states", "100", "--max-memory", "96", "--no-min-repro", "--concurrency", "1", "--json-stream", "--progress=off"],
+    [CLI, CLEAN_BRANCH, "--search=shared", "--max-states", "100", "--max-memory", "96", "--no-min-repro", "--concurrency", "1", "--json-stream", "--progress=off"],
     { encoding: "utf8" }
   );
   assert.strictEqual(proc.status, 0, proc.stderr);
@@ -4663,7 +4853,32 @@ test("--json-stream emits replayable evidence and a bounded terminal summary", (
   assert.strictEqual(terminal.explore.endingsFound, endings.length);
   assert.strictEqual(terminal.evidence.endingsEmitted, endings.length);
   assert.ok(terminal.resources.memorySearchLimitBytes < terminal.resources.memoryCapBytes);
+  assert.strictEqual(terminal.resources.ownerAccounting.schemaVersion, 1);
+  assert.deepStrictEqual(terminal.resources.ownerAccounting.configuredReserve, {
+    schemaVersion: 1,
+    kind: "configured_headroom",
+    allocated: false,
+    memoryBytes: terminal.resources.finalizationMemoryReserveBytes,
+    timeMs: terminal.resources.finalizationTimeReserveMs,
+  });
+  assert.strictEqual(
+    terminal.resources.ownerAccounting.configuredReserve.memoryBytes,
+    terminal.resources.memoryCapBytes - terminal.resources.memorySearchLimitBytes
+  );
+  assert.strictEqual("checkpointCommit" in terminal.resources.ownerAccounting, false);
+  assert.strictEqual("reportFinalization" in terminal.resources.ownerAccounting, false);
+  const retainedPasses = terminal.resources.ownerAccounting.sharedRetainedPasses;
+  assert.ok(Array.isArray(retainedPasses));
+  assert.ok(retainedPasses.length > 0 && retainedPasses.length <= 8);
+  assert.strictEqual(retainedPasses[0].schemaVersion, 1);
+  assert.strictEqual(retainedPasses[0].basis, "deterministic_logical_utf8");
+  assert.ok(retainedPasses[0].current.observabilityLedger.logicalUtf8Bytes > 0);
+  assert.ok(retainedPasses[0].peak.totalAccountedBytes >= retainedPasses[0].current.totalAccountedBytes);
   assert.strictEqual(terminal.resources.observedProcessAtTermination.scope, "process");
+  assert.strictEqual(
+    terminal.resources.observedProcessAtTermination.comparedLogicalAccountedBytes,
+    retainedPasses[0].current.totalAccountedBytes
+  );
   assert.ok(terminal.resources.observedProcessAtTermination.heapUsedBytes > 0);
   assert.ok(terminal.resources.observedProcessAtTermination.rssBytes > 0);
   assert.ok(Buffer.byteLength(JSON.stringify(terminal)) < 16 * 1024);
