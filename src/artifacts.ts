@@ -41,6 +41,59 @@ export interface ArtifactReference {
   path: string;
 }
 
+export interface ReportArtifactReference extends ArtifactReference {
+  /** Post-write accounting kept outside the report whose bytes it measures. */
+  accounting: ReportFinalizationAccountingV1;
+}
+
+export interface ReportFinalizationAccountingV1 {
+  schemaVersion: 1;
+  outcome: "created" | "reused";
+  reportIdentity: {
+    count: 1;
+    /** UTF-8 bytes in the canonical report-ID input materialized by schema v1. */
+    logicalUtf8Bytes: number;
+  };
+  serialization: {
+    status: "applied" | "not_applied";
+    /** UTF-8 bytes in the pretty-printed artifact string; zero when reused. */
+    logicalArtifactUtf8Bytes: number;
+    /**
+     * Conservative total for the caller identity and every artifact or
+     * validation string below. Garbage collection is not treated as proof
+     * that an earlier string was reclaimed.
+     */
+    conservativePotentialStringUtf8Bytes: number;
+    /** The save API owns none of the accounted strings after it returns. */
+    currentStringUtf8Bytes: 0;
+  };
+  readback: {
+    status: "applied";
+    rawArtifactString: {
+      count: 1;
+      logicalUtf8Bytes: number;
+    };
+    validationIdentity: {
+      count: 1;
+      logicalUtf8Bytes: number;
+    };
+  } | {
+    status: "not_applied";
+    rawArtifactString: {
+      count: 0;
+      logicalUtf8Bytes: 0;
+    };
+    validationIdentity: {
+      count: 0;
+      logicalUtf8Bytes: 0;
+    };
+  };
+  durable: {
+    count: 1;
+    artifactBytes: number;
+  };
+}
+
 export interface ReportArtifactSummary extends ArtifactReference {
   artifactType: "report";
   createdAt: string;
@@ -100,9 +153,44 @@ function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function reportId(entrypoint: string, report: Record<string, unknown>): string {
+function parsedJsonEquivalent(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (left === null || right === null) return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right)
+      && left.length === right.length
+      && left.every((item, index) => parsedJsonEquivalent(item, right[index]));
+  }
+  if (typeof left !== "object" || typeof right !== "object") return false;
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).sort();
+  const rightKeys = Object.keys(rightRecord).sort();
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index]
+      && parsedJsonEquivalent(leftRecord[key], rightRecord[key]));
+}
+
+function reportIdentity(
+  entrypoint: string,
+  report: Record<string, unknown>
+): { id: string; logicalUtf8Bytes: number } {
   const identity = canonical({ entrypoint, report });
-  return `report-${createHash("sha256").update(identity).digest("hex").slice(0, 24)}`;
+  return {
+    id: `report-${createHash("sha256").update(identity).digest("hex").slice(0, 24)}`,
+    logicalUtf8Bytes: Buffer.byteLength(identity, "utf8"),
+  };
+}
+
+function exactByteSum(description: string, values: readonly number[]): number {
+  let total = 0;
+  for (const value of values) {
+    if (!Number.isSafeInteger(value) || value < 0 || value > Number.MAX_SAFE_INTEGER - total) {
+      throw new RangeError(`${description} exceeds the safe integer range`);
+    }
+    total += value;
+  }
+  return total;
 }
 
 function reportsDirectory(projectRoot: string): string {
@@ -144,7 +232,10 @@ function sourcePath(projectRoot: string, entrypoint: string): string {
   return resolved;
 }
 
-function parseArtifact(raw: string, expectedId?: string): ReportArtifact {
+function parseArtifactDetailed(raw: string, expectedId?: string): {
+  artifact: ReportArtifact;
+  validationIdentity: { count: 1; logicalUtf8Bytes: number };
+} {
   let value: unknown;
   try {
     value = JSON.parse(raw);
@@ -169,16 +260,25 @@ function parseArtifact(raw: string, expectedId?: string): ReportArtifact {
     throw new Error(`unsupported saved report schema ${artifact.reportSchemaVersion}; use a compatible Inkcheck version or migrate the artifact`);
   }
   const report = artifact.report as Record<string, unknown>;
-  const actualId = reportId(artifact.source.entrypoint, report);
-  if (artifact.id !== actualId || (expectedId !== undefined && expectedId !== artifact.id)) {
+  const validationIdentity = reportIdentity(artifact.source.entrypoint, report);
+  if (artifact.id !== validationIdentity.id || (expectedId !== undefined && expectedId !== artifact.id)) {
     throw new Error("report artifact content does not match its stable ID; restore or regenerate the artifact");
   }
   const fingerprint = fingerprintFromReport(report);
-  if (canonical(artifact.storyFingerprint) !== canonical(fingerprint)
-    || canonical(artifact.effectiveConfiguration) !== canonical(report.effectiveConfiguration)) {
+  // All four values came from this JSON parse. Compare their structure
+  // directly so validation does not materialize unreported canonical strings.
+  if (!parsedJsonEquivalent(artifact.storyFingerprint, fingerprint)
+    || !parsedJsonEquivalent(artifact.effectiveConfiguration, report.effectiveConfiguration)) {
     throw new Error("report artifact metadata does not match its saved report; restore or regenerate the artifact");
   }
-  return artifact as ReportArtifact;
+  return {
+    artifact: artifact as ReportArtifact,
+    validationIdentity: { count: 1, logicalUtf8Bytes: validationIdentity.logicalUtf8Bytes },
+  };
+}
+
+function parseArtifact(raw: string, expectedId?: string): ReportArtifact {
+  return parseArtifactDetailed(raw, expectedId).artifact;
 }
 
 function loadArtifact(projectRoot: string, id: string): ReportArtifact {
@@ -344,21 +444,52 @@ export function saveReportArtifact(
   entrypoint: string,
   report: Record<string, unknown>,
   inputLimits: ReportStorageLimits = {}
-): ArtifactReference {
+): ReportArtifactReference {
   const root = path.resolve(projectRoot);
   const absoluteSource = path.resolve(entrypoint);
   const relativeSource = path.relative(root, absoluteSource).split(path.sep).join("/");
   sourcePath(root, relativeSource);
-  const id = reportId(relativeSource, report);
+  const identity = reportIdentity(relativeSource, report);
+  const id = identity.id;
   const directory = reportsDirectory(root);
   const destination = artifactFile(root, id);
   const limits = reportStorageLimits(inputLimits);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (process.platform !== "win32") fs.chmodSync(directory, 0o700);
   if (fs.existsSync(destination)) {
-    parseArtifact(fs.readFileSync(destination, "utf8"), id);
+    const rawArtifact = fs.readFileSync(destination, "utf8");
+    const rawArtifactUtf8Bytes = Buffer.byteLength(rawArtifact, "utf8");
+    const parsed = parseArtifactDetailed(rawArtifact, id);
     if (process.platform !== "win32") fs.chmodSync(destination, 0o600);
-    return { id, path: artifactRelativePath(id) };
+    const artifactBytes = fs.statSync(destination).size;
+    return {
+      id,
+      path: artifactRelativePath(id),
+      accounting: {
+        schemaVersion: 1,
+        outcome: "reused",
+        reportIdentity: { count: 1, logicalUtf8Bytes: identity.logicalUtf8Bytes },
+        serialization: {
+          status: "not_applied",
+          logicalArtifactUtf8Bytes: 0,
+          conservativePotentialStringUtf8Bytes: exactByteSum(
+            "report finalization string byte count",
+            [
+              identity.logicalUtf8Bytes,
+              rawArtifactUtf8Bytes,
+              parsed.validationIdentity.logicalUtf8Bytes,
+            ]
+          ),
+          currentStringUtf8Bytes: 0,
+        },
+        readback: {
+          status: "applied",
+          rawArtifactString: { count: 1, logicalUtf8Bytes: rawArtifactUtf8Bytes },
+          validationIdentity: parsed.validationIdentity,
+        },
+        durable: { count: 1, artifactBytes },
+      },
+    };
   }
   const fingerprint = fingerprintFromReport(report);
   const artifact: ReportArtifact = {
@@ -396,7 +527,30 @@ export function saveReportArtifact(
     if (fd !== undefined) fs.closeSync(fd);
     fs.rmSync(temporary, { force: true });
   }
-  return { id, path: artifactRelativePath(id) };
+  return {
+    id,
+    path: artifactRelativePath(id),
+    accounting: {
+      schemaVersion: 1,
+      outcome: "created",
+      reportIdentity: { count: 1, logicalUtf8Bytes: identity.logicalUtf8Bytes },
+      serialization: {
+        status: "applied",
+        logicalArtifactUtf8Bytes: bytes,
+        conservativePotentialStringUtf8Bytes: exactByteSum(
+          "report finalization string byte count",
+          [identity.logicalUtf8Bytes, bytes]
+        ),
+        currentStringUtf8Bytes: 0,
+      },
+      readback: {
+        status: "not_applied",
+        rawArtifactString: { count: 0, logicalUtf8Bytes: 0 },
+        validationIdentity: { count: 0, logicalUtf8Bytes: 0 },
+      },
+      durable: { count: 1, artifactBytes: bytes },
+    },
+  };
 }
 
 export function listReportArtifacts(projectRoot: string): ReportArtifactSummary[] {

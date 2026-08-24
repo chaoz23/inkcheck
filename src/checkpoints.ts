@@ -29,10 +29,57 @@ const CHECKPOINT_RECOVERY_SLOT_WIDTH = String(MAX_CHECKPOINT_RECOVERY_MANIFESTS 
 
 export type CheckpointFreshness = "current" | "stale" | "path_changed";
 
+export interface CheckpointWriteAccountingV1 {
+  schemaVersion: 1;
+  outcome: "created" | "reused";
+  checkpointGraph: {
+    count: 1;
+    logicalUtf8Bytes: number;
+    peakSourceChunkUtf8Bytes: number;
+  };
+  serialization: {
+    status: "applied";
+    logicalArtifactUtf8BytesEmitted: number;
+    peakSourceChunkUtf8Bytes: number;
+  } | {
+    status: "not_applied";
+    logicalArtifactUtf8BytesEmitted: 0;
+    peakSourceChunkUtf8Bytes: 0;
+  };
+  compression: {
+    status: "applied";
+    storedBytesEmitted: number;
+    peakOutputChunkBytes: number;
+    configuredCapacity: {
+      basis: "configured_capacity_not_observed_heap";
+      zlibWorkspaceBytes: number;
+      streamHighWaterMarksBytes: {
+        compressorWritable: number;
+        compressorReadable: number;
+        outputLimiterWritable: number;
+        outputLimiterReadable: number;
+        destinationWritable: number;
+      };
+      streamTotalBytes: number;
+      totalBytes: number;
+    };
+  } | {
+    status: "not_applied";
+    storedBytesEmitted: 0;
+    peakOutputChunkBytes: 0;
+  };
+  durable: {
+    payloadBytes: number;
+    manifestBytes: number;
+    totalPairBytes: number;
+  };
+}
+
 export interface CheckpointArtifactReference {
   id: string;
   path: string;
   pruned: string[];
+  accounting: CheckpointWriteAccountingV1;
 }
 
 export interface CheckpointArtifactSummary {
@@ -314,10 +361,70 @@ function *jsonChunks(value: unknown, ancestors = new Set<object>()): Generator<s
   }
 }
 
-function checkpointId(entrypoint: string, checkpoint: SharedSearchCheckpoint): string {
+interface JsonChunkAccounting {
+  logicalUtf8Bytes: number;
+  peakSourceChunkUtf8Bytes: number;
+}
+
+interface CheckpointIdentity {
+  id: string;
+  checkpointGraph: CheckpointWriteAccountingV1["checkpointGraph"];
+}
+
+function exactByteAdd(description: string, total: number, value: number): number {
+  if (!Number.isSafeInteger(total) || total < 0
+    || !Number.isSafeInteger(value) || value < 0
+    || value > Number.MAX_SAFE_INTEGER - total) {
+    throw new RangeError(`${description} exceeds the safe integer range`);
+  }
+  return total + value;
+}
+
+function exactByteSum(description: string, values: readonly number[]): number {
+  let total = 0;
+  for (const value of values) total = exactByteAdd(description, total, value);
+  return total;
+}
+
+function accountJsonChunk(accounting: JsonChunkAccounting, chunk: string): void {
+  const bytes = Buffer.byteLength(chunk);
+  accounting.logicalUtf8Bytes = exactByteAdd(
+    "checkpoint logical UTF-8 byte count",
+    accounting.logicalUtf8Bytes,
+    bytes
+  );
+  accounting.peakSourceChunkUtf8Bytes = Math.max(accounting.peakSourceChunkUtf8Bytes, bytes);
+}
+
+function *accountedJsonChunks(
+  value: unknown,
+  accounting: JsonChunkAccounting
+): Generator<string> {
+  for (const chunk of jsonChunks(value)) {
+    accountJsonChunk(accounting, chunk);
+    yield chunk;
+  }
+}
+
+function checkpointIdentity(entrypoint: string, checkpoint: SharedSearchCheckpoint): CheckpointIdentity {
   const hash = createHash("sha256").update(entrypoint).update("\0");
-  for (const chunk of jsonChunks(checkpoint)) hash.update(chunk);
-  return `checkpoint-${hash.digest("hex").slice(0, 24)}`;
+  const accounting: JsonChunkAccounting = {
+    logicalUtf8Bytes: 0,
+    peakSourceChunkUtf8Bytes: 0,
+  };
+  for (const chunk of accountedJsonChunks(checkpoint, accounting)) hash.update(chunk);
+  return {
+    id: `checkpoint-${hash.digest("hex").slice(0, 24)}`,
+    checkpointGraph: {
+      count: 1,
+      logicalUtf8Bytes: accounting.logicalUtf8Bytes,
+      peakSourceChunkUtf8Bytes: accounting.peakSourceChunkUtf8Bytes,
+    },
+  };
+}
+
+function checkpointId(entrypoint: string, checkpoint: SharedSearchCheckpoint): string {
+  return checkpointIdentity(entrypoint, checkpoint).id;
 }
 
 function corrupt(stage: CheckpointReadStage, message: string): CheckpointReadError {
@@ -937,6 +1044,7 @@ export class CheckpointSizeLimitError extends Error {
 
 class ByteLimitTransform extends Transform {
   bytes = 0;
+  peakChunkBytes = 0;
   private readonly hash = createHash("sha256");
 
   constructor(private readonly kind: "single" | "project", private readonly limit: number) {
@@ -945,6 +1053,7 @@ class ByteLimitTransform extends Transform {
 
   override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null, data?: Buffer) => void): void {
     this.bytes += chunk.length;
+    this.peakChunkBytes = Math.max(this.peakChunkBytes, chunk.length);
     if (this.bytes > this.limit) {
       callback(new CheckpointSizeLimitError(this.kind, this.bytes, this.limit));
       return;
@@ -958,23 +1067,68 @@ class ByteLimitTransform extends Transform {
   }
 }
 
+interface CheckpointArtifactWriteAccounting {
+  serialization: Extract<CheckpointWriteAccountingV1["serialization"], { status: "applied" }>;
+  compression: Extract<CheckpointWriteAccountingV1["compression"], { status: "applied" }>;
+}
+
+interface WrittenCheckpointArtifact extends CheckpointArtifactWriteAccounting {
+  sizeBytes: number;
+  sha256: string;
+}
+
+const CHECKPOINT_GZIP_WINDOW_BITS = 15;
+const CHECKPOINT_GZIP_MEMORY_LEVEL = 8;
+
+function zlibWorkspaceCapacityBytes(): number {
+  // zlib documents this as deflate's configured window/hash tables plus its
+  // approximately 6-KiB overhead. It is a capacity estimate, not evidence
+  // that Node or V8 retained this many bytes.
+  return (1 << (CHECKPOINT_GZIP_WINDOW_BITS + 2))
+    + (1 << (CHECKPOINT_GZIP_MEMORY_LEVEL + 9))
+    + 6 * 1024;
+}
+
 async function writeCompressedArtifact(
   temporary: string,
   artifact: CheckpointArtifact,
   limits: Required<CheckpointStorageLimits>,
   precreated = false
-): Promise<{ sizeBytes: number; sha256: string }> {
+): Promise<WrittenCheckpointArtifact> {
   const kind = limits.maxCheckpointBytes <= limits.maxProjectBytes ? "single" : "project";
   const limit = Math.min(limits.maxCheckpointBytes, limits.maxProjectBytes);
+  const serialization: JsonChunkAccounting = {
+    logicalUtf8Bytes: 0,
+    peakSourceChunkUtf8Bytes: 0,
+  };
+  const source = Readable.from(accountedJsonChunks(artifact, serialization));
+  const compressor = createGzip({
+    level: 1,
+    windowBits: CHECKPOINT_GZIP_WINDOW_BITS,
+    memLevel: CHECKPOINT_GZIP_MEMORY_LEVEL,
+  });
   const limiter = new ByteLimitTransform(kind, limit);
+  const destination = fs.createWriteStream(temporary, { flags: precreated ? "r+" : "wx", mode: 0o600 });
+  const streamHighWaterMarksBytes = {
+    compressorWritable: compressor.writableHighWaterMark,
+    compressorReadable: compressor.readableHighWaterMark,
+    outputLimiterWritable: limiter.writableHighWaterMark,
+    outputLimiterReadable: limiter.readableHighWaterMark,
+    destinationWritable: destination.writableHighWaterMark,
+  };
+  const streamTotalBytes = exactByteSum(
+    "checkpoint configured stream capacity",
+    Object.values(streamHighWaterMarksBytes)
+  );
+  const workspaceBytes = zlibWorkspaceCapacityBytes();
   await pipeline(
-    Readable.from(jsonChunks(artifact)),
+    source,
     // Checkpoints favor fast commits over archival density. Their repeated Ink
     // state still compresses heavily at level 1, while users and agents wait at
     // this durable result-window boundary.
-    createGzip({ level: 1 }),
+    compressor,
     limiter,
-    fs.createWriteStream(temporary, { flags: precreated ? "r+" : "wx", mode: 0o600 })
+    destination
   );
   // Windows requires a writable handle for fsync even after the stream has
   // closed; reopening r+ preserves the same durability step on every platform.
@@ -984,7 +1138,30 @@ async function writeCompressedArtifact(
   } finally {
     fs.closeSync(fd);
   }
-  return { sizeBytes: limiter.bytes, sha256: limiter.digest() };
+  return {
+    sizeBytes: limiter.bytes,
+    sha256: limiter.digest(),
+    serialization: {
+      status: "applied",
+      logicalArtifactUtf8BytesEmitted: serialization.logicalUtf8Bytes,
+      peakSourceChunkUtf8Bytes: serialization.peakSourceChunkUtf8Bytes,
+    },
+    compression: {
+      status: "applied",
+      storedBytesEmitted: limiter.bytes,
+      peakOutputChunkBytes: limiter.peakChunkBytes,
+      configuredCapacity: {
+        basis: "configured_capacity_not_observed_heap",
+        zlibWorkspaceBytes: workspaceBytes,
+        streamHighWaterMarksBytes,
+        streamTotalBytes,
+        totalBytes: exactByteSum(
+          "checkpoint configured compression capacity",
+          [workspaceBytes, streamTotalBytes]
+        ),
+      },
+    },
+  };
 }
 
 function oldestFirst<T extends { createdAt: string; id: string }>(a: T, b: T): number {
@@ -1947,20 +2124,63 @@ function expectedManifestMatchesCheckpoint(
     && manifest.statesExplored === checkpoint.state.statesExplored;
 }
 
+function checkpointWriteAccounting(
+  identity: CheckpointIdentity,
+  payloadBytes: number,
+  manifestBytes: number,
+  operation?: {
+    outcome: CheckpointWriteAccountingV1["outcome"];
+    written?: CheckpointArtifactWriteAccounting;
+  }
+): CheckpointWriteAccountingV1 {
+  const written = operation?.written;
+  const totalPairBytes = exactByteSum(
+    "durable checkpoint pair byte count",
+    [payloadBytes, manifestBytes]
+  );
+  return {
+    schemaVersion: 1,
+    outcome: operation?.outcome ?? "reused",
+    checkpointGraph: identity.checkpointGraph,
+    serialization: written?.serialization ?? {
+      status: "not_applied",
+      logicalArtifactUtf8BytesEmitted: 0,
+      peakSourceChunkUtf8Bytes: 0,
+    },
+    compression: written?.compression ?? {
+      status: "not_applied",
+      storedBytesEmitted: 0,
+      peakOutputChunkBytes: 0,
+    },
+    durable: {
+      payloadBytes,
+      manifestBytes,
+      totalPairBytes,
+    },
+  };
+}
+
 async function reuseCheckpointArtifact(
   root: string,
   relative: string,
-  id: string,
+  identity: CheckpointIdentity,
   checkpoint: SharedSearchCheckpoint,
   limits: Required<CheckpointStorageLimits>,
-  expectedTransaction?: CheckpointTransaction
+  expectedTransaction?: CheckpointTransaction,
+  operation?: {
+    outcome: CheckpointWriteAccountingV1["outcome"];
+    written?: CheckpointArtifactWriteAccounting;
+  }
 ): Promise<CheckpointArtifactReference> {
+  const { id } = identity;
   const directory = checkpointsDirectory(root);
   const existing = checkpointFile(root, id);
-  let sizeBytes: number;
+  let payloadBytes: number;
+  let manifestBytes: number;
   const recovered = recoverPublishedCheckpoint(root, relative, id, checkpoint, limits, expectedTransaction);
   if (recovered) {
-    sizeBytes = recovered.payloadSizeBytes + recovered.metadataSizeBytes;
+    payloadBytes = recovered.payloadSizeBytes;
+    manifestBytes = recovered.metadataSizeBytes;
   } else {
     try {
       const loaded = loadArtifactDetailed(root, id);
@@ -1973,10 +2193,15 @@ async function reuseCheckpointArtifact(
           loaded.payloadSha256
         );
         const raw = serializedManifest(manifest);
-        enforceDurableCheckpointLimits(loaded.payloadSizeBytes + Buffer.byteLength(raw), limits);
+        enforceDurableCheckpointLimits(exactByteSum(
+          "durable checkpoint pair byte count",
+          [loaded.payloadSizeBytes, Buffer.byteLength(raw)]
+        ), limits);
         publishCheckpointManifest(root, id, raw);
       }
-      sizeBytes = summary(root, loaded).sizeBytes;
+      const loadedSummary = summary(root, loaded);
+      payloadBytes = loadedSummary.payloadSizeBytes;
+      manifestBytes = loadedSummary.metadataSizeBytes;
     } catch (error) {
       // Schema v1 may exceed the process string ceiling even though its stored
       // bytes are durable. Reuse is allowed only when the canonical manifest
@@ -1989,10 +2214,14 @@ async function reuseCheckpointArtifact(
       if (!expectedManifestMatchesCheckpoint(manifest, relative, checkpoint)) {
         throw corrupt("manifest", "checkpoint metadata manifest does not match the requested saved frontier");
       }
-      sizeBytes = manifest.artifactSizeBytes + metadataSizeBytes;
+      payloadBytes = manifest.artifactSizeBytes;
+      manifestBytes = metadataSizeBytes;
       // Refuse an already-oversized durable pair from metadata alone before
       // spending I/O on its full fixed-memory checksum.
-      enforceDurableCheckpointLimits(sizeBytes, limits);
+      enforceDurableCheckpointLimits(exactByteSum(
+        "durable checkpoint pair byte count",
+        [payloadBytes, manifestBytes]
+      ), limits);
       if (!error.payloadVerified) {
         verifyManifestPayload(
           existing,
@@ -2005,6 +2234,10 @@ async function reuseCheckpointArtifact(
     // same stable ID redundant. They are invisible to list/prune throughout.
     cleanupRecoveryManifests(root, id, expectedTransaction);
   }
+  const sizeBytes = exactByteSum(
+    "durable checkpoint pair byte count",
+    [payloadBytes, manifestBytes]
+  );
   enforceDurableCheckpointLimits(sizeBytes, limits);
   if (process.platform !== "win32") {
     fs.chmodSync(existing, 0o600);
@@ -2014,20 +2247,26 @@ async function reuseCheckpointArtifact(
   const pruned = pruneCheckpoints(root, id, limits);
   if (pruned.length > 0) syncDirectory(directory);
   const encoding = checkpointFile(root, id).endsWith(".gz") ? "gzip" : "json";
-  return { id, path: checkpointRelativePath(id, encoding), pruned };
+  return {
+    id,
+    path: checkpointRelativePath(id, encoding),
+    pruned,
+    accounting: checkpointWriteAccounting(identity, payloadBytes, manifestBytes, operation),
+  };
 }
 
 async function saveCheckpointArtifactExclusive(
   root: string,
   relative: string,
-  id: string,
+  identity: CheckpointIdentity,
   checkpoint: SharedSearchCheckpoint,
   limits: Required<CheckpointStorageLimits>
 ): Promise<CheckpointArtifactReference> {
+  const { id } = identity;
   const directory = checkpointsDirectory(root);
   const destination = checkpointDestination(root, id);
   const existing = checkpointFile(root, id);
-  if (fs.existsSync(existing)) return reuseCheckpointArtifact(root, relative, id, checkpoint, limits);
+  if (fs.existsSync(existing)) return reuseCheckpointArtifact(root, relative, identity, checkpoint, limits);
   // Validate the existing retention set before creating a new durable file.
   // Corrupt old state must not turn a successful write into a partial cleanup.
   try {
@@ -2037,12 +2276,12 @@ async function saveCheckpointArtifactExclusive(
     // retention validation. Reopen its durable transaction instead of making
     // validation inflate a sidecar-free (and potentially huge) frontier.
     if (fs.existsSync(checkpointFile(root, id))) {
-      return reuseCheckpointArtifact(root, relative, id, checkpoint, limits);
+      return reuseCheckpointArtifact(root, relative, identity, checkpoint, limits);
     }
     throw error;
   }
   if (fs.existsSync(checkpointFile(root, id))) {
-    return reuseCheckpointArtifact(root, relative, id, checkpoint, limits);
+    return reuseCheckpointArtifact(root, relative, identity, checkpoint, limits);
   }
   const artifact: CheckpointArtifact = {
     artifactSchemaVersion: CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
@@ -2061,11 +2300,15 @@ async function saveCheckpointArtifactExclusive(
   const temporary = transaction.temporary;
   let publishedPayload = false;
   let completedPair = false;
+  let written: WrittenCheckpointArtifact | undefined;
   try {
-    const written = await writeCompressedArtifact(temporary, artifact, limits, true);
+    written = await writeCompressedArtifact(temporary, artifact, limits, true);
     const manifest = manifestForArtifact(artifact, "gzip", written.sizeBytes, written.sha256);
     const rawManifest = serializedManifest(manifest);
-    enforceDurableCheckpointLimits(written.sizeBytes + Buffer.byteLength(rawManifest), limits);
+    enforceDurableCheckpointLimits(exactByteSum(
+      "durable checkpoint pair byte count",
+      [written.sizeBytes, Buffer.byteLength(rawManifest)]
+    ), limits);
     // The recovery manifest is the durable transaction intent. It is fsynced,
     // then its directory is fsynced, before payload bytes can become visible.
     writeRecoveryManifest(root, id, transaction.slot, rawManifest);
@@ -2082,10 +2325,14 @@ async function saveCheckpointArtifactExclusive(
     const reference = await reuseCheckpointArtifact(
       root,
       relative,
-      id,
+      identity,
       checkpoint,
       limits,
-      transaction
+      transaction,
+      {
+        outcome: publishedPayload ? "created" : "reused",
+        written,
+      }
     );
     completedPair = true;
     return reference;
@@ -2098,10 +2345,14 @@ async function saveCheckpointArtifactExclusive(
       const reference = await reuseCheckpointArtifact(
         root,
         relative,
-        id,
+        identity,
         checkpoint,
         limits,
-        transaction
+        transaction,
+        written ? {
+          outcome: publishedPayload ? "created" : "reused",
+          written,
+        } : undefined
       );
       completedPair = true;
       return reference;
@@ -2130,12 +2381,12 @@ export async function saveCheckpointArtifact(
 ): Promise<CheckpointArtifactReference> {
   const root = path.resolve(projectRoot);
   const relative = relativeEntrypoint(root, entrypoint);
-  const id = checkpointId(relative, checkpoint);
+  const identity = checkpointIdentity(relative, checkpoint);
   const directory = checkpointsDirectory(root);
   const limits = storageLimits(inputLimits);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (process.platform !== "win32") fs.chmodSync(directory, 0o700);
-  return saveCheckpointArtifactExclusive(root, relative, id, checkpoint, limits);
+  return saveCheckpointArtifactExclusive(root, relative, identity, checkpoint, limits);
 }
 
 export function listCheckpointArtifacts(

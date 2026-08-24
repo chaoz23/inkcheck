@@ -11,7 +11,10 @@ const {
   machineFindingSummaries,
   projectMachineReport,
 } = require("../dist/machine-output");
-const { SHARED_OBSERVABILITY_REASON_ORDER_V2 } = require("../dist/explore");
+const {
+  SHARED_OBSERVABILITY_REASON_ORDER_V2,
+  sharedObservabilityLedgerLogicalUtf8BytesUpperBoundV1,
+} = require("../dist/explore");
 
 const MAX_SHARED_OBSERVABILITY_TRIGGER_MASK_V2 =
   (1 << SHARED_OBSERVABILITY_REASON_ORDER_V2.length) - 1;
@@ -371,6 +374,168 @@ test("compact shared observability V2 whitelists reasons and timing without forw
     [0, 0, 0, 0, 0, 0, 0, 1]
   );
   assert.ok(Buffer.byteLength(serialized, "utf8") <= MAX_STANDARD_MACHINE_RESPONSE_BYTES);
+});
+
+test("compact owner accounting validates exact totals and recursively whitelists aggregates", () => {
+  const report = largeReport();
+  const telemetry = validSharedObservabilityV2();
+  const pass = report.explore.passes[0];
+  pass.pass = "shared:deep-novelty-v1:seed=7";
+  pass.sharedObservability = telemetry;
+  pass.sharedMemory = {
+    current: structuredClone(telemetry.samples.at(-1).retention.current),
+    peak: structuredClone(telemetry.samples.at(-1).retention.peak),
+  };
+  const currentLedgerBytes = 321;
+  const peakLedgerBytes = 456;
+  pass.sharedOwnerAccounting = {
+    schemaVersion: 1,
+    basis: "deterministic_logical_utf8",
+    historyComplete: true,
+    current: {
+      observabilityLedger: { count: 2, logicalUtf8Bytes: currentLedgerBytes },
+      totalAccountedBytes: pass.sharedMemory.current.totalAccountedBytes + currentLedgerBytes,
+      privateCurrent: "PRIVATE OWNER CURRENT",
+    },
+    peak: {
+      observabilityLedger: { count: 2, logicalUtf8Bytes: peakLedgerBytes },
+      totalAccountedBytes: pass.sharedMemory.peak.totalAccountedBytes + peakLedgerBytes,
+      privatePeak: { story: "PRIVATE OWNER PEAK" },
+    },
+    privateOwnerMap: ["PRIVATE OWNER MAP"],
+  };
+  const projected = projectMachineReport(report, "summary");
+  assert.deepStrictEqual(projected.explore.sharedOwnerAccounting, [{
+    pass: "shared:deep-novelty-v1:seed=7",
+    schemaVersion: 1,
+    basis: "deterministic_logical_utf8",
+    historyComplete: true,
+    current: {
+      observabilityLedger: { count: 2, logicalUtf8Bytes: currentLedgerBytes },
+      totalAccountedBytes: pass.sharedMemory.current.totalAccountedBytes + currentLedgerBytes,
+    },
+    peak: {
+      observabilityLedger: { count: 2, logicalUtf8Bytes: peakLedgerBytes },
+      totalAccountedBytes: pass.sharedMemory.peak.totalAccountedBytes + peakLedgerBytes,
+    },
+  }]);
+  assert.doesNotMatch(JSON.stringify(projected), /PRIVATE OWNER/);
+  assert.ok(Buffer.byteLength(JSON.stringify(projected), "utf8") <= MAX_STANDARD_MACHINE_RESPONSE_BYTES);
+
+  const invalid = [
+    ["wrong current total", (value) => { value.current.totalAccountedBytes++; }],
+    ["current above peak", (value) => { value.peak.totalAccountedBytes = value.current.totalAccountedBytes - 1; }],
+    ["component peak above simultaneous total", (value) => {
+      value.peak.observabilityLedger.logicalUtf8Bytes = value.peak.totalAccountedBytes + 1;
+    }],
+    ["sample count mismatch", (value) => { value.current.observabilityLedger.count = 1; }],
+    ["owner peak count exceeds recorded history", (value) => {
+      value.peak.observabilityLedger.count = 3;
+    }],
+    ["owner count above ledger bound", (value) => { value.peak.observabilityLedger.count = 129; }],
+    ["fractional ledger bytes", (value) => { value.current.observabilityLedger.logicalUtf8Bytes = 1.5; }],
+    ["invented basis", (value) => { value.basis = "observed_heap"; }],
+  ];
+  for (const [label, mutate] of invalid) {
+    const candidate = structuredClone(report);
+    mutate(candidate.explore.passes[0].sharedOwnerAccounting);
+    assert.strictEqual(
+      projectMachineReport(candidate, "summary").explore.sharedOwnerAccounting,
+      undefined,
+      label
+    );
+  }
+
+  const inflatedLedgerPeak = structuredClone(report);
+  const inflatedOwner = inflatedLedgerPeak.explore.passes[0].sharedOwnerAccounting;
+  inflatedOwner.peak.observabilityLedger.logicalUtf8Bytes = 1_000_000;
+  inflatedOwner.peak.totalAccountedBytes =
+    inflatedLedgerPeak.explore.passes[0].sharedMemory.peak.totalAccountedBytes + 1_000_000;
+  assert.strictEqual(
+    projectMachineReport(inflatedLedgerPeak, "summary")
+      .explore.sharedOwnerAccounting,
+    undefined,
+    "coordinated ledger-byte and total inflation cannot exceed the schema-derived ceiling"
+  );
+
+  const inflatedCurrentLedger = structuredClone(report);
+  const inflatedCurrentPass = inflatedCurrentLedger.explore.passes[0];
+  const inflatedCurrentOwner = inflatedCurrentPass.sharedOwnerAccounting;
+  inflatedCurrentPass.sharedObservability.samplesRecorded = 129;
+  inflatedCurrentOwner.peak.observabilityLedger.count = 128;
+  inflatedCurrentOwner.current.observabilityLedger.logicalUtf8Bytes =
+    sharedObservabilityLedgerLogicalUtf8BytesUpperBoundV1(2) + 1;
+  inflatedCurrentOwner.peak.observabilityLedger.logicalUtf8Bytes =
+    inflatedCurrentOwner.current.observabilityLedger.logicalUtf8Bytes;
+  inflatedCurrentOwner.current.totalAccountedBytes =
+    inflatedCurrentPass.sharedMemory.current.totalAccountedBytes
+      + inflatedCurrentOwner.current.observabilityLedger.logicalUtf8Bytes;
+  inflatedCurrentOwner.peak.totalAccountedBytes =
+    inflatedCurrentPass.sharedMemory.peak.totalAccountedBytes
+      + inflatedCurrentOwner.peak.observabilityLedger.logicalUtf8Bytes;
+  assert.strictEqual(
+    projectMachineReport(inflatedCurrentLedger, "summary")
+      .explore.sharedOwnerAccounting,
+    undefined,
+    "current ledger bytes cannot borrow the wider historical peak-count ceiling"
+  );
+
+  const coordinatedBadRetainedTotal = structuredClone(report);
+  coordinatedBadRetainedTotal.explore.passes[0].sharedMemory.current.pendingStateBytes++;
+  coordinatedBadRetainedTotal.explore.passes[0]
+    .sharedOwnerAccounting.current.totalAccountedBytes++;
+  assert.strictEqual(
+    projectMachineReport(coordinatedBadRetainedTotal, "summary")
+      .explore.sharedOwnerAccounting,
+    undefined,
+    "coordinated owner totals cannot hide an invalid underlying retained total"
+  );
+
+  const impossibleRetainedPeak = structuredClone(report);
+  const retainedPeak = impossibleRetainedPeak.explore.passes[0].sharedMemory.peak;
+  retainedPeak.pendingStateBytes = retainedPeak.totalAccountedBytes + 1;
+  const impossibleSamplePeak = impossibleRetainedPeak.explore.passes[0]
+    .sharedObservability.samples.at(-1).retention.peak;
+  impossibleSamplePeak.pendingStateBytes = impossibleSamplePeak.totalAccountedBytes + 1;
+  assert.strictEqual(
+    projectMachineReport(impossibleRetainedPeak, "summary")
+      .explore.sharedOwnerAccounting,
+    undefined,
+    "a retained component peak cannot exceed the simultaneous retained total peak"
+  );
+  assert.strictEqual(
+    projectMachineReport(impossibleRetainedPeak, "summary")
+      .explore.sharedObservability,
+    undefined,
+    "the same impossible retained peak is rejected from the compact sample projection"
+  );
+
+  const inflatedRetainedPeakTotal = structuredClone(report);
+  const inflatedPass = inflatedRetainedPeakTotal.explore.passes[0];
+  const inflatedPeak = inflatedPass.sharedMemory.peak;
+  const byteFields = Object.keys(inflatedPeak)
+    .filter((key) => key.endsWith("Bytes") && key !== "totalAccountedBytes");
+  inflatedPeak.totalAccountedBytes = byteFields
+    .reduce((total, key) => total + inflatedPeak[key], 0) + 1;
+  inflatedPass.sharedOwnerAccounting.peak.totalAccountedBytes =
+    inflatedPeak.totalAccountedBytes
+      + inflatedPass.sharedOwnerAccounting.peak.observabilityLedger.logicalUtf8Bytes;
+  const latestInflatedSample = inflatedPass.sharedObservability.samples.at(-1);
+  latestInflatedSample.retention.peak.totalAccountedBytes = Object.keys(
+    latestInflatedSample.retention.peak
+  ).filter((key) => key.endsWith("Bytes") && key !== "totalAccountedBytes")
+    .reduce((total, key) => total + latestInflatedSample.retention.peak[key], 0) + 1;
+  const inflatedProjection = projectMachineReport(inflatedRetainedPeakTotal, "summary");
+  assert.strictEqual(
+    inflatedProjection.explore.sharedOwnerAccounting,
+    undefined,
+    "a simultaneous retained peak total cannot exceed the sum of component peaks"
+  );
+  assert.strictEqual(
+    inflatedProjection.explore.sharedObservability,
+    undefined,
+    "the compact sample projection rejects the same inflated simultaneous peak"
+  );
 });
 
 test("compact shared observability requires exact bounded V2 trigger yield", () => {
