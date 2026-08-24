@@ -1,3 +1,5 @@
+import { SHARED_OBSERVABILITY_REASON_ORDER_V2 } from "./explore";
+
 export type MachineDetail = "summary" | "standard" | "full";
 
 export const DEFAULT_MACHINE_DETAIL: MachineDetail = "standard";
@@ -169,6 +171,8 @@ function executionSummary(value: unknown) {
 
 const MAX_COMPACT_SHARED_OBSERVABILITY_PASSES = 8;
 const MAX_SHARED_OBSERVABILITY_SAMPLES = 128;
+const MAX_SHARED_OBSERVABILITY_TRIGGER_MASK_V2 =
+  (1 << SHARED_OBSERVABILITY_REASON_ORDER_V2.length) - 1;
 const SHARED_RETAINED_MEMORY_FIELDS = [
   "pendingStateBytes", "pendingVariableBytes", "activeStateBytes", "activeVariableBytes",
   "ancestryBytes", "dedupeBytes", "semanticIndexBytes", "frontierReferenceBytes",
@@ -235,6 +239,42 @@ function sharedYieldCounts(value: unknown): Record<string, unknown> | undefined 
   };
 }
 
+function sharedObservabilityYieldVector(value: Record<string, unknown>): number[] | undefined {
+  const critical = record(value.critical);
+  const intent = record(value.intent);
+  const authoredCoverage = record(value.authoredCoverage);
+  const counts = [
+    critical?.runtimeErrors,
+    critical?.assertionViolations,
+    intent?.goalsReached,
+    intent?.stagesReached,
+    authoredCoverage?.knotsVisited,
+    value.visibleOutcomes,
+    value.semanticTransitions,
+    value.terminalVariants,
+  ];
+  return counts.every(nonNegativeSafeInteger) ? counts as number[] : undefined;
+}
+
+function sharedObservabilityTriggerYield(
+  value: unknown,
+  intervalDelta?: Record<string, unknown>
+): number[] | undefined {
+  if (!Array.isArray(value) || value.length !== 8) return undefined;
+  const projected: number[] = [];
+  for (const count of value) {
+    if (!nonNegativeSafeInteger(count)) return undefined;
+    projected.push(count);
+  }
+  if (intervalDelta) {
+    const intervalVector = sharedObservabilityYieldVector(intervalDelta);
+    if (!intervalVector || projected.some((count, index) => count > intervalVector[index])) {
+      return undefined;
+    }
+  }
+  return projected;
+}
+
 function sharedResourceSample(value: unknown): Record<string, unknown> | undefined {
   const sample = record(value);
   const retention = record(sample?.retention);
@@ -243,9 +283,38 @@ function sharedResourceSample(value: unknown): Record<string, unknown> | undefin
   const peak = sharedRetainedMemory(retention?.peak);
   const delta = sharedYieldCounts(interval?.delta);
   const cumulative = sharedYieldCounts(interval?.cumulative);
-  if (!sample || sample.schemaVersion !== 1
-    || typeof sample.boundary !== "string"
-    || !["interval", "termination", "interval_and_termination"].includes(sample.boundary)
+  const v1 = sample?.schemaVersion === 1;
+  const v2 = sample?.schemaVersion === 2;
+  const reasons = v2 ? array(sample?.reasons) : [];
+  const reasonRanks = reasons.length <= SHARED_OBSERVABILITY_REASON_ORDER_V2.length
+    ? reasons.map((reason) =>
+        SHARED_OBSERVABILITY_REASON_ORDER_V2.indexOf(
+          reason as typeof SHARED_OBSERVABILITY_REASON_ORDER_V2[number]
+        ))
+    : [];
+  const expectedTriggerMask = reasonRanks.reduce(
+    (mask, rank) => rank < 0 ? mask : mask | (1 << rank),
+    0
+  );
+  const triggerYield = v2
+    ? sharedObservabilityTriggerYield(sample?.triggerYield, delta)
+    : undefined;
+  const yieldReasonPositions = new Set(
+    reasonRanks.filter((rank) => rank >= 1 && rank <= 8).map((rank) => rank - 1)
+  );
+  const triggerYieldMatchesReasons = triggerYield?.every(
+    (count, index) => (count > 0) === yieldReasonPositions.has(index)
+  ) === true;
+  if (!sample || (!v1 && !v2)
+    || (v1 && (typeof sample.boundary !== "string"
+      || !["interval", "termination", "interval_and_termination"].includes(sample.boundary as string)))
+    || (v2 && (!nonNegativeSafeInteger(sample.sequence) || sample.sequence < 1
+      || reasons.length < 1 || reasons.length > SHARED_OBSERVABILITY_REASON_ORDER_V2.length
+      || reasonRanks.some((rank, index) => rank < 0 || (index > 0 && rank <= reasonRanks[index - 1]))
+      || !nonNegativeSafeInteger(sample.triggerMask) || sample.triggerMask < 1
+      || sample.triggerMask > MAX_SHARED_OBSERVABILITY_TRIGGER_MASK_V2
+      || sample.triggerMask !== expectedTriggerMask
+      || !triggerYield || !triggerYieldMatchesReasons))
     || !nonNegativeSafeInteger(sample.state)
     || !retention || retention.schemaVersion !== 1 || !current || !peak
     || !nonNegativeSafeInteger(retention.releasedNodes)
@@ -259,8 +328,15 @@ function sharedResourceSample(value: unknown): Record<string, unknown> | undefin
     return undefined;
   }
   return {
-    schemaVersion: 1,
-    boundary: sample.boundary,
+    schemaVersion: sample.schemaVersion,
+    ...(v1
+      ? { boundary: sample.boundary }
+      : {
+          sequence: sample.sequence,
+          reasons,
+          triggerMask: sample.triggerMask,
+          triggerYield,
+        }),
     state: sample.state,
     retention: {
       schemaVersion: 1,
@@ -277,6 +353,39 @@ function sharedResourceSample(value: unknown): Record<string, unknown> | undefin
       cumulative,
     },
   };
+}
+
+function sharedYieldTimingCategory(value: unknown): Record<string, unknown> | undefined {
+  const category = record(value);
+  if (!category || !nonNegativeSafeInteger(category.identities)) return undefined;
+  for (const field of ["firstAtState", "lastAtState", "longestDryStates", "currentDryStates"]) {
+    const item = category[field];
+    if (item !== null && !nonNegativeSafeInteger(item)) return undefined;
+  }
+  const rate = category.identitiesPerMillionTransitions;
+  if (rate !== null && (typeof rate !== "number" || !Number.isFinite(rate) || rate < 0)) return undefined;
+  return {
+    identities: category.identities,
+    firstAtState: category.firstAtState,
+    lastAtState: category.lastAtState,
+    longestDryStates: category.longestDryStates,
+    currentDryStates: category.currentDryStates,
+    identitiesPerMillionTransitions: rate,
+  };
+}
+
+function sharedYieldTiming(value: unknown): Record<string, unknown> | undefined {
+  const timing = record(value);
+  if (!timing || timing.schemaVersion !== 2) return undefined;
+  const projected: Record<string, unknown> = { schemaVersion: 2 };
+  for (const field of [
+    "critical", "intent", "authoredCoverage", "visibleOutcomes", "semanticTransitions", "terminalVariants",
+  ]) {
+    const category = sharedYieldTimingCategory(timing[field]);
+    if (!category) return undefined;
+    projected[field] = category;
+  }
+  return projected;
 }
 
 function sharedYieldSummary(value: unknown): Record<string, unknown> | undefined {
@@ -309,7 +418,9 @@ function sharedObservabilitySummary(value: unknown) {
     const pass = record(passValue);
     const telemetry = record(pass?.sharedObservability);
     const projectedPass = sharedPass(pass?.pass);
-    if (!pass || !telemetry || !projectedPass || telemetry.schemaVersion !== 1
+    const v1 = telemetry?.schemaVersion === 1;
+    const v2 = telemetry?.schemaVersion === 2;
+    if (!pass || !telemetry || !projectedPass || (!v1 && !v2)
       || !nonNegativeSafeInteger(telemetry.sampleIntervalStates)
       || telemetry.sampleIntervalStates < 1 || telemetry.sampleIntervalStates > 10_000_000
       || !nonNegativeSafeInteger(telemetry.samplesRecorded)
@@ -317,22 +428,29 @@ function sharedObservabilitySummary(value: unknown) {
       || telemetry.samplesRetained > MAX_SHARED_OBSERVABILITY_SAMPLES
       || !nonNegativeSafeInteger(telemetry.samplesCompacted)
       || telemetry.samplesRecorded - telemetry.samplesRetained !== telemetry.samplesCompacted
-      || typeof telemetry.historyComplete !== "boolean") continue;
+      || typeof telemetry.historyComplete !== "boolean"
+      || (v2 && (!nonNegativeSafeInteger(telemetry.cadenceSamplesRecorded)
+        || telemetry.cadenceSamplesRecorded > telemetry.samplesRecorded
+        || typeof telemetry.eventHistoryComplete !== "boolean"))) continue;
     const samples = array(telemetry.samples);
     if (samples.length !== telemetry.samplesRetained) continue;
     const latest = samples.length ? sharedResourceSample(samples.at(-1)) : undefined;
     const yieldSummary = sharedYieldSummary(telemetry.yieldSummary);
-    if ((samples.length && !latest) || !yieldSummary) continue;
+    const timing = v2 ? sharedYieldTiming(telemetry.timing) : undefined;
+    if ((samples.length && !latest) || !yieldSummary || (v2 && !timing)) continue;
     summaries.push({
       pass: projectedPass,
-      schemaVersion: 1,
+      schemaVersion: telemetry.schemaVersion,
       sampleIntervalStates: telemetry.sampleIntervalStates,
       samplesRecorded: telemetry.samplesRecorded,
+      ...(v2 ? { cadenceSamplesRecorded: telemetry.cadenceSamplesRecorded } : {}),
       samplesRetained: telemetry.samplesRetained,
       samplesCompacted: telemetry.samplesCompacted,
       historyComplete: telemetry.historyComplete,
+      ...(v2 ? { eventHistoryComplete: telemetry.eventHistoryComplete } : {}),
       ...(latest ? { latestSample: latest } : {}),
       yieldSummary,
+      ...(timing ? { timing } : {}),
     });
   }
   return summaries.length ? summaries : undefined;

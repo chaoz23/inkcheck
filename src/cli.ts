@@ -19,7 +19,7 @@ import {
   ExploreResult,
   ExploreProgress,
   ExploreEvidence,
-  SharedResourceObservationV1,
+  SharedResourceObservation,
   DEFAULT_STORY_SEED,
   MAX_STORY_SEED,
   PortfolioWeights,
@@ -770,7 +770,7 @@ async function main() {
   });
   let sequence = 0;
   let statesExplored = resumed?.checkpoint.state.statesExplored ?? 0;
-  let latestSharedObservation: SharedResourceObservationV1 | undefined;
+  let latestSharedObservation: SharedResourceObservation | undefined;
   const selectedProgressMode = progressMode as "auto" | "human" | "ndjson" | "off";
   const humanProgress = selectedProgressMode === "auto" || selectedProgressMode === "human"
     ? new HumanProgressRenderer(process.stderr, selectedProgressMode)
@@ -810,7 +810,7 @@ async function main() {
       statesSinceLastDiscovery?: number | null;
       knotsVisited?: number;
       discoveries?: DiscoveryChanges;
-      sharedObservability?: SharedResourceObservationV1;
+      sharedObservability?: SharedResourceObservation;
       status?: ProgressStatus;
       stopReason?: ProgressStopReason;
       outcome?: ProgressOutcome;
@@ -986,7 +986,7 @@ async function main() {
       randomnessDetected: semantics.usesRandomness,
       ...(asJsonStream ? { onEvidence: streamEvidence } : {}),
       ...(selectedProgressMode === "off" ? {} : {
-        onSharedObservability: (observation: SharedResourceObservationV1) => {
+        onSharedObservability: (observation: SharedResourceObservation) => {
           latestSharedObservation = observation;
           statesExplored = saveCheckpoint
             ? observation.runWideState
