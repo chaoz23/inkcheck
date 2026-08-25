@@ -12,6 +12,11 @@ import {
 } from "./discovery";
 export { DEFAULT_MAX_PROJECT_REPORT_BYTES, DEFAULT_MAX_REPORT_BYTES, MAX_REPORT_PRUNE_PER_RUN } from "./discovery";
 import { VERSION } from "./version";
+import {
+  measureLogicalJsonGraphV1,
+  type LogicalJsonGraphV1,
+  type ReportEnrichmentAccountingV1,
+} from "./report-contract";
 
 export type ArtifactFreshness = "current" | "stale" | "path_changed";
 
@@ -49,6 +54,39 @@ export interface ReportArtifactReference extends ArtifactReference {
 export interface ReportFinalizationAccountingV1 {
   schemaVersion: 1;
   outcome: "created" | "reused";
+  reportEnrichment: {
+    status: "applied";
+    accounting: ReportEnrichmentAccountingV1;
+  } | {
+    status: "not_applied";
+    reason: "unavailable";
+  };
+  graphMaterialization: {
+    createdEnvelope: {
+      status: "applied";
+      graph: LogicalJsonGraphV1;
+    } | {
+      status: "not_applied";
+      reason: "not_created" | "unavailable";
+    };
+    reuseParsedArtifact: {
+      status: "applied";
+      graph: LogicalJsonGraphV1;
+    } | {
+      status: "not_applied";
+      reason: "not_reused" | "unavailable";
+    };
+    /** Applicable compact-JSON proxy, not an observed heap peak. */
+    conservativePotential: {
+      status: "applied";
+      logicalJsonUtf8Bytes: number;
+    } | {
+      status: "not_applied";
+      reason: "unavailable";
+    };
+    /** The save API returns only a reference and retains neither internal graph. */
+    currentLogicalJsonUtf8Bytes: 0;
+  };
   reportIdentity: {
     count: 1;
     /** UTF-8 bytes in the canonical report-ID input materialized by schema v1. */
@@ -191,6 +229,75 @@ function exactByteSum(description: string, values: readonly number[]): number {
     total += value;
   }
   return total;
+}
+
+function requiredSafeCount(description: string, value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new RangeError(`${description} must be a non-negative safe integer`);
+  }
+  return value as number;
+}
+
+function reportEnrichmentReceipt(
+  value: ReportEnrichmentAccountingV1 | undefined
+): ReportFinalizationAccountingV1["reportEnrichment"] {
+  if (value === undefined) return { status: "not_applied", reason: "unavailable" };
+  if (value.schemaVersion !== 1 || value.sourceExploreGraph?.count !== 1
+    || value.returnedReportGraph?.count !== 1) {
+    throw new Error("report enrichment accounting must use schema v1 with one source and returned graph");
+  }
+  const sourceBytes = requiredSafeCount(
+    "report enrichment source graph byte count",
+    value.sourceExploreGraph.logicalJsonUtf8Bytes
+  );
+  const returnedBytes = requiredSafeCount(
+    "report enrichment returned graph byte count",
+    value.returnedReportGraph.logicalJsonUtf8Bytes
+  );
+  const identityCount = requiredSafeCount(
+    "report enrichment finding identity count",
+    value.findingIdentityStrings?.count
+  );
+  const identityBytes = requiredSafeCount(
+    "report enrichment finding identity byte count",
+    value.findingIdentityStrings?.logicalUtf8Bytes
+  );
+  const conservative = exactByteSum("report enrichment graph byte count", [sourceBytes, returnedBytes]);
+  if (value.graphOwnership?.conservativePotentialLogicalJsonUtf8Bytes !== conservative
+    || value.graphOwnership.currentReturnedLogicalJsonUtf8Bytes !== returnedBytes) {
+    throw new Error("report enrichment accounting graph ownership totals are inconsistent");
+  }
+  return {
+    status: "applied",
+    accounting: {
+      schemaVersion: 1,
+      sourceExploreGraph: { count: 1, logicalJsonUtf8Bytes: sourceBytes },
+      findingIdentityStrings: { count: identityCount, logicalUtf8Bytes: identityBytes },
+      returnedReportGraph: { count: 1, logicalJsonUtf8Bytes: returnedBytes },
+      graphOwnership: {
+        conservativePotentialLogicalJsonUtf8Bytes: conservative,
+        currentReturnedLogicalJsonUtf8Bytes: returnedBytes,
+      },
+    },
+  };
+}
+
+function graphMaterializationReceipt(
+  outcome: "created" | "reused",
+  graph?: LogicalJsonGraphV1
+): ReportFinalizationAccountingV1["graphMaterialization"] {
+  return {
+    createdEnvelope: outcome === "created" && graph
+      ? { status: "applied", graph }
+      : { status: "not_applied", reason: outcome === "created" ? "unavailable" : "not_created" },
+    reuseParsedArtifact: outcome === "reused" && graph
+      ? { status: "applied", graph }
+      : { status: "not_applied", reason: outcome === "reused" ? "unavailable" : "not_reused" },
+    conservativePotential: graph
+      ? { status: "applied", logicalJsonUtf8Bytes: graph.logicalJsonUtf8Bytes }
+      : { status: "not_applied", reason: "unavailable" },
+    currentLogicalJsonUtf8Bytes: 0,
+  };
 }
 
 function reportsDirectory(projectRoot: string): string {
@@ -443,7 +550,8 @@ export function saveReportArtifact(
   projectRoot: string,
   entrypoint: string,
   report: Record<string, unknown>,
-  inputLimits: ReportStorageLimits = {}
+  inputLimits: ReportStorageLimits = {},
+  reportEnrichmentAccounting?: ReportEnrichmentAccountingV1
 ): ReportArtifactReference {
   const root = path.resolve(projectRoot);
   const absoluteSource = path.resolve(entrypoint);
@@ -454,12 +562,16 @@ export function saveReportArtifact(
   const directory = reportsDirectory(root);
   const destination = artifactFile(root, id);
   const limits = reportStorageLimits(inputLimits);
+  const enrichmentReceipt = reportEnrichmentReceipt(reportEnrichmentAccounting);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (process.platform !== "win32") fs.chmodSync(directory, 0o700);
   if (fs.existsSync(destination)) {
     const rawArtifact = fs.readFileSync(destination, "utf8");
     const rawArtifactUtf8Bytes = Buffer.byteLength(rawArtifact, "utf8");
     const parsed = parseArtifactDetailed(rawArtifact, id);
+    const reuseParsedArtifactGraph = reportEnrichmentAccounting === undefined
+      ? undefined
+      : measureLogicalJsonGraphV1(parsed.artifact);
     if (process.platform !== "win32") fs.chmodSync(destination, 0o600);
     const artifactBytes = fs.statSync(destination).size;
     return {
@@ -468,6 +580,8 @@ export function saveReportArtifact(
       accounting: {
         schemaVersion: 1,
         outcome: "reused",
+        reportEnrichment: enrichmentReceipt,
+        graphMaterialization: graphMaterializationReceipt("reused", reuseParsedArtifactGraph),
         reportIdentity: { count: 1, logicalUtf8Bytes: identity.logicalUtf8Bytes },
         serialization: {
           status: "not_applied",
@@ -504,6 +618,9 @@ export function saveReportArtifact(
     effectiveConfiguration: report.effectiveConfiguration,
     report,
   };
+  const createdEnvelopeGraph = reportEnrichmentAccounting === undefined
+    ? undefined
+    : measureLogicalJsonGraphV1(artifact);
   const serialized = `${JSON.stringify(artifact, null, 2)}\n`;
   const bytes = Buffer.byteLength(serialized, "utf8");
   if (bytes > limits.maxReportBytes) {
@@ -533,6 +650,8 @@ export function saveReportArtifact(
     accounting: {
       schemaVersion: 1,
       outcome: "created",
+      reportEnrichment: enrichmentReceipt,
+      graphMaterialization: graphMaterializationReceipt("created", createdEnvelopeGraph),
       reportIdentity: { count: 1, logicalUtf8Bytes: identity.logicalUtf8Bytes },
       serialization: {
         status: "applied",

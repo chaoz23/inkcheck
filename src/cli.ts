@@ -49,7 +49,9 @@ import {
 import {
   buildCompileFailureEnvelope,
   buildReportEnvelope,
+  buildReportEnvelopeAccounted,
   EffectiveReportConfiguration,
+  type ReportEnrichmentAccountingV1,
 } from "./report-contract";
 import {
   capabilities,
@@ -863,9 +865,18 @@ async function main() {
   const { storyJson: _compiledStoryJson, ...compileReport } = compiled;
   emitProgress("phase_end", { phase: "compile" });
 
-  const persistReport = (value: Record<string, unknown>) => {
+  const persistReport = (
+    value: Record<string, unknown>,
+    reportEnrichmentAccounting?: ReportEnrichmentAccountingV1
+  ) => {
     const projectRoot = artifactProjectRoot(file!, projectConfig?.path);
-    const reference = saveReportArtifact(projectRoot, file!, value);
+    const reference = saveReportArtifact(
+      projectRoot,
+      file!,
+      value,
+      {},
+      reportEnrichmentAccounting
+    );
     console.error(`saved report ${reference.id} (${reference.path})`);
     return reference;
   };
@@ -1181,7 +1192,7 @@ async function main() {
   // The bounded stream deliberately avoids materializing the enriched full
   // report: at marathon scale that duplicate object graph and its monolithic
   // JSON string can exceed V8's string limit after search has already ended.
-  const outputReport = asJsonStream ? undefined : buildReportEnvelope({
+  const reportInput = {
     compile: compileReport,
     stats: st,
     ...(profile ? { profile } : {}),
@@ -1190,7 +1201,14 @@ async function main() {
     ...(followNext ? { runs } : {}),
     storyJson: compiled.storyJson!,
     configuration: reportConfiguration,
-  });
+  };
+  const reportBuild = asJsonStream
+    ? undefined
+    : asJson || saveReport
+      ? buildReportEnvelopeAccounted(reportInput)
+      : { report: buildReportEnvelope(reportInput), accounting: undefined };
+  const outputReport = reportBuild?.report;
+  const reportEnrichmentAccounting = reportBuild?.accounting;
   let checkpointOutput: Record<string, unknown> | undefined;
   if (saveCheckpoint) {
     if (nextCheckpoint) {
@@ -1216,16 +1234,29 @@ async function main() {
         : "run ended without resumable state; no checkpoint was created");
     }
   }
-  const artifact = saveReport ? persistReport(outputReport!) : undefined;
+  const artifact = saveReport
+    ? persistReport(outputReport!, reportEnrichmentAccounting)
+    : undefined;
+  const sharedRetainedPasses = (report.passes ?? [])
+    .filter((pass) => pass.sharedOwnerAccounting !== undefined)
+    .slice(0, 8)
+    .map((pass) => ({
+      pass: pass.pass,
+      ...pass.sharedOwnerAccounting!,
+    }));
+  const runtimeOwnerAccounting = {
+    schemaVersion: 1 as const,
+    configuredReserve: finalizationReserve,
+    ...(sharedRetainedPasses.length > 0 ? { sharedRetainedPasses } : {}),
+    ...(resumed ? { checkpointRead: resumed.accounting } : {}),
+    ...(reportEnrichmentAccounting ? { reportEnrichment: reportEnrichmentAccounting } : {}),
+    ...(checkpointOutput && "accounting" in checkpointOutput
+      ? { checkpointCommit: checkpointOutput.accounting }
+      : {}),
+    ...(artifact ? { reportFinalization: artifact.accounting } : {}),
+  };
   emitProgress("phase_start", { phase: "report" });
   if (asJsonStream) {
-    const sharedRetainedPasses = (report.passes ?? [])
-      .filter((pass) => pass.sharedOwnerAccounting !== undefined)
-      .slice(0, 8)
-      .map((pass) => ({
-        pass: pass.pass,
-        ...pass.sharedOwnerAccounting!,
-      }));
     let terminalLogicalAccountedBytes = 0;
     for (let index = (report.passes?.length ?? 0) - 1; index >= 0; index--) {
       const pass = report.passes![index];
@@ -1275,15 +1306,7 @@ async function main() {
         deadlineMs: maxTimeSec === undefined ? null : startedAt + maxTimeSec * 1_000,
         searchDeadlineMs: deadlineMs ?? null,
         finalizationTimeReserveMs: finalizationReserve.timeMs,
-        ownerAccounting: {
-          schemaVersion: 1,
-          configuredReserve: finalizationReserve,
-          ...(sharedRetainedPasses.length > 0 ? { sharedRetainedPasses } : {}),
-          ...(checkpointOutput && "accounting" in checkpointOutput
-            ? { checkpointCommit: checkpointOutput.accounting }
-            : {}),
-          ...(artifact ? { reportFinalization: artifact.accounting } : {}),
-        },
+        ownerAccounting: runtimeOwnerAccounting,
         observedProcessAtTermination: observeProcessMemory(terminalLogicalAccountedBytes),
       },
       evidence: { endingsEmitted: streamedEndings, runtimeErrorsEmitted: streamedRuntimeErrors, benchmarkSignalsEmitted: streamedBenchmarkSignals },
@@ -1295,6 +1318,7 @@ async function main() {
             ...outputReport!,
             ...(artifact ? { artifact } : {}),
             ...(checkpointOutput ? { checkpoint: checkpointOutput } : {}),
+            resources: { ownerAccounting: runtimeOwnerAccounting },
           },
         null,
         2
