@@ -285,6 +285,8 @@ async function main() {
       if (command === "list" && values.length === 0) {
         const checkpoints = listCheckpointArtifacts(projectRoot);
         console.log(json
+          // Compatibility: this versions the list response envelope. Each
+          // item reports its persisted layout in artifactSchemaVersion.
           ? JSON.stringify({ checkpointArtifactSchemaVersion: CHECKPOINT_ARTIFACT_SCHEMA_VERSION, checkpoints }, null, 2)
           : checkpoints.length
             ? checkpoints.map((checkpoint) => `${checkpoint.id}  ${checkpoint.totalGranted} granted  ${checkpoint.createdAt}  ${checkpoint.entrypoint}`).join("\n")

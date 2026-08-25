@@ -74,6 +74,7 @@
     "docs/progress-ndjson.md",
     "docs/local-artifacts.md",
     "docs/local-checkpoints.md",
+    "docs/shared-checkpoint-artifact-v2.md",
     "docs/shared-checkpoint-schema-v1.md",
     "docs/shared-search-observability.md",
     "docs/mcp-search-sessions.md",

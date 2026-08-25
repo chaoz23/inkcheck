@@ -15,7 +15,7 @@ The default MCP profile is deliberately compact: `inkcheck_capabilities`, `inspe
 The response is deterministic for an installed Inkcheck version and reports:
 
 - `schemaVersion` and `inkcheckVersion`
-- report, configuration, project-inspection, report-artifact, checkpoint-artifact, search-session, and campaign-policy schema versions
+- report, configuration, project-inspection, report-artifact, checkpoint-artifact, search-session, and campaign-policy schema versions. `schemas.checkpointArtifact` is the latest supported persisted envelope (2); `checkpointArtifactSupported` lists `[1, 2]`, `checkpointArtifactDefaultWrite` remains 1, and `checkpointListResponse` remains 1. The logical shared-search checkpoint nested inside either artifact remains schema 1.
 - default and maximum state/depth limits
 - supported search modes
 - explicit feature flags, including `false` for features not yet available

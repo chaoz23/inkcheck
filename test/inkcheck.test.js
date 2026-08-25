@@ -51,6 +51,7 @@ const {
 } = require("../dist/discovery");
 const {
   CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
+  CHECKPOINT_ARTIFACT_V2_SCHEMA_VERSION,
   CheckpointReadError,
   CheckpointSizeLimitError,
   listCheckpointArtifacts,
@@ -259,7 +260,13 @@ test("capabilities explicitly reports supported and unavailable features", () =>
   assert.strictEqual(value.schemas.report, 1);
   assert.strictEqual(value.schemas.config, CONFIG_SCHEMA_VERSION);
   assert.strictEqual(value.schemas.artifact, 1);
-  assert.strictEqual(value.schemas.checkpointArtifact, CHECKPOINT_ARTIFACT_SCHEMA_VERSION);
+  assert.strictEqual(value.schemas.checkpointArtifact, CHECKPOINT_ARTIFACT_V2_SCHEMA_VERSION);
+  assert.deepStrictEqual(value.schemas.checkpointArtifactSupported, [
+    CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
+    CHECKPOINT_ARTIFACT_V2_SCHEMA_VERSION,
+  ]);
+  assert.strictEqual(value.schemas.checkpointArtifactDefaultWrite, CHECKPOINT_ARTIFACT_SCHEMA_VERSION);
+  assert.strictEqual(value.schemas.checkpointListResponse, 1);
   assert.strictEqual(value.limits.maxCheckpointBytes, 512 * 1024 * 1024);
   assert.strictEqual(value.limits.maxProjectCheckpointBytes, 1024 * 1024 * 1024);
   assert.strictEqual(value.limits.checkpointGenerationsPerEntrypoint, 3);
@@ -2230,7 +2237,7 @@ test("checkpoint readback is resource-bounded while manifests keep listing metad
     }
 
     const incompatibleManifest = JSON.parse(originalManifest);
-    incompatibleManifest.manifestSchemaVersion = 2;
+    incompatibleManifest.manifestSchemaVersion = 3;
     incompatibleManifest.futureSchemaField = { framedPayload: true };
     fs.writeFileSync(manifestFile, JSON.stringify(incompatibleManifest));
     assert.throws(() => listCheckpointArtifacts(tmp), (error) => {
@@ -2989,8 +2996,11 @@ test("checkpoint publication serializes cross-process same-ID writers and recove
       assert.ok(error instanceof CheckpointReadError);
       assert.strictEqual(error.kind, "resource_limit");
       assert.strictEqual(error.stage, "manifest");
-      assert.strictEqual(error.observedBytes, 32);
-      assert.strictEqual(error.limitBytes, 32);
+      assert.strictEqual(error.unit, "count");
+      assert.strictEqual(error.observed, 32);
+      assert.strictEqual(error.limit, 32);
+      assert.strictEqual(error.observedBytes, undefined);
+      assert.strictEqual(error.limitBytes, undefined);
       return true;
     });
     assert.deepStrictEqual(fs.readdirSync(directory).sort(), cappedNames,
@@ -5232,6 +5242,22 @@ test("NDJSON progress contract docs stay linked and privacy-focused", () => {
   assert.match(docs, /"type":"resource"/);
   assert.match(docs, /"type":"run_end"/);
   assert.match(docs, /must not contain:[\s\S]*story source text[\s\S]*choice prose[\s\S]*variable names or values/);
+});
+
+test("framed checkpoint-v2 contract is linked, packaged, opt-in, and non-promotional", () => {
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  const docs = fs.readFileSync(path.join(ROOT, "docs", "shared-checkpoint-artifact-v2.md"), "utf8");
+  const packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  assert.match(readme, /docs\/shared-checkpoint-artifact-v2\.md/);
+  assert.ok(packageJson.files.includes("docs/shared-checkpoint-artifact-v2.md"));
+  assert.match(docs, /opt-in, framed storage codec/);
+  assert.match(docs, /continue to write the\s+existing streamed-gzip/);
+  assert.match(docs, /stable checkpoint-ID algorithm/);
+  assert.match(docs, /exactly one verified public\s+layout/);
+  assert.match(docs, /integrity checks, not authentication/);
+  assert.match(docs, /not format promotion/);
+  assert.match(docs, /does not make framed v2 the\s+default/);
+  assert.match(docs, /does not[\s\S]*establish\s+an InkBench improvement claim/);
 });
 
 test("shared observability contract is linked, packaged, and explicit about its partial boundary", () => {

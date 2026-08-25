@@ -759,6 +759,7 @@ function campaignDiskBytes(
     ...[...checkpoints].flatMap((id) => [
       path.join(projectRoot, ".inkcheck", "checkpoints", `${id}.json`),
       path.join(projectRoot, ".inkcheck", "checkpoints", `${id}.json.gz`),
+      path.join(projectRoot, ".inkcheck", "checkpoints", `${id}.inkcp`),
     ]),
   ];
   return files.reduce((total, file) => total + (fs.existsSync(file) ? fs.statSync(file).size : 0), 0);
