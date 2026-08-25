@@ -1354,6 +1354,12 @@ test("CLI saves, lists, and reopens source-bound report artifacts by stable ID",
     fs.writeFileSync(story, "Start\n* [One]\n  -> END\n* [Two]\n  -> END\n");
     const ordinary = spawnSync(process.execPath, args, { cwd: tmp, encoding: "utf8" });
     assert.strictEqual(ordinary.status, 0, ordinary.stderr);
+    const ordinaryOutput = JSON.parse(ordinary.stdout);
+    const ordinaryOwners = ordinaryOutput.resources.ownerAccounting;
+    assert.strictEqual(ordinaryOwners.schemaVersion, 1);
+    assert.strictEqual(ordinaryOwners.reportEnrichment.schemaVersion, 1);
+    assert.strictEqual("checkpointRead" in ordinaryOwners, false);
+    assert.strictEqual("reportFinalization" in ordinaryOwners, false);
     const savedRun = spawnSync(process.execPath, [...args, "--save-report"], { cwd: tmp, encoding: "utf8" });
     assert.strictEqual(savedRun.status, 0, savedRun.stderr);
     const saved = JSON.parse(savedRun.stdout);
@@ -1361,6 +1367,26 @@ test("CLI saves, lists, and reopens source-bound report artifacts by stable ID",
     assert.strictEqual(saved.artifact.path, `.inkcheck/reports/${saved.artifact.id}.json`);
     assert.strictEqual(saved.artifact.accounting.schemaVersion, 1);
     assert.strictEqual(saved.artifact.accounting.outcome, "created");
+    assert.strictEqual(saved.artifact.accounting.reportEnrichment.status, "applied");
+    assert.deepStrictEqual(
+      saved.resources.ownerAccounting.reportEnrichment,
+      saved.artifact.accounting.reportEnrichment.accounting
+    );
+    assert.deepStrictEqual(
+      saved.resources.ownerAccounting.reportFinalization,
+      saved.artifact.accounting
+    );
+    const ownerAccountingJson = JSON.stringify(saved.resources.ownerAccounting);
+    assert.ok(Buffer.byteLength(ownerAccountingJson, "utf8") < 32 * 1024);
+    assert.doesNotMatch(ownerAccountingJson, /Start|\bOne\b|\bTwo\b|story\.ink|\.inkcheck/i);
+    assert.strictEqual(
+      saved.artifact.accounting.graphMaterialization.createdEnvelope.status,
+      "applied"
+    );
+    assert.strictEqual(
+      saved.artifact.accounting.graphMaterialization.reuseParsedArtifact.status,
+      "not_applied"
+    );
     assert.strictEqual(saved.artifact.accounting.serialization.status, "applied");
     assert.match(savedRun.stderr, new RegExp(`saved report ${saved.artifact.id}`));
     const artifactFile = path.join(tmp, ...saved.artifact.path.split("/"));
@@ -1373,15 +1399,31 @@ test("CLI saves, lists, and reopens source-bound report artifacts by stable ID",
       assert.strictEqual(fs.statSync(path.dirname(artifactFile)).mode & 0o777, 0o700);
       assert.strictEqual(fs.statSync(artifactFile).mode & 0o777, 0o600);
     }
-    const withoutReference = { ...saved };
+    const persistedArtifact = JSON.parse(fs.readFileSync(artifactFile, "utf8"));
+    assert.strictEqual("resources" in persistedArtifact.report, false,
+      "runtime owner receipts stay outside the stable saved report payload");
+    const withoutReference = structuredClone(saved);
     delete withoutReference.artifact;
-    assert.deepStrictEqual(withoutReference, JSON.parse(ordinary.stdout));
+    delete withoutReference.resources.ownerAccounting.reportFinalization;
+    assert.deepStrictEqual(withoutReference, ordinaryOutput);
 
     const repeated = spawnSync(process.execPath, [...args, "--save-report"], { cwd: tmp, encoding: "utf8" });
     const repeatedOutput = JSON.parse(repeated.stdout);
     assert.strictEqual(repeatedOutput.artifact.id, saved.artifact.id);
     assert.strictEqual(repeatedOutput.artifact.accounting.outcome, "reused");
     assert.strictEqual(repeatedOutput.artifact.accounting.serialization.status, "not_applied");
+    assert.strictEqual(
+      repeatedOutput.artifact.accounting.graphMaterialization.createdEnvelope.status,
+      "not_applied"
+    );
+    assert.strictEqual(
+      repeatedOutput.artifact.accounting.graphMaterialization.reuseParsedArtifact.status,
+      "applied"
+    );
+    assert.deepStrictEqual(
+      repeatedOutput.resources.ownerAccounting.reportEnrichment,
+      ordinaryOwners.reportEnrichment
+    );
     assert.strictEqual(repeatedOutput.artifact.accounting.serialization.logicalArtifactUtf8Bytes, 0);
     assert.strictEqual(
       repeatedOutput.artifact.accounting.durable.artifactBytes,
@@ -2976,6 +3018,12 @@ test("CLI persists and resumes an exact base-shared trajectory across processes"
     assert.strictEqual(first.checkpoint.accounting.serialization.status, "applied");
     assert.strictEqual(first.checkpoint.accounting.compression.status, "applied");
     assert.ok(first.checkpoint.accounting.durable.totalPairBytes > 0);
+    assert.deepStrictEqual(
+      first.resources.ownerAccounting.checkpointCommit,
+      first.checkpoint.accounting
+    );
+    assert.strictEqual(first.resources.ownerAccounting.reportEnrichment.schemaVersion, 1);
+    assert.strictEqual("checkpointRead" in first.resources.ownerAccounting, false);
     assert.match(firstRun.stderr, new RegExp(`saved checkpoint ${first.checkpoint.id}`));
 
     const listed = spawnSync(process.execPath, [CLI, "checkpoints", "list", "--json"], { cwd: tmp, encoding: "utf8" });
@@ -2983,7 +3031,15 @@ test("CLI persists and resumes an exact base-shared trajectory across processes"
     assert.strictEqual(JSON.parse(listed.stdout).checkpoints[0].id, first.checkpoint.id);
     const shown = spawnSync(process.execPath, [CLI, "checkpoints", "show", first.checkpoint.id, "--json"], { cwd: tmp, encoding: "utf8" });
     assert.strictEqual(shown.status, 0, shown.stderr);
-    assert.strictEqual(JSON.parse(shown.stdout).artifact.freshness, "current");
+    const shownOutput = JSON.parse(shown.stdout);
+    assert.strictEqual(shownOutput.artifact.freshness, "current");
+    assert.strictEqual(shownOutput.accounting.schemaVersion, 1);
+    assert.strictEqual(shownOutput.accounting.status, "completed");
+    assert.deepStrictEqual(shownOutput.accounting.currentReturnedGraph, {
+      status: "not_applied",
+      count: 0,
+      logicalUtf8Bytes: 0,
+    });
     assert.strictEqual(shown.stdout.includes("stateJson"), false, "show returns bounded metadata, not the frontier payload");
 
     const resumedRun = spawnSync(process.execPath, [CLI, "resume", first.checkpoint.id, "--max-states", "500", "--progress=off", "--json"], {
@@ -2993,6 +3049,41 @@ test("CLI persists and resumes an exact base-shared trajectory across processes"
     assert.strictEqual(resumedRun.status, 0, resumedRun.stderr);
     const resumed = JSON.parse(resumedRun.stdout);
     assert.strictEqual(resumed.checkpoint.resumedFrom, first.checkpoint.id);
+    assert.strictEqual(resumed.resources.ownerAccounting.checkpointRead.schemaVersion, 1);
+    assert.strictEqual(resumed.resources.ownerAccounting.checkpointRead.status, "completed");
+    assert.strictEqual(
+      resumed.resources.ownerAccounting.checkpointRead.currentReturnedGraph.count,
+      1
+    );
+    assert.ok(
+      resumed.resources.ownerAccounting.checkpointRead.currentReturnedGraph.logicalUtf8Bytes > 0
+    );
+    assert.strictEqual(resumed.resources.ownerAccounting.reportEnrichment.schemaVersion, 1);
+    assert.deepStrictEqual(
+      resumed.resources.ownerAccounting.checkpointCommit,
+      resumed.checkpoint.accounting
+    );
+
+    const resumedStream = spawnSync(process.execPath, [
+      CLI, "resume", first.checkpoint.id,
+      "--max-states", "100", "--json-stream", "--concurrency", "1", "--progress=off",
+    ], { cwd: tmp, encoding: "utf8" });
+    assert.strictEqual(resumedStream.status, 0, resumedStream.stderr);
+    const streamedTerminal = resumedStream.stdout.trim().split("\n")
+      .map((line) => JSON.parse(line))
+      .at(-1);
+    assert.strictEqual(streamedTerminal.type, "run_end");
+    assert.strictEqual(streamedTerminal.resources.ownerAccounting.checkpointRead.schemaVersion, 1);
+    assert.strictEqual(
+      streamedTerminal.resources.ownerAccounting.checkpointRead.currentReturnedGraph.count,
+      1
+    );
+    assert.strictEqual(
+      "reportEnrichment" in streamedTerminal.resources.ownerAccounting,
+      false,
+      "bounded JSON streaming does not materialize the monolithic report graph"
+    );
+    assert.strictEqual("reportFinalization" in streamedTerminal.resources.ownerAccounting, false);
 
     const fullRun = spawnSync(process.execPath, [CLI, "story.ink", ...common, "--max-states", "500", "--save-checkpoint"], {
       cwd: tmp,
@@ -4866,6 +4957,8 @@ test("--json-stream emits replayable evidence and a bounded terminal summary", (
     terminal.resources.memoryCapBytes - terminal.resources.memorySearchLimitBytes
   );
   assert.strictEqual("checkpointCommit" in terminal.resources.ownerAccounting, false);
+  assert.strictEqual("checkpointRead" in terminal.resources.ownerAccounting, false);
+  assert.strictEqual("reportEnrichment" in terminal.resources.ownerAccounting, false);
   assert.strictEqual("reportFinalization" in terminal.resources.ownerAccounting, false);
   const retainedPasses = terminal.resources.ownerAccounting.sharedRetainedPasses;
   assert.ok(Array.isArray(retainedPasses));

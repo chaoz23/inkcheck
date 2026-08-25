@@ -110,11 +110,84 @@ export interface CheckpointReadLimits {
   maxDecompressedBytes?: number;
 }
 
+export interface CheckpointReadAccountingV1 {
+  schemaVersion: 1;
+  status: "completed" | "failed";
+  storageEncoding: "json" | "gzip";
+  /** Effective safety limits. These values describe bounds, not allocations. */
+  configuredLimits: {
+    basis: "configured_limits_not_allocated_capacity";
+    maxManifestBytes: number;
+    maxStoredBytes: number;
+    maxDecompressedBytes: number;
+  };
+  manifest: {
+    status: "applied" | "not_present" | "not_completed";
+    storedBuffer: { count: 0 | 1; bytes: number };
+    rawString: { count: 0 | 1; logicalUtf8Bytes: number };
+    parsedGraph: { count: 0 | 1; sourceLogicalUtf8Bytes: number };
+    validationString: { count: 0 | 1; logicalUtf8Bytes: number };
+  };
+  storedPayload: {
+    status: "applied" | "not_completed";
+    count: 0 | 1;
+    bytes: number;
+  };
+  decompressedPayload: {
+    status: "applied" | "not_applied" | "not_completed";
+    count: 0 | 1;
+    bytes: number;
+  };
+  rawArtifactString: {
+    status: "applied" | "not_completed";
+    count: 0 | 1;
+    logicalUtf8Bytes: number;
+  };
+  parsedArtifactGraph: {
+    status: "applied" | "not_completed";
+    count: 0 | 1;
+    /** UTF-8 bytes in the JSON source from which this graph was parsed. */
+    sourceLogicalUtf8Bytes: number;
+  };
+  validationTraversal: {
+    status: "applied" | "not_completed";
+    count: 0 | 1;
+    logicalCheckpointUtf8BytesVisited: number;
+    peakSourceChunkUtf8Bytes: number;
+    configurationStrings: {
+      count: 0 | 2;
+      logicalUtf8Bytes: number;
+      peakStringUtf8Bytes: number;
+    };
+  };
+  /**
+   * Sum of every reached logical owner reported by this receipt plus the
+   * largest validation chunk. This is conservative potential, not an observed
+   * simultaneous peak or a measurement of runtime/library internals.
+   */
+  conservativePotential: {
+    basis: "sum_of_reached_logical_owners_not_observed_peak";
+    totalBytes: number;
+  };
+  /** The checkpoint graph retained by the API caller after return. */
+  currentReturnedGraph: {
+    status: "applied" | "not_applied";
+    count: 0 | 1;
+    logicalUtf8Bytes: number;
+  };
+  failure?: {
+    kind: CheckpointReadErrorKind;
+    stage: CheckpointReadStage;
+  };
+}
+
 export type CheckpointReadErrorKind = "corrupt" | "resource_limit" | "unsupported";
 export type CheckpointReadStage = "manifest" | "storage" | "decompression" | "json" | "envelope";
 
 export class CheckpointReadError extends Error {
   payloadVerified = false;
+  /** Partial read-accounting receipt when the error came from open/resume. */
+  accounting?: CheckpointReadAccountingV1;
 
   constructor(
     public readonly kind: CheckpointReadErrorKind,
@@ -171,6 +244,7 @@ interface LoadedCheckpointArtifact {
   storageEncoding: "json" | "gzip";
   payloadSizeBytes: number;
   payloadSha256: string;
+  accounting: CheckpointReadAccountingV1;
 }
 
 interface StoredCheckpointManifest {
@@ -386,6 +460,98 @@ function exactByteSum(description: string, values: readonly number[]): number {
   return total;
 }
 
+function checkpointReadAccounting(
+  storageEncoding: "json" | "gzip",
+  limits: Required<CheckpointReadLimits>
+): CheckpointReadAccountingV1 {
+  return {
+    schemaVersion: 1,
+    status: "completed",
+    storageEncoding,
+    configuredLimits: {
+      basis: "configured_limits_not_allocated_capacity",
+      maxManifestBytes: MAX_CHECKPOINT_MANIFEST_BYTES,
+      maxStoredBytes: limits.maxStoredBytes,
+      maxDecompressedBytes: limits.maxDecompressedBytes,
+    },
+    manifest: {
+      status: "not_present",
+      storedBuffer: { count: 0, bytes: 0 },
+      rawString: { count: 0, logicalUtf8Bytes: 0 },
+      parsedGraph: { count: 0, sourceLogicalUtf8Bytes: 0 },
+      validationString: { count: 0, logicalUtf8Bytes: 0 },
+    },
+    storedPayload: { status: "not_completed", count: 0, bytes: 0 },
+    decompressedPayload: storageEncoding === "gzip"
+      ? { status: "not_completed", count: 0, bytes: 0 }
+      : { status: "not_applied", count: 0, bytes: 0 },
+    rawArtifactString: {
+      status: "not_completed",
+      count: 0,
+      logicalUtf8Bytes: 0,
+    },
+    parsedArtifactGraph: {
+      status: "not_completed",
+      count: 0,
+      sourceLogicalUtf8Bytes: 0,
+    },
+    validationTraversal: {
+      status: "not_completed",
+      count: 0,
+      logicalCheckpointUtf8BytesVisited: 0,
+      peakSourceChunkUtf8Bytes: 0,
+      configurationStrings: {
+        count: 0,
+        logicalUtf8Bytes: 0,
+        peakStringUtf8Bytes: 0,
+      },
+    },
+    conservativePotential: {
+      basis: "sum_of_reached_logical_owners_not_observed_peak",
+      totalBytes: 0,
+    },
+    currentReturnedGraph: {
+      status: "not_applied",
+      count: 0,
+      logicalUtf8Bytes: 0,
+    },
+  };
+}
+
+function finalizeCheckpointReadAccounting(
+  accounting: CheckpointReadAccountingV1,
+  error?: CheckpointReadError
+): CheckpointReadAccountingV1 {
+  accounting.status = error ? "failed" : "completed";
+  if (error) accounting.failure = { kind: error.kind, stage: error.stage };
+  else delete accounting.failure;
+  accounting.conservativePotential.totalBytes = exactByteSum(
+    "checkpoint read conservative-potential byte count",
+    [
+      accounting.manifest.storedBuffer.bytes,
+      accounting.manifest.rawString.logicalUtf8Bytes,
+      accounting.manifest.parsedGraph.sourceLogicalUtf8Bytes,
+      accounting.manifest.validationString.logicalUtf8Bytes,
+      accounting.storedPayload.bytes,
+      accounting.decompressedPayload.bytes,
+      accounting.rawArtifactString.logicalUtf8Bytes,
+      accounting.parsedArtifactGraph.sourceLogicalUtf8Bytes,
+      accounting.validationTraversal.peakSourceChunkUtf8Bytes,
+      accounting.validationTraversal.configurationStrings.logicalUtf8Bytes,
+    ]
+  );
+  return accounting;
+}
+
+function retainReturnedCheckpointGraph(accounting: CheckpointReadAccountingV1): void {
+  accounting.currentReturnedGraph = {
+    status: "applied",
+    count: 1,
+    logicalUtf8Bytes: accounting.validationTraversal.logicalCheckpointUtf8BytesVisited,
+  };
+  finalizeCheckpointReadAccounting(accounting);
+}
+
 function accountJsonChunk(accounting: JsonChunkAccounting, chunk: string): void {
   const bytes = Buffer.byteLength(chunk);
   accounting.logicalUtf8Bytes = exactByteAdd(
@@ -473,7 +639,8 @@ function readBoundedBuffer(
   file: string,
   limitBytes: number,
   stage: CheckpointReadStage,
-  description: string
+  description: string,
+  onBufferAllocated?: (bytes: number) => void
 ): Buffer {
   const fd = fs.openSync(file, "r");
   try {
@@ -491,6 +658,7 @@ function readBoundedBuffer(
       );
     }
     const value = Buffer.allocUnsafe(size);
+    onBufferAllocated?.(size);
     let offset = 0;
     while (offset < size) {
       const read = fs.readSync(fd, value, offset, size - offset, offset);
@@ -509,7 +677,8 @@ function readBoundedBuffer(
 
 function readLegacyJsonBuffer(
   file: string,
-  limits: Required<CheckpointReadLimits>
+  limits: Required<CheckpointReadLimits>,
+  onBufferAllocated?: (bytes: number) => void
 ): Buffer {
   const fd = fs.openSync(file, "r");
   try {
@@ -535,6 +704,7 @@ function readLegacyJsonBuffer(
       );
     }
     const value = Buffer.allocUnsafe(size);
+    onBufferAllocated?.(size);
     let offset = 0;
     while (offset < size) {
       const read = fs.readSync(fd, value, offset, size - offset, offset);
@@ -571,7 +741,11 @@ function readLegacyJsonBuffer(
   }
 }
 
-function decompressCheckpointJson(compressed: Buffer, limits: Required<CheckpointReadLimits>): string {
+function decompressCheckpointJson(
+  compressed: Buffer,
+  limits: Required<CheckpointReadLimits>,
+  accounting?: CheckpointReadAccountingV1
+): string {
   let decompressed: Buffer;
   try {
     decompressed = gunzipSync(compressed, { maxOutputLength: limits.maxDecompressedBytes });
@@ -585,6 +759,13 @@ function decompressCheckpointJson(compressed: Buffer, limits: Required<Checkpoin
       );
     }
     throw corrupt("decompression", "checkpoint artifact is corrupt gzip; remove it or restore a valid copy before reopening it");
+  }
+  if (accounting) {
+    accounting.decompressedPayload = {
+      status: "applied",
+      count: 1,
+      bytes: decompressed.length,
+    };
   }
   try {
     return decompressed.toString("utf8");
@@ -662,12 +843,23 @@ function samePayloadDigest(left: CheckpointPayloadDigest, right: CheckpointPaylo
     && left.sha256 === right.sha256;
 }
 
-function parseArtifact(raw: string, expectedId?: string): CheckpointArtifact {
+function parseArtifact(
+  raw: string,
+  expectedId?: string,
+  accounting?: CheckpointReadAccountingV1
+): CheckpointArtifact {
   let value: unknown;
   try {
     value = JSON.parse(raw);
   } catch {
     throw corrupt("json", "checkpoint artifact is corrupt JSON; remove it or restore a valid copy before reopening it");
+  }
+  if (accounting) {
+    accounting.parsedArtifactGraph = {
+      status: "applied",
+      count: 1,
+      sourceLogicalUtf8Bytes: Buffer.byteLength(raw, "utf8"),
+    };
   }
   if (!value || typeof value !== "object") {
     throw corrupt("envelope", "checkpoint artifact must be a JSON object");
@@ -707,14 +899,41 @@ function parseArtifact(raw: string, expectedId?: string): CheckpointArtifact {
       `unsupported shared checkpoint schema ${String(artifact.checkpoint.schemaVersion)}; use a compatible Inkcheck version or migrate the checkpoint`
     );
   }
-  const actualId = checkpointId(artifact.source.entrypoint, artifact.checkpoint);
-  if (artifact.id !== actualId || (expectedId !== undefined && artifact.id !== expectedId)) {
+  const actualIdentity = checkpointIdentity(artifact.source.entrypoint, artifact.checkpoint);
+  if (accounting) {
+    accounting.validationTraversal = {
+      status: "applied",
+      count: 1,
+      logicalCheckpointUtf8BytesVisited: actualIdentity.checkpointGraph.logicalUtf8Bytes,
+      peakSourceChunkUtf8Bytes: actualIdentity.checkpointGraph.peakSourceChunkUtf8Bytes,
+      configurationStrings: {
+        count: 0,
+        logicalUtf8Bytes: 0,
+        peakStringUtf8Bytes: 0,
+      },
+    };
+  }
+  if (artifact.id !== actualIdentity.id || (expectedId !== undefined && artifact.id !== expectedId)) {
     throw corrupt("envelope", "checkpoint artifact content does not match its stable ID; restore or regenerate the artifact");
   }
   const configuration = artifact.checkpoint.configuration;
+  const artifactConfigurationJson = JSON.stringify(artifact.configuration);
+  const checkpointConfigurationJson = JSON.stringify(configuration);
+  if (accounting) {
+    const artifactConfigurationBytes = Buffer.byteLength(artifactConfigurationJson, "utf8");
+    const checkpointConfigurationBytes = Buffer.byteLength(checkpointConfigurationJson, "utf8");
+    accounting.validationTraversal.configurationStrings = {
+      count: 2,
+      logicalUtf8Bytes: exactByteSum(
+        "checkpoint configuration-validation string byte count",
+        [artifactConfigurationBytes, checkpointConfigurationBytes]
+      ),
+      peakStringUtf8Bytes: Math.max(artifactConfigurationBytes, checkpointConfigurationBytes),
+    };
+  }
   if (artifact.storySha256 !== configuration.storySha256
     || artifact.knotsSha256 !== configuration.knotsSha256
-    || JSON.stringify(artifact.configuration) !== JSON.stringify(configuration)) {
+    || artifactConfigurationJson !== checkpointConfigurationJson) {
     throw corrupt("envelope", "checkpoint artifact metadata does not match its saved frontier; restore or regenerate the artifact");
   }
   return artifact as CheckpointArtifact;
@@ -729,50 +948,78 @@ function loadArtifactDetailed(
   if (!fs.existsSync(file)) throw new Error(`checkpoint not found: ${id}`);
   const limits = checkpointReadLimits(inputLimits);
   const storageEncoding = file.endsWith(".gz") ? "gzip" : "json";
-  let storedManifest: CheckpointArtifactManifest | undefined;
-  const manifestFile = checkpointManifestFile(projectRoot, id);
-  if (fs.existsSync(manifestFile)) {
-    storedManifest = readCheckpointManifest(projectRoot, id).manifest;
-    validateManifestStorage(projectRoot, id, file, storedManifest);
-  }
-  let raw: string;
-  let payloadSizeBytes: number;
-  let payloadSha256: string;
-  if (storageEncoding === "gzip") {
-    const stored = readBoundedBuffer(file, limits.maxStoredBytes, "storage", "stored checkpoint artifact");
-    payloadSizeBytes = stored.length;
-    payloadSha256 = createHash("sha256").update(stored).digest("hex");
-    if (storedManifest && storedManifest.artifactSha256 !== payloadSha256) {
-      throw corrupt("storage", "checkpoint artifact bytes do not match its metadata checksum; restore or regenerate it");
+  const accounting = checkpointReadAccounting(storageEncoding, limits);
+  try {
+    let storedManifest: CheckpointArtifactManifest | undefined;
+    const manifestFile = checkpointManifestFile(projectRoot, id);
+    if (fs.existsSync(manifestFile)) {
+      accounting.manifest.status = "not_completed";
+      storedManifest = readCheckpointManifest(projectRoot, id, accounting).manifest;
+      validateManifestStorage(projectRoot, id, file, storedManifest);
     }
-    try {
-      raw = decompressCheckpointJson(stored, limits);
-    } catch (error) {
-      if (storedManifest && error instanceof CheckpointReadError && error.kind === "resource_limit") {
-        error.payloadVerified = true;
+    let raw: string;
+    let payloadSizeBytes: number;
+    let payloadSha256: string;
+    if (storageEncoding === "gzip") {
+      const stored = readBoundedBuffer(
+        file,
+        limits.maxStoredBytes,
+        "storage",
+        "stored checkpoint artifact",
+        (bytes) => {
+          accounting.storedPayload = { status: "not_completed", count: 1, bytes };
+        }
+      );
+      accounting.storedPayload.status = "applied";
+      payloadSizeBytes = stored.length;
+      payloadSha256 = createHash("sha256").update(stored).digest("hex");
+      if (storedManifest && storedManifest.artifactSha256 !== payloadSha256) {
+        throw corrupt("storage", "checkpoint artifact bytes do not match its metadata checksum; restore or regenerate it");
       }
-      throw error;
+      try {
+        raw = decompressCheckpointJson(stored, limits, accounting);
+      } catch (error) {
+        if (storedManifest && error instanceof CheckpointReadError && error.kind === "resource_limit") {
+          error.payloadVerified = true;
+        }
+        throw error;
+      }
+    } else {
+      const stored = readLegacyJsonBuffer(file, limits, (bytes) => {
+        accounting.storedPayload = { status: "not_completed", count: 1, bytes };
+      });
+      accounting.storedPayload.status = "applied";
+      raw = stored.toString("utf8");
+      payloadSizeBytes = stored.length;
+      payloadSha256 = createHash("sha256").update(stored).digest("hex");
+      if (storedManifest && storedManifest.artifactSha256 !== payloadSha256) {
+        throw corrupt("storage", "checkpoint artifact bytes do not match its metadata checksum; restore or regenerate it");
+      }
     }
-  } else {
-    const stored = readLegacyJsonBuffer(file, limits);
-    raw = stored.toString("utf8");
-    payloadSizeBytes = stored.length;
-    payloadSha256 = createHash("sha256").update(stored).digest("hex");
-    if (storedManifest && storedManifest.artifactSha256 !== payloadSha256) {
-      throw corrupt("storage", "checkpoint artifact bytes do not match its metadata checksum; restore or regenerate it");
+    accounting.rawArtifactString = {
+      status: "applied",
+      count: 1,
+      logicalUtf8Bytes: Buffer.byteLength(raw, "utf8"),
+    };
+    const artifact = parseArtifact(raw, id, accounting);
+    validateStoredEntrypoint(projectRoot, artifact.source.entrypoint, "envelope");
+    const loaded: LoadedCheckpointArtifact = {
+      artifact,
+      file,
+      storageEncoding,
+      payloadSizeBytes,
+      payloadSha256,
+      accounting,
+    };
+    validateManifestForLoaded(projectRoot, loaded, storedManifest);
+    finalizeCheckpointReadAccounting(accounting);
+    return loaded;
+  } catch (error) {
+    if (error instanceof CheckpointReadError) {
+      error.accounting = finalizeCheckpointReadAccounting(accounting, error);
     }
+    throw error;
   }
-  const artifact = parseArtifact(raw, id);
-  validateStoredEntrypoint(projectRoot, artifact.source.entrypoint, "envelope");
-  const loaded: LoadedCheckpointArtifact = {
-    artifact,
-    file,
-    storageEncoding,
-    payloadSizeBytes,
-    payloadSha256,
-  };
-  validateManifestForLoaded(projectRoot, loaded, storedManifest);
-  return loaded;
 }
 
 function summary(projectRoot: string, loaded: LoadedCheckpointArtifact): CheckpointArtifactSummary {
@@ -846,21 +1093,39 @@ function manifestBody(
 }
 
 function manifestDigest(
-  manifest: Omit<CheckpointArtifactManifest, "manifestSha256">
+  manifest: Omit<CheckpointArtifactManifest, "manifestSha256">,
+  accounting?: CheckpointReadAccountingV1
 ): string {
-  return createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
+  const raw = JSON.stringify(manifest);
+  if (accounting) {
+    accounting.manifest.validationString = {
+      count: 1,
+      logicalUtf8Bytes: Buffer.byteLength(raw, "utf8"),
+    };
+  }
+  return createHash("sha256").update(raw).digest("hex");
 }
 
 function serializedManifest(manifest: CheckpointArtifactManifest): string {
   return JSON.stringify(manifest);
 }
 
-function parseManifest(raw: string, expectedId: string): CheckpointArtifactManifest {
+function parseManifest(
+  raw: string,
+  expectedId: string,
+  accounting?: CheckpointReadAccountingV1
+): CheckpointArtifactManifest {
   let value: unknown;
   try {
     value = JSON.parse(raw);
   } catch {
     throw corrupt("manifest", "checkpoint metadata manifest is corrupt JSON; restore or regenerate it");
+  }
+  if (accounting) {
+    accounting.manifest.parsedGraph = {
+      count: 1,
+      sourceLogicalUtf8Bytes: Buffer.byteLength(raw, "utf8"),
+    };
   }
   if (!value || typeof value !== "object") {
     throw corrupt("manifest", "checkpoint metadata manifest must be a JSON object");
@@ -905,13 +1170,17 @@ function parseManifest(raw: string, expectedId: string): CheckpointArtifactManif
     throw corrupt("manifest", "checkpoint metadata manifest is missing required fields; restore or regenerate it");
   }
   const complete = manifest as CheckpointArtifactManifest;
-  if (manifestDigest(manifestBody(complete)) !== complete.manifestSha256) {
+  if (manifestDigest(manifestBody(complete), accounting) !== complete.manifestSha256) {
     throw corrupt("manifest", "checkpoint metadata manifest content does not match its canonical checksum");
   }
   return complete;
 }
 
-function readCheckpointManifest(projectRoot: string, id: string): {
+function readCheckpointManifest(
+  projectRoot: string,
+  id: string,
+  accounting?: CheckpointReadAccountingV1
+): {
   manifest: CheckpointArtifactManifest;
   sizeBytes: number;
 } {
@@ -920,9 +1189,23 @@ function readCheckpointManifest(projectRoot: string, id: string): {
     manifestFile,
     MAX_CHECKPOINT_MANIFEST_BYTES,
     "manifest",
-    "checkpoint metadata manifest"
+    "checkpoint metadata manifest",
+    (bytes) => {
+      if (accounting) accounting.manifest.storedBuffer = { count: 1, bytes };
+    }
   );
-  return { manifest: parseManifest(stored.toString("utf8"), id), sizeBytes: stored.length };
+  const raw = stored.toString("utf8");
+  if (accounting) {
+    accounting.manifest.rawString = {
+      count: 1,
+      logicalUtf8Bytes: Buffer.byteLength(raw, "utf8"),
+    };
+  }
+  const manifest = parseManifest(raw, id, accounting);
+  if (accounting) {
+    accounting.manifest.status = "applied";
+  }
+  return { manifest, sizeBytes: stored.length };
 }
 
 function validateManifestStorage(
@@ -965,7 +1248,17 @@ function validateManifestForLoaded(
 ): void {
   const manifestFile = checkpointManifestFile(projectRoot, loaded.artifact.id);
   if (!alreadyRead && !fs.existsSync(manifestFile)) return;
-  const manifest = alreadyRead ?? readCheckpointManifest(projectRoot, loaded.artifact.id).manifest;
+  let manifest: CheckpointArtifactManifest;
+  if (alreadyRead) {
+    manifest = alreadyRead;
+  } else {
+    loaded.accounting.manifest.status = "not_completed";
+    manifest = readCheckpointManifest(
+      projectRoot,
+      loaded.artifact.id,
+      loaded.accounting
+    ).manifest;
+  }
   validateManifestStorage(projectRoot, loaded.artifact.id, loaded.file, manifest);
   const artifact = loaded.artifact;
   if (manifest.artifactSizeBytes !== loaded.payloadSizeBytes
@@ -2420,10 +2713,14 @@ export async function openCheckpointArtifact(
   readLimits: CheckpointReadLimits = {}
 ): Promise<{
   artifact: CheckpointArtifactSummary & { freshness: CheckpointFreshness };
+  accounting: CheckpointReadAccountingV1;
 }> {
   const loaded = loadArtifactDetailed(projectRoot, id, readLimits);
   const current = await freshness(projectRoot, loaded.artifact);
-  return { artifact: { ...summary(projectRoot, loaded), freshness: current.freshness } };
+  return {
+    artifact: { ...summary(projectRoot, loaded), freshness: current.freshness },
+    accounting: loaded.accounting,
+  };
 }
 
 export async function loadCheckpointForResume(
@@ -2434,15 +2731,18 @@ export async function loadCheckpointForResume(
   artifact: CheckpointArtifactSummary & { freshness: "current" };
   checkpoint: SharedSearchCheckpoint;
   entrypoint: string;
+  accounting: CheckpointReadAccountingV1;
 }> {
   const loaded = loadArtifactDetailed(projectRoot, id, readLimits);
   const current = await freshness(projectRoot, loaded.artifact);
   if (current.freshness !== "current") {
     throw new Error(`checkpoint ${id} is ${current.freshness}; resume requires the exact source and knot map used to create it`);
   }
+  retainReturnedCheckpointGraph(loaded.accounting);
   return {
     artifact: { ...summary(projectRoot, loaded), freshness: "current" },
     checkpoint: loaded.artifact.checkpoint,
     entrypoint: current.entrypoint,
+    accounting: loaded.accounting,
   };
 }
