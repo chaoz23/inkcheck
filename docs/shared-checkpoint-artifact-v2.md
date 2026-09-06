@@ -15,6 +15,41 @@ await saveCheckpointArtifact(projectRoot, entrypoint, checkpoint, {
 });
 ```
 
+Or they can keep the shared engine paused at its exact checkpoint boundary and
+stream the same logical checkpoint directly into the codec:
+
+```ts
+await exploreSharedResumableWithCheckpointSource(
+  storyJson,
+  knots,
+  externals,
+  options,
+  (source) => saveCheckpointArtifactFromSource(projectRoot, entrypoint, source),
+  priorCheckpoint,
+);
+```
+
+The callback-scoped source is repeatable only while that callback is active.
+It yields detached records, is invalidated in `finally`, and keeps the engine
+quiescent across asynchronous backpressure. Plain callback results invalidate
+the source synchronously on return; promise/thenable results keep it live only
+until their single adopted settlement. The engine snapshots mutable knot,
+external, and option inputs before work, and evidence callbacks receive
+detached findings, so caller mutation cannot split the identity and frame
+passes. The producer performs one
+canonical logical-identity pass and, only when candidate encoding is needed,
+one framed-record pass. It does not materialize or recursively clone the full
+`SharedSearchCheckpoint` graph. The graph and source producers retain the same
+logical bytes, stable ID, component order, framed payload, and resume contract.
+Manifested same-ID reuse revalidates the bounded sidecar and complete payload
+digest without decoding a graph. For framed-v2 reuse it also bounded-stream-
+decodes each record and compares the canonical value and position with the live
+source, so a self-consistent rewrite cannot bypass logical stable-ID validation.
+Legacy artifacts, manifested or sidecar-free, must first be opened/migrated
+through the graph API; source-native reuse rejects them rather than hiding a
+materialized graph behind its receipt. Source-native retention similarly fails
+before publication if any retained legacy artifact lacks its manifest.
+
 The resulting payload is `.inkcheck/checkpoints/checkpoint-<hash>.inkcp`, with
 a schema-v2 canonical `.meta.json` sidecar. Readers dispatch from that verified
 sidecar and continue to accept manifested and legacy sidecar-free schema-v1
@@ -121,14 +156,19 @@ limitations in [local resumable checkpoints](local-checkpoints.md).
 
 ## Deliberate scope
 
-This is a codec foundation, not format promotion. It does not make framed v2 the
-default, add an engine-native streaming checkpoint producer, change allocation,
-compaction, eviction, stopping, or epoch policy, publish a release, or establish
-an InkBench improvement claim. Promotion still requires exact split-versus-
-uninterrupted resume evidence, the observed Intercept schema-v1 readback-limit
-cell under identical ceilings, and a second public story family such as Heresy
-II, together with the adversarial truncation, checksum, bounds, cancellation,
-crash, and mixed-layout gates.
+This remains an opt-in foundation, not format promotion. The engine-native
+producer removes the write-side full-checkpoint materialization, but the framed
+reader still reconstructs a private complete schema-v1 graph before handing it
+to the existing resume engine. That handoff uses a structural ownership clone,
+not a whole-checkpoint JSON string, but both graphs may overlap until the caller
+releases its loaded value. This work does not make framed v2 the default,
+stream provisional read callbacks directly into a live engine, change
+allocation, compaction, eviction, stopping, or epoch policy, publish a release,
+or establish an InkBench improvement claim. Promotion still requires exact
+split-versus-uninterrupted resume evidence, the observed Intercept schema-v1
+readback-limit cell under identical ceilings, and a second public story family
+such as Heresy II, together with the adversarial truncation, checksum, bounds,
+cancellation, crash, and mixed-layout gates.
 
 Checkpoint records can contain authored text, variables, serialized runtime
 state, findings, and witness paths. Treat `.inkcp` files as sensitive project

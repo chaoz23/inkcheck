@@ -13,12 +13,15 @@ import {
   type CheckpointArtifactV2ReadResult,
   type CheckpointArtifactV2WriteResult,
   readCheckpointArtifactV2,
+  resolveCheckpointArtifactV2Limits,
   writeCheckpointArtifactV2,
 } from "./checkpoint-artifact-v2";
 import { compile, scanKnots } from "./inklecate";
 import {
+  assertLiveSharedSearchCheckpointSourceV1,
   SHARED_SEARCH_CHECKPOINT_SCHEMA_VERSION,
   type SharedSearchCheckpoint,
+  type SharedSearchCheckpointSourceV1,
 } from "./explore";
 import { VERSION } from "./version";
 
@@ -47,8 +50,21 @@ export interface CheckpointWriteAccountingV1 {
   schemaVersion: 1;
   outcome: "created" | "reused";
   checkpointGraph: {
-    count: 1;
+    count: 0 | 1;
     logicalUtf8Bytes: number;
+    peakSourceChunkUtf8Bytes: number;
+  };
+  /** Present only when a framed-v2 operation uses a paused engine source. */
+  engineSource?: {
+    schemaVersion: 1;
+    status: "applied";
+    materializedCheckpointGraphs: 0;
+    identityPasses: 1;
+    /** Ordered source-record traversals used to encode a private candidate. */
+    framePasses: 0 | 1;
+    /** Ordered source-record traversals used to verify a durable framed reuse. */
+    reuseVerificationPasses: 0 | 1;
+    logicalCheckpointUtf8BytesVisited: number;
     peakSourceChunkUtf8Bytes: number;
   };
   serialization: {
@@ -159,6 +175,20 @@ export interface CheckpointReadAccountingV1 {
     maxManifestBytes: number;
     maxStoredBytes: number;
     maxDecompressedBytes: number;
+    /** Present only for framed-v2 reads; these are the actual codec bounds. */
+    framedV2?: {
+      basis: "effective_codec_limits_not_allocated_capacity";
+      maxHeaderBytes: number;
+      maxStoredFrameBytes: number;
+      maxDecodedFrameBytes: number;
+      maxRecordBytes: number;
+      maxJsonDepth: number;
+      maxRecordsPerFrame: number;
+      maxFrames: number;
+      maxTotalRecords: number;
+      maxTotalStoredBytes: number;
+      maxTotalDecodedBytes: number;
+    };
   };
   manifest: {
     status: "applied" | "not_present" | "not_completed";
@@ -261,7 +291,7 @@ export class CheckpointReadError extends Error {
   }
 }
 
-interface CheckpointArtifact {
+interface CheckpointArtifactMetadata {
   artifactSchemaVersion: 1 | 2;
   artifactType: "shared-search-checkpoint";
   id: string;
@@ -272,7 +302,42 @@ interface CheckpointArtifact {
   storySha256: string;
   knotsSha256: string;
   configuration: SharedSearchCheckpoint["configuration"];
+}
+
+interface CheckpointArtifact extends CheckpointArtifactMetadata {
   checkpoint: SharedSearchCheckpoint;
+}
+
+interface ExpectedCheckpointSummary {
+  engine: SharedSearchCheckpoint["engine"];
+  configuration: SharedSearchCheckpoint["configuration"];
+  totalGranted: number;
+  statesExplored: number;
+}
+
+type CheckpointSaveInput = {
+  kind: "checkpoint-graph";
+  checkpoint: SharedSearchCheckpoint;
+} | {
+  kind: "engine-source";
+  source: SharedSearchCheckpointSourceV1;
+};
+
+function expectedCheckpointSummary(input: CheckpointSaveInput): ExpectedCheckpointSummary {
+  if (input.kind === "checkpoint-graph") {
+    return {
+      engine: input.checkpoint.engine,
+      configuration: input.checkpoint.configuration,
+      totalGranted: input.checkpoint.state.totalGranted,
+      statesExplored: input.checkpoint.state.statesExplored,
+    };
+  }
+  return {
+    engine: input.source.engine,
+    configuration: { ...input.source.configuration, externals: [...input.source.configuration.externals] },
+    totalGranted: input.source.totalGranted,
+    statesExplored: input.source.statesExplored,
+  };
 }
 
 const CHECKPOINT_V2_COMPONENT_ORDER = [
@@ -410,6 +475,27 @@ const CHECKPOINT_V2_ARRAY_STATE_FIELDS = new Set<keyof SharedSearchCheckpoint["s
   "seenStates", "variableStateCounts", "variableTransitionCounts", "visibleOutcomes", "visitedKnots",
 ]);
 
+// This is the schema-v1 property order emitted by buildCheckpoint. Stable IDs
+// bind these logical JSON bytes, so the engine-native source must retain it
+// independently of the framed component order.
+const CHECKPOINT_V1_STATE_FIELD_ORDER = [
+  "endings", "visibleOutcomes", "runtimeErrors", "runtimeWarnings", "visitedKnots",
+  "seenStates", "seenChoiceSets", "variableStateCounts", "variableTransitionCounts",
+  "meaningfulVariableTransitions", "nodes", "deep", "random", "novelty", "rngState",
+  "policyCursor", "insertionOrder", "current", "pendingStates", "pendingBytes",
+  "pendingVariableBytes", "activeStateBytes", "activeVariableBytes", "peakPendingStates",
+  "peakPendingBytes", "retainedNodes", "dedupeBytes", "semanticIndexBytes", "releasedNodes",
+  "frontierCompactions", "guardChecksSinceLast", "statesExplored", "totalGranted", "dedupeHits",
+  "maxDepthReached", "deepestStateDiscovered", "lastDiscoveryAtState", "discoveryCurve",
+  "truncated", "truncatedBy", "finished", "findingBytes", "ancestryPayloadBytes",
+  "peakRetainedMemory", "sharedObservability", "ownerAccounting",
+] as const satisfies readonly (keyof SharedSearchCheckpoint["state"])[];
+
+const CHECKPOINT_V1_ARRAY_STATE_FIELDS = new Set<keyof SharedSearchCheckpoint["state"]>([
+  ...CHECKPOINT_V2_ARRAY_STATE_FIELDS,
+  "nodes",
+]);
+
 function *checkpointV2NodePayloadRecords(
   nodes: SharedSearchCheckpoint["state"]["nodes"]
 ): Generator<unknown> {
@@ -517,6 +603,112 @@ function checkpointArtifactV2Frames(
       - CHECKPOINT_V2_COMPONENT_ORDER.indexOf(right.component)
       || (left.field < right.field ? -1 : left.field > right.field ? 1 : 0);
   });
+}
+
+function checkpointArtifactV2FramesFromSource(
+  artifact: CheckpointArtifactMetadata,
+  source: SharedSearchCheckpointSourceV1
+): CheckpointArtifactV2FrameInput[] {
+  const frames: CheckpointArtifactV2FrameInput[] = [{
+    component: "configuration",
+    field: "checkpoint",
+    start: 0,
+    records: [{
+      schemaVersion: source.checkpointSchemaVersion,
+      engine: source.engine,
+      configuration: source.configuration,
+    }],
+  }];
+  for (const spec of CHECKPOINT_V2_STATE_COMPONENT_FIELDS) {
+    for (const field of spec.fields) {
+      frames.push({
+        component: spec.component,
+        field,
+        start: 0,
+        records: source.stateRecords(field),
+      });
+    }
+    if (spec.component === "frontier") {
+      frames.push({
+        component: "frontier",
+        field: "nodePayload",
+        start: 0,
+        records: source.nodePayloadRecords(),
+      });
+    }
+    if (spec.component === "witnessAncestry") {
+      frames.push({
+        component: "witnessAncestry",
+        field: "nodeSlots",
+        start: 0,
+        records: [source.nodeSlots],
+      }, {
+        component: "witnessAncestry",
+        field: "nodes",
+        start: 0,
+        records: source.nodeAncestryRecords(),
+      });
+    }
+    if (spec.component === "metadata") {
+      frames.push({
+        component: "metadata",
+        field: "artifact",
+        start: 0,
+        records: [{
+          artifactSchemaVersion: artifact.artifactSchemaVersion,
+          artifactType: artifact.artifactType,
+          id: artifact.id,
+          createdAt: artifact.createdAt,
+          inkcheckVersion: artifact.inkcheckVersion,
+          checkpointSchemaVersion: artifact.checkpointSchemaVersion,
+          source: artifact.source,
+          storySha256: artifact.storySha256,
+          knotsSha256: artifact.knotsSha256,
+        }],
+      });
+    }
+  }
+  return frames.sort((left, right) => {
+    return CHECKPOINT_V2_COMPONENT_ORDER.indexOf(left.component)
+      - CHECKPOINT_V2_COMPONENT_ORDER.indexOf(right.component)
+      || (left.field < right.field ? -1 : left.field > right.field ? 1 : 0);
+  });
+}
+
+function *checkpointArtifactV2RecordsFromSource(
+  artifact: CheckpointArtifactMetadata,
+  source: SharedSearchCheckpointSourceV1
+): Generator<CheckpointV2Record> {
+  for (const frame of checkpointArtifactV2FramesFromSource(artifact, source)) {
+    let index = frame.start;
+    for (const value of frame.records as Iterable<unknown>) {
+      yield {
+        component: frame.component,
+        field: frame.field,
+        index,
+        value,
+      };
+      index += 1;
+    }
+  }
+}
+
+function canonicalJsonValuesMatch(left: unknown, right: unknown): boolean {
+  const leftChunks = jsonChunks(left);
+  const rightChunks = jsonChunks(right);
+  try {
+    while (true) {
+      const leftChunk = leftChunks.next();
+      const rightChunk = rightChunks.next();
+      if (leftChunk.done || rightChunk.done) {
+        return leftChunk.done === rightChunk.done;
+      }
+      if (leftChunk.value !== rightChunk.value) return false;
+    }
+  } finally {
+    leftChunks.return(undefined);
+    rightChunks.return(undefined);
+  }
 }
 
 type CheckpointV2Record = {
@@ -1043,6 +1235,62 @@ function *jsonChunks(value: unknown, ancestors = new Set<object>()): Generator<s
   }
 }
 
+function *jsonArrayFromRecords(records: Iterable<unknown>): Generator<string> {
+  yield "[";
+  let first = true;
+  for (const record of records) {
+    if (!first) yield ",";
+    first = false;
+    yield *jsonChunks(record);
+  }
+  yield "]";
+}
+
+function *checkpointSourceJsonChunks(
+  source: SharedSearchCheckpointSourceV1
+): Generator<string> {
+  if (source.sourceSchemaVersion !== 1
+    || source.checkpointSchemaVersion !== SHARED_SEARCH_CHECKPOINT_SCHEMA_VERSION
+    || source.engine !== "shared:deep-novelty-v1") {
+    throw new RangeError("Unsupported shared checkpoint source schema");
+  }
+  yield `{"schemaVersion":${source.checkpointSchemaVersion},"engine":`;
+  yield *jsonChunks(source.engine);
+  yield `,"configuration":`;
+  yield *jsonChunks(source.configuration);
+  yield `,"state":{`;
+  let firstField = true;
+  for (const field of CHECKPOINT_V1_STATE_FIELD_ORDER) {
+    const records = source.stateRecords(field);
+    if (CHECKPOINT_V1_ARRAY_STATE_FIELDS.has(field)) {
+      if (!firstField) yield ",";
+      firstField = false;
+      yield JSON.stringify(field);
+      yield ":";
+      yield *jsonArrayFromRecords(records);
+      continue;
+    }
+    const iterator = records[Symbol.iterator]();
+    let first: IteratorResult<unknown>;
+    try {
+      first = iterator.next();
+      if (first.done) continue;
+      const extra = iterator.next();
+      if (!extra.done) {
+        throw new Error(`Shared checkpoint source emitted multiple scalar records for ${String(field)}`);
+      }
+    } finally {
+      iterator.return?.();
+    }
+    if (!firstField) yield ",";
+    firstField = false;
+    yield JSON.stringify(field);
+    yield ":";
+    yield *jsonChunks(first.value);
+  }
+  yield "}}";
+}
+
 interface JsonChunkAccounting {
   logicalUtf8Bytes: number;
   peakSourceChunkUtf8Bytes: number;
@@ -1051,6 +1299,7 @@ interface JsonChunkAccounting {
 interface CheckpointIdentity {
   id: string;
   checkpointGraph: CheckpointWriteAccountingV1["checkpointGraph"];
+  engineSource?: NonNullable<CheckpointWriteAccountingV1["engineSource"]>;
 }
 
 function exactByteAdd(description: string, total: number, value: number): number {
@@ -1194,6 +1443,51 @@ function checkpointIdentity(entrypoint: string, checkpoint: SharedSearchCheckpoi
     checkpointGraph: {
       count: 1,
       logicalUtf8Bytes: accounting.logicalUtf8Bytes,
+      peakSourceChunkUtf8Bytes: accounting.peakSourceChunkUtf8Bytes,
+    },
+  };
+}
+
+async function checkpointIdentityFromSource(
+  entrypoint: string,
+  source: SharedSearchCheckpointSourceV1,
+  signal?: AbortSignal
+): Promise<CheckpointIdentity> {
+  const hash = createHash("sha256").update(entrypoint).update("\0");
+  const accounting: JsonChunkAccounting = {
+    logicalUtf8Bytes: 0,
+    peakSourceChunkUtf8Bytes: 0,
+  };
+  let chunksSinceYield = 0;
+  let bytesSinceYield = 0;
+  for (const chunk of checkpointSourceJsonChunks(source)) {
+    signal?.throwIfAborted();
+    accountJsonChunk(accounting, chunk);
+    hash.update(chunk);
+    chunksSinceYield++;
+    bytesSinceYield += Buffer.byteLength(chunk);
+    if (chunksSinceYield >= 1_024 || bytesSinceYield >= 1024 * 1024) {
+      chunksSinceYield = 0;
+      bytesSinceYield = 0;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+  signal?.throwIfAborted();
+  return {
+    id: `checkpoint-${hash.digest("hex").slice(0, 24)}`,
+    checkpointGraph: {
+      count: 0,
+      logicalUtf8Bytes: 0,
+      peakSourceChunkUtf8Bytes: 0,
+    },
+    engineSource: {
+      schemaVersion: 1,
+      status: "applied",
+      materializedCheckpointGraphs: 0,
+      identityPasses: 1,
+      framePasses: 0,
+      reuseVerificationPasses: 0,
+      logicalCheckpointUtf8BytesVisited: accounting.logicalUtf8Bytes,
       peakSourceChunkUtf8Bytes: accounting.peakSourceChunkUtf8Bytes,
     },
   };
@@ -1724,6 +2018,24 @@ async function loadFramedArtifactDetailed(
   const limits = checkpointReadLimits(inputLimits);
   const accounting = checkpointReadAccounting("framed-v2", limits);
   try {
+    const requestedFramedV2Limits = resolveCheckpointArtifactV2Limits(inputLimits.framedV2Limits);
+    const effectiveFramedV2Limits: CheckpointArtifactV2Limits = {
+      ...requestedFramedV2Limits,
+      maxTotalStoredBytes: Math.min(requestedFramedV2Limits.maxTotalStoredBytes, limits.maxStoredBytes),
+    };
+    accounting.configuredLimits.framedV2 = {
+      basis: "effective_codec_limits_not_allocated_capacity",
+      maxHeaderBytes: effectiveFramedV2Limits.maxHeaderBytes,
+      maxStoredFrameBytes: effectiveFramedV2Limits.maxStoredFrameBytes,
+      maxDecodedFrameBytes: effectiveFramedV2Limits.maxDecodedFrameBytes,
+      maxRecordBytes: effectiveFramedV2Limits.maxRecordBytes,
+      maxJsonDepth: effectiveFramedV2Limits.maxJsonDepth,
+      maxRecordsPerFrame: effectiveFramedV2Limits.maxRecordsPerFrame,
+      maxFrames: effectiveFramedV2Limits.maxFrames,
+      maxTotalRecords: effectiveFramedV2Limits.maxTotalRecords,
+      maxTotalStoredBytes: effectiveFramedV2Limits.maxTotalStoredBytes,
+      maxTotalDecodedBytes: effectiveFramedV2Limits.maxTotalDecodedBytes,
+    };
     inputLimits.signal?.throwIfAborted();
     const manifestFile = checkpointManifestFile(projectRoot, id);
     if (!fs.existsSync(manifestFile)) {
@@ -1736,13 +2048,8 @@ async function loadFramedArtifactDetailed(
       throw corrupt("manifest", "framed-v2 checkpoint metadata is missing its component summary");
     }
     inputLimits.signal?.throwIfAborted();
-    const maxNodeSlots = inputLimits.framedV2Limits?.maxTotalRecords
-      ?? DEFAULT_CHECKPOINT_ARTIFACT_V2_LIMITS.maxTotalRecords;
+    const maxNodeSlots = effectiveFramedV2Limits.maxTotalRecords;
     const assembly = new CheckpointArtifactV2Assembly(maxNodeSlots);
-    const requestedStored = inputLimits.framedV2Limits?.maxTotalStoredBytes
-      ?? DEFAULT_CHECKPOINT_ARTIFACT_V2_LIMITS.maxTotalStoredBytes;
-    const requestedDecoded = inputLimits.framedV2Limits?.maxTotalDecodedBytes
-      ?? DEFAULT_CHECKPOINT_ARTIFACT_V2_LIMITS.maxTotalDecodedBytes;
     let codec: CheckpointArtifactV2ReadResult;
     let payloadSizeBytes = 0;
     let payloadSha256 = "";
@@ -1764,18 +2071,20 @@ async function loadFramedArtifactDetailed(
     const source = fs.createReadStream(file, { fd, autoClose: false, start: 0 });
     const digest = new CheckpointReadDigestTransform(limits.maxStoredBytes);
     try {
-      [codec] = await Promise.all([
+      const [codecSettlement, pipelineSettlement] = await Promise.allSettled([
         readCheckpointArtifactV2(digest, {
-          limits: {
-            ...inputLimits.framedV2Limits,
-            maxTotalStoredBytes: Math.min(requestedStored, limits.maxStoredBytes),
-            maxTotalDecodedBytes: Math.min(requestedDecoded, limits.maxDecompressedBytes),
-          },
+          // maxDecompressedBytes is the schema-v1 whole-string ceiling. A
+          // framed reader never constructs that string, so its explicitly
+          // bounded cumulative decoded budget is independent.
+          limits: effectiveFramedV2Limits,
           signal: inputLimits.signal,
           onRecord: (record) => assembly.add(record),
         }),
         pipeline(source, digest),
       ]);
+      if (codecSettlement.status === "rejected") throw codecSettlement.reason;
+      if (pipelineSettlement.status === "rejected") throw pipelineSettlement.reason;
+      codec = codecSettlement.value;
       const after = fs.fstatSync(fd);
       let visible: fs.Stats;
       try {
@@ -1834,6 +2143,13 @@ async function loadFramedArtifactDetailed(
     finalizeCheckpointReadAccounting(accounting);
     return loaded;
   } catch (error) {
+    if (error instanceof CheckpointArtifactV2Error) {
+      const translated = checkpointReadErrorFromV2(error);
+      if (translated instanceof CheckpointReadError) {
+        translated.accounting = finalizeCheckpointReadAccounting(accounting, translated);
+      }
+      throw translated;
+    }
     if (error instanceof CheckpointReadError) {
       error.accounting = finalizeCheckpointReadAccounting(accounting, error);
     }
@@ -1883,10 +2199,11 @@ function summary(projectRoot: string, loaded: LoadedCheckpointArtifact): Checkpo
 }
 
 function manifestForArtifact(
-  artifact: CheckpointArtifact,
+  artifact: CheckpointArtifactMetadata,
   storageEncoding: CheckpointStorageEncoding,
   artifactSizeBytes: number,
   artifactSha256: string,
+  expected: ExpectedCheckpointSummary,
   framedV2?: CheckpointArtifactV2ManifestSummary
 ): CheckpointArtifactManifest {
   const framed = storageEncoding === "framed-v2";
@@ -1907,9 +2224,9 @@ function manifestForArtifact(
     inkcheckVersion: artifact.inkcheckVersion,
     checkpointSchemaVersion: artifact.checkpointSchemaVersion,
     entrypoint: artifact.source.entrypoint,
-    engine: artifact.checkpoint.engine,
-    totalGranted: artifact.checkpoint.state.totalGranted,
-    statesExplored: artifact.checkpoint.state.statesExplored,
+    engine: expected.engine,
+    totalGranted: expected.totalGranted,
+    statesExplored: expected.statesExplored,
     storageEncoding,
     artifactSizeBytes,
     artifactSha256,
@@ -2166,6 +2483,7 @@ function readCheckpointManifest(
 ): {
   manifest: CheckpointArtifactManifest;
   sizeBytes: number;
+  raw: string;
 } {
   const manifestFile = checkpointManifestFile(projectRoot, id);
   const stored = readBoundedBuffer(
@@ -2188,7 +2506,7 @@ function readCheckpointManifest(
   if (accounting) {
     accounting.manifest.status = "applied";
   }
-  return { manifest, sizeBytes: stored.length };
+  return { manifest, sizeBytes: stored.length, raw };
 }
 
 function validateManifestStorage(
@@ -2289,7 +2607,8 @@ function recordFromManifest(projectRoot: string, id: string, file: string): Chec
 
 function checkpointRecords(
   projectRoot: string,
-  inputLimits: CheckpointReadLimits = {}
+  inputLimits: CheckpointReadLimits = {},
+  requireManifests = false
 ): CheckpointRecord[] {
   const directory = checkpointsDirectory(projectRoot);
   if (!fs.existsSync(directory)) return [];
@@ -2307,6 +2626,12 @@ function checkpointRecords(
     if (fs.existsSync(manifestFile)) return recordFromManifest(projectRoot, id, file);
     if (checkpointStorageEncoding(file) === "framed-v2") {
       throw corrupt("manifest", `framed checkpoint ${id} is missing its required versioned metadata manifest`);
+    }
+    if (requireManifests) {
+      throw unsupported(
+        "manifest",
+        `engine-native checkpoint storage requires a versioned metadata manifest for retained artifact ${id}; reopen or migrate it through the graph API first`
+      );
     }
     return { ...summary(projectRoot, loadLegacyArtifactDetailed(projectRoot, id, inputLimits)), file };
   });
@@ -2490,7 +2815,8 @@ async function writeCompressedArtifact(
 
 async function writeFramedArtifact(
   temporary: string,
-  artifact: CheckpointArtifact,
+  inputs: Iterable<CheckpointArtifactV2FrameInput>,
+  nodeSlots: number,
   limits: CheckpointByteStorageLimits,
   framedV2Limits: Partial<CheckpointArtifactV2Limits> | undefined,
   signal: AbortSignal | undefined
@@ -2542,12 +2868,12 @@ async function writeFramedArtifact(
   const maxNodeSlots = framedV2Limits?.maxTotalRecords
     ?? DEFAULT_CHECKPOINT_ARTIFACT_V2_LIMITS.maxTotalRecords;
   if (Number.isSafeInteger(maxNodeSlots) && maxNodeSlots > 0
-    && artifact.checkpoint.state.nodes.length > maxNodeSlots) {
+    && nodeSlots > maxNodeSlots) {
     throw new CheckpointFramedPreflightError(
       "resource_limit",
       "record",
-      `framed checkpoint node-slot count ${artifact.checkpoint.state.nodes.length} exceeds maxTotalRecords`,
-      artifact.checkpoint.state.nodes.length,
+      `framed checkpoint node-slot count ${nodeSlots} exceeds maxTotalRecords`,
+      nodeSlots,
       maxNodeSlots,
       "count"
     );
@@ -2561,7 +2887,7 @@ async function writeFramedArtifact(
   let codec: CheckpointArtifactV2WriteResult;
   try {
     [codec] = await Promise.all([
-      writeCheckpointArtifactV2(limiter, checkpointArtifactV2Frames(artifact), {
+      writeCheckpointArtifactV2(limiter, inputs, {
         limits: codecLimits,
         signal,
       }),
@@ -2599,9 +2925,10 @@ function oldestFirst<T extends { createdAt: string; id: string }>(a: T, b: T): n
 function pruneCheckpoints(
   projectRoot: string,
   protectedId: string,
-  limits: CheckpointByteStorageLimits
+  limits: CheckpointByteStorageLimits,
+  requireManifests = false
 ): string[] {
-  let records = checkpointRecords(projectRoot);
+  let records = checkpointRecords(projectRoot, {}, requireManifests);
   const removed: string[] = [];
   const remove = (record: CheckpointRecord) => {
     fs.rmSync(record.file, { force: true });
@@ -2843,7 +3170,14 @@ function acquireRecoverySlotCleaning(
     syncDirectory(checkpointsDirectory(projectRoot));
     return file;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
+    const code = (error as NodeJS.ErrnoException).code;
+    // Windows can surface ERROR_ACCESS_DENIED/SHARING_VIOLATION as EPERM,
+    // EBUSY, or EACCES while another process removes or still holds this
+    // fixed lock pathname. None proves ownership, so fail closed at this slot
+    // and let the bounded reservation scan continue.
+    if (code === "EEXIST" || code === "EPERM" || code === "EBUSY" || code === "EACCES") {
+      return undefined;
+    }
     throw error;
   }
 }
@@ -2981,7 +3315,7 @@ function manifestMatchesVisiblePayload(
   manifest: CheckpointArtifactManifest,
   payload: { sizeBytes: number; sha256: string },
   relative: string,
-  checkpoint: SharedSearchCheckpoint
+  expected: ExpectedCheckpointSummary
 ): boolean {
   const storageEncoding = checkpointStorageEncoding(file);
   return manifestMatchesCheckpointPayload(
@@ -2990,7 +3324,7 @@ function manifestMatchesVisiblePayload(
     manifest,
     payload,
     relative,
-    checkpoint
+    expected
   ) && manifest.storageEncoding === storageEncoding;
 }
 
@@ -3000,7 +3334,7 @@ function manifestMatchesCheckpointPayload(
   manifest: CheckpointArtifactManifest,
   payload: { sizeBytes: number; sha256: string },
   relative: string,
-  checkpoint: SharedSearchCheckpoint
+  expected: ExpectedCheckpointSummary
 ): boolean {
   try {
     validateStoredEntrypoint(projectRoot, manifest.entrypoint, "manifest");
@@ -3010,7 +3344,7 @@ function manifestMatchesCheckpointPayload(
   return manifest.id === id
     && manifest.artifactSizeBytes === payload.sizeBytes
     && manifest.artifactSha256 === payload.sha256
-    && expectedManifestMatchesCheckpoint(manifest, relative, checkpoint);
+    && expectedManifestMatchesCheckpoint(manifest, relative, expected);
 }
 
 function matchingRecoveryManifest(
@@ -3019,7 +3353,7 @@ function matchingRecoveryManifest(
   file: string,
   payload: { sizeBytes: number; sha256: string },
   relative: string,
-  checkpoint: SharedSearchCheckpoint
+  expected: ExpectedCheckpointSummary
 ): RecoveryManifest | undefined {
   for (const candidate of recoveryManifestSourceFiles(projectRoot, id)) {
     try {
@@ -3031,7 +3365,7 @@ function matchingRecoveryManifest(
         recovery.manifest,
         payload,
         relative,
-        checkpoint
+        expected
       )) return recovery;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof CheckpointReadError) continue;
@@ -3046,7 +3380,7 @@ function matchingRecoveryManifestForNeutralPayload(
   id: string,
   payload: { sizeBytes: number; sha256: string },
   relative: string,
-  checkpoint: SharedSearchCheckpoint
+  expected: ExpectedCheckpointSummary
 ): RecoveryManifest | undefined {
   let match: RecoveryManifest | undefined;
   for (const candidate of recoveryManifestSourceFiles(projectRoot, id)) {
@@ -3058,7 +3392,7 @@ function matchingRecoveryManifestForNeutralPayload(
         recovery.manifest,
         payload,
         relative,
-        checkpoint
+        expected
       )) continue;
       if (match && match.raw !== recovery.raw) {
         throw corrupt("manifest", `checkpoint ${id} has ambiguous recovery metadata for its committed payload`);
@@ -3079,7 +3413,7 @@ function readMatchingCanonicalManifest(
   file: string,
   payload: { sizeBytes: number; sha256: string },
   relative: string,
-  checkpoint: SharedSearchCheckpoint,
+  expected: ExpectedCheckpointSummary,
   expectedRaw?: string
 ): StoredCheckpointManifest | undefined {
   const manifestFile = checkpointManifestFile(projectRoot, id);
@@ -3103,7 +3437,7 @@ function readMatchingCanonicalManifest(
       manifest,
       payload,
       relative,
-      checkpoint
+      expected
     )) return undefined;
     return { file: manifestFile, raw, manifest, sizeBytes: stored.length };
   } catch (error) {
@@ -3122,7 +3456,7 @@ function promoteRecoveryManifest(
   file: string,
   payload: { sizeBytes: number; sha256: string },
   relative: string,
-  checkpoint: SharedSearchCheckpoint,
+  expected: ExpectedCheckpointSummary,
   recovery: RecoveryManifest
 ): StoredCheckpointManifest {
   const directory = checkpointsDirectory(projectRoot);
@@ -3135,7 +3469,7 @@ function promoteRecoveryManifest(
     file,
     payload,
     relative,
-    checkpoint,
+    expected,
     recovery.raw
   );
   const alreadyPublished = matches();
@@ -3432,7 +3766,7 @@ function recoverPublishedCheckpoint(
   projectRoot: string,
   relative: string,
   id: string,
-  checkpoint: SharedSearchCheckpoint,
+  expected: ExpectedCheckpointSummary,
   limits: CheckpointByteStorageLimits,
   expectedTransaction?: CheckpointTransaction
 ): RecoveredCheckpointPair | undefined {
@@ -3466,7 +3800,7 @@ function recoverPublishedCheckpoint(
       file,
       payload,
       relative,
-      checkpoint
+      expected
     );
     if (canonical) {
       expectedManifestRaw = canonical.raw;
@@ -3477,7 +3811,7 @@ function recoverPublishedCheckpoint(
         file,
         payload,
         relative,
-        checkpoint
+        expected
       );
       if (!recovery) return undefined;
       promoteRecoveryManifest(
@@ -3486,7 +3820,7 @@ function recoverPublishedCheckpoint(
         file,
         payload,
         relative,
-        checkpoint,
+        expected,
         recovery
       );
       expectedManifestRaw = recovery.raw;
@@ -3500,7 +3834,7 @@ function recoverPublishedCheckpoint(
         projectRoot,
         relative,
         id,
-        checkpoint,
+        expected,
         limits,
         expectedTransaction
       );
@@ -3513,7 +3847,7 @@ function recoverPublishedCheckpoint(
         id,
         committed,
         relative,
-        checkpoint
+        expected
       );
     } catch (error) {
       // A public winner can appear while a later, larger neutral is being
@@ -3526,7 +3860,7 @@ function recoverPublishedCheckpoint(
           projectRoot,
           relative,
           id,
-          checkpoint,
+          expected,
           limits,
           expectedTransaction
         );
@@ -3539,7 +3873,7 @@ function recoverPublishedCheckpoint(
         projectRoot,
         relative,
         id,
-        checkpoint,
+        expected,
         limits,
         expectedTransaction
       );
@@ -3571,7 +3905,7 @@ function recoverPublishedCheckpoint(
       file,
       payload,
       relative,
-      checkpoint,
+      expected,
       recovery
     );
     expectedManifestRaw = recovery.raw;
@@ -3595,7 +3929,7 @@ function recoverPublishedCheckpoint(
     file,
     verifiedPayload,
     relative,
-    checkpoint,
+    expected,
     expectedManifestRaw
   );
   if (!verifiedManifest) {
@@ -3721,12 +4055,12 @@ function enforceDurableCheckpointLimits(
 function expectedManifestMatchesCheckpoint(
   manifest: CheckpointArtifactManifest,
   relative: string,
-  checkpoint: SharedSearchCheckpoint
+  expected: ExpectedCheckpointSummary
 ): boolean {
   return manifest.entrypoint === relative
-    && manifest.engine === checkpoint.engine
-    && manifest.totalGranted === checkpoint.state.totalGranted
-    && manifest.statesExplored === checkpoint.state.statesExplored;
+    && manifest.engine === expected.engine
+    && manifest.totalGranted === expected.totalGranted
+    && manifest.statesExplored === expected.statesExplored;
 }
 
 function checkpointWriteAccounting(
@@ -3736,6 +4070,7 @@ function checkpointWriteAccounting(
   operation?: {
     outcome: CheckpointWriteAccountingV1["outcome"];
     written?: CheckpointArtifactWriteAccounting;
+    reuseVerificationPasses?: 0 | 1;
   }
 ): CheckpointWriteAccountingV1 {
   const written = operation?.written;
@@ -3747,6 +4082,13 @@ function checkpointWriteAccounting(
     schemaVersion: 1,
     outcome: operation?.outcome ?? "reused",
     checkpointGraph: identity.checkpointGraph,
+    ...(identity.engineSource ? {
+      engineSource: {
+        ...identity.engineSource,
+        framePasses: written?.framedV2 ? 1 : 0,
+        reuseVerificationPasses: operation?.reuseVerificationPasses ?? 0,
+      } satisfies NonNullable<CheckpointWriteAccountingV1["engineSource"]>,
+    } : {}),
     serialization: written?.serialization ?? {
       status: "not_applied",
       logicalArtifactUtf8BytesEmitted: 0,
@@ -3766,28 +4108,256 @@ function checkpointWriteAccounting(
   };
 }
 
+interface SourceNativeReuseContext {
+  source: SharedSearchCheckpointSourceV1;
+  signal?: AbortSignal;
+  framedV2Limits?: Partial<CheckpointArtifactV2Limits>;
+}
+
+async function verifyCanonicalPublishedCheckpointForSource(
+  root: string,
+  relative: string,
+  id: string,
+  expected: ExpectedCheckpointSummary,
+  limits: CheckpointByteStorageLimits,
+  context: SourceNativeReuseContext
+): Promise<RecoveredCheckpointPair> {
+  const file = checkpointFile(root, id);
+  if (!fs.existsSync(checkpointManifestFile(root, id))) {
+    throw unsupported(
+      "manifest",
+      "engine-native checkpoint reuse requires a versioned metadata manifest"
+    );
+  }
+  if (checkpointStorageEncoding(file) !== "framed-v2") {
+    throw unsupported(
+      "storage",
+      "engine-native checkpoint reuse requires framed-v2 storage; reopen or migrate the legacy artifact through the graph API first"
+    );
+  }
+  const stored = readCheckpointManifest(root, id);
+  validateManifestStorage(root, id, file, stored.manifest);
+  if (!expectedManifestMatchesCheckpoint(stored.manifest, relative, expected)) {
+    throw corrupt("manifest", "checkpoint metadata manifest does not match the requested saved frontier");
+  }
+  const pairBytes = exactByteSum(
+    "durable checkpoint pair byte count",
+    [stored.manifest.artifactSizeBytes, stored.sizeBytes]
+  );
+  enforceDurableCheckpointLimits(pairBytes, limits);
+  const digestLimit = Math.min(limits.maxCheckpointBytes, limits.maxProjectBytes);
+  if (!stored.manifest.framedV2) {
+    throw corrupt("manifest", "framed-v2 checkpoint metadata is missing its component summary");
+  }
+
+  const artifactMetadata: CheckpointArtifactMetadata = {
+    artifactSchemaVersion: CHECKPOINT_ARTIFACT_V2_SCHEMA_VERSION,
+    artifactType: "shared-search-checkpoint",
+    id,
+    createdAt: stored.manifest.createdAt,
+    inkcheckVersion: stored.manifest.inkcheckVersion,
+    checkpointSchemaVersion: stored.manifest.checkpointSchemaVersion,
+    source: { entrypoint: relative },
+    storySha256: expected.configuration.storySha256,
+    knotsSha256: expected.configuration.knotsSha256,
+    configuration: expected.configuration,
+  };
+  const expectedRecords = checkpointArtifactV2RecordsFromSource(
+    artifactMetadata,
+    context.source
+  );
+  const requestedStored = context.framedV2Limits?.maxTotalStoredBytes
+    ?? DEFAULT_CHECKPOINT_ARTIFACT_V2_LIMITS.maxTotalStoredBytes;
+  const requestedDecoded = context.framedV2Limits?.maxTotalDecodedBytes
+    ?? DEFAULT_CHECKPOINT_ARTIFACT_V2_LIMITS.maxTotalDecodedBytes;
+  const fd = fs.openSync(file, "r");
+  const opened = fs.fstatSync(fd);
+  if (!opened.isFile()) {
+    expectedRecords.return(undefined);
+    fs.closeSync(fd);
+    throw corrupt("storage", "stored checkpoint artifact must be a regular file");
+  }
+  if (opened.size > digestLimit) {
+    expectedRecords.return(undefined);
+    fs.closeSync(fd);
+    throw resourceLimit(
+      "storage",
+      `stored checkpoint artifact is ${opened.size} bytes, above the ${digestLimit}-byte source-native verification limit`,
+      opened.size,
+      digestLimit
+    );
+  }
+  const source = fs.createReadStream(file, { fd, autoClose: false, start: 0 });
+  const digest = new CheckpointReadDigestTransform(digestLimit);
+  let comparisonError: CheckpointReadError | undefined;
+  let codec: CheckpointArtifactV2ReadResult;
+  let payload: CheckpointPayloadDigest;
+  try {
+    context.signal?.throwIfAborted();
+    const [codecSettlement, pipelineSettlement] = await Promise.allSettled([
+      readCheckpointArtifactV2(digest, {
+        limits: {
+          ...context.framedV2Limits,
+          maxTotalStoredBytes: Math.min(requestedStored, digestLimit),
+          maxTotalDecodedBytes: requestedDecoded,
+        },
+        signal: context.signal,
+        onRecord: (record) => {
+          const expectedRecord = expectedRecords.next();
+          if (expectedRecord.done
+            || expectedRecord.value.component !== record.component
+            || expectedRecord.value.field !== record.field
+            || expectedRecord.value.index !== record.index
+            || !canonicalJsonValuesMatch(expectedRecord.value.value, record.value)) {
+            comparisonError = corrupt(
+              "envelope",
+              "checkpoint artifact content does not match its live source or stable ID; restore or regenerate the artifact"
+            );
+            throw comparisonError;
+          }
+        },
+      }),
+      pipeline(source, digest),
+    ]);
+    if (codecSettlement.status === "rejected") throw codecSettlement.reason;
+    if (pipelineSettlement.status === "rejected") throw pipelineSettlement.reason;
+    codec = codecSettlement.value;
+    const extra = expectedRecords.next();
+    if (!extra.done) {
+      throw corrupt(
+        "envelope",
+        "checkpoint artifact content does not match its live source or stable ID; restore or regenerate the artifact"
+      );
+    }
+    const after = fs.fstatSync(fd);
+    let visible: fs.Stats;
+    try {
+      visible = fs.statSync(file);
+    } catch {
+      throw corrupt("storage", "checkpoint artifact path changed during source-native verification");
+    }
+    const openedIdentityChanged = opened.dev !== 0 && after.dev !== 0
+      && (opened.dev !== after.dev || opened.ino !== after.ino);
+    const pathIdentityChanged = opened.dev !== 0 && visible.dev !== 0
+      && (opened.dev !== visible.dev || opened.ino !== visible.ino);
+    if (openedIdentityChanged || pathIdentityChanged || after.size !== opened.size
+      || visible.size !== opened.size || digest.bytes !== opened.size) {
+      throw corrupt("storage", "checkpoint artifact changed during source-native verification");
+    }
+    payload = {
+      sizeBytes: digest.bytes,
+      sha256: digest.digest(),
+      device: after.dev,
+      inode: after.ino,
+    };
+  } catch (error) {
+    if (!source.destroyed) source.destroy();
+    if (comparisonError) throw comparisonError;
+    if (context.signal?.aborted) throw checkpointAbortError();
+    if (error instanceof CheckpointArtifactV2Error) throw checkpointReadErrorFromV2(error);
+    throw error;
+  } finally {
+    expectedRecords.return(undefined);
+    try {
+      fs.closeSync(fd);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EBADF") throw error;
+    }
+  }
+  if (payload.sha256 !== stored.manifest.artifactSha256) {
+    throw corrupt(
+      "storage",
+      "checkpoint artifact bytes do not match its metadata checksum; content does not match its stable ID or was modified"
+    );
+  }
+  const framedV2 = checkpointArtifactV2Summary(codec);
+  if (JSON.stringify(framedV2) !== JSON.stringify(stored.manifest.framedV2)) {
+    throw corrupt("manifest", "framed checkpoint component summary does not match its streamed payload");
+  }
+  const canonical = readMatchingCanonicalManifest(
+    root,
+    id,
+    file,
+    payload,
+    relative,
+    expected,
+    stored.raw
+  );
+  if (!canonical) {
+    throw corrupt("manifest", `checkpoint ${id} metadata changed during bounded source-native reuse`);
+  }
+  context.signal?.throwIfAborted();
+  const verifiedPayload = fileDigest(file, digestLimit);
+  if (!samePayloadDigest(payload, verifiedPayload)) {
+    throw corrupt("storage", `checkpoint ${id} payload changed during bounded source-native reuse`);
+  }
+  const verifiedManifest = readMatchingCanonicalManifest(
+    root,
+    id,
+    file,
+    verifiedPayload,
+    relative,
+    expected,
+    canonical.raw
+  );
+  if (!verifiedManifest) {
+    throw corrupt("manifest", `checkpoint ${id} metadata changed during bounded source-native reuse`);
+  }
+  return {
+    manifest: verifiedManifest.manifest,
+    metadataSizeBytes: verifiedManifest.sizeBytes,
+    payloadSizeBytes: verifiedPayload.sizeBytes,
+    payloadSha256: verifiedPayload.sha256,
+  };
+}
+
 async function reuseCheckpointArtifact(
   root: string,
   relative: string,
   identity: CheckpointIdentity,
-  checkpoint: SharedSearchCheckpoint,
+  expected: ExpectedCheckpointSummary,
   limits: CheckpointByteStorageLimits,
   expectedTransaction?: CheckpointTransaction,
   operation?: {
     outcome: CheckpointWriteAccountingV1["outcome"];
     written?: CheckpointArtifactWriteAccounting;
-  }
+    reuseVerificationPasses?: 0 | 1;
+  },
+  sourceContext?: SourceNativeReuseContext
 ): Promise<CheckpointArtifactReference> {
   const { id } = identity;
   const directory = checkpointsDirectory(root);
   let existing = checkpointFile(root, id);
   let payloadBytes: number;
   let manifestBytes: number;
-  const recovered = recoverPublishedCheckpoint(root, relative, id, checkpoint, limits, expectedTransaction);
-  if (recovered) {
+  let reuseVerificationPasses: 0 | 1 = 0;
+  const recovered = recoverPublishedCheckpoint(root, relative, id, expected, limits, expectedTransaction);
+  if (identity.engineSource && (!recovered || operation?.outcome !== "created")) {
+    if (!sourceContext) {
+      throw new Error("engine-native checkpoint reuse requires its live source context");
+    }
+    // A manifest/payload checksum pair authenticates storage bytes, not the
+    // logical frontier behind this stable ID. Re-read framed records under
+    // bounded codec limits and compare them directly with the paused source.
+    const verified = await verifyCanonicalPublishedCheckpointForSource(
+      root,
+      relative,
+      id,
+      expected,
+      limits,
+      sourceContext
+    );
+    existing = checkpointFile(root, id);
+    payloadBytes = verified.payloadSizeBytes;
+    manifestBytes = verified.metadataSizeBytes;
+    reuseVerificationPasses = 1;
+    cleanupRecoveryManifests(root, id, expectedTransaction);
+  } else if (recovered) {
     existing = checkpointFile(root, id);
     payloadBytes = recovered.payloadSizeBytes;
     manifestBytes = recovered.metadataSizeBytes;
+  } else if (identity.engineSource) {
+    throw new Error("new engine-native checkpoint publication lost its recovery metadata");
   } else {
     try {
       const loaded = await loadArtifactDetailed(root, id);
@@ -3797,7 +4367,13 @@ async function reuseCheckpointArtifact(
           loaded.artifact,
           loaded.storageEncoding,
           loaded.payloadSizeBytes,
-          loaded.payloadSha256
+          loaded.payloadSha256,
+          {
+            engine: loaded.artifact.checkpoint.engine,
+            configuration: loaded.artifact.checkpoint.configuration,
+            totalGranted: loaded.artifact.checkpoint.state.totalGranted,
+            statesExplored: loaded.artifact.checkpoint.state.statesExplored,
+          }
         );
         const raw = serializedManifest(manifest);
         enforceDurableCheckpointLimits(exactByteSum(
@@ -3819,7 +4395,7 @@ async function reuseCheckpointArtifact(
       if (!fs.existsSync(checkpointManifestFile(root, id))) throw error;
       const { manifest, sizeBytes: metadataSizeBytes } = readCheckpointManifest(root, id);
       validateManifestStorage(root, id, existing, manifest);
-      if (!expectedManifestMatchesCheckpoint(manifest, relative, checkpoint)) {
+      if (!expectedManifestMatchesCheckpoint(manifest, relative, expected)) {
         throw corrupt("manifest", "checkpoint metadata manifest does not match the requested saved frontier");
       }
       payloadBytes = manifest.artifactSizeBytes;
@@ -3853,14 +4429,21 @@ async function reuseCheckpointArtifact(
     const manifestFile = checkpointManifestFile(root, id);
     if (fs.existsSync(manifestFile)) fs.chmodSync(manifestFile, 0o600);
   }
-  const pruned = pruneCheckpoints(root, id, limits);
+  const pruned = pruneCheckpoints(root, id, limits, identity.engineSource !== undefined);
   if (pruned.length > 0) syncDirectory(directory);
   const encoding = checkpointStorageEncoding(checkpointFile(root, id));
   return {
     id,
     path: checkpointRelativePath(id, encoding),
     pruned,
-    accounting: checkpointWriteAccounting(identity, payloadBytes, manifestBytes, operation),
+    accounting: checkpointWriteAccounting(
+      identity,
+      payloadBytes,
+      manifestBytes,
+      reuseVerificationPasses === 1
+        ? { ...(operation ?? { outcome: "reused" }), reuseVerificationPasses }
+        : operation
+    ),
   };
 }
 
@@ -3868,13 +4451,17 @@ async function saveCheckpointArtifactExclusive(
   root: string,
   relative: string,
   identity: CheckpointIdentity,
-  checkpoint: SharedSearchCheckpoint,
+  input: CheckpointSaveInput,
   limits: CheckpointByteStorageLimits,
   format: CheckpointArtifactFormat,
   signal?: AbortSignal,
   framedV2Limits?: Partial<CheckpointArtifactV2Limits>
 ): Promise<CheckpointArtifactReference> {
   const { id } = identity;
+  const expected = expectedCheckpointSummary(input);
+  const sourceContext: SourceNativeReuseContext | undefined = input.kind === "engine-source"
+    ? { source: input.source, signal, framedV2Limits }
+    : undefined;
   const directory = checkpointsDirectory(root);
   const destination = checkpointDestination(root, id, format);
   const neutral = checkpointPublicationPayloadFile(root, id);
@@ -3882,27 +4469,33 @@ async function saveCheckpointArtifactExclusive(
     || checkpointCandidateFiles(root, id).some((candidate) => fs.existsSync(candidate));
   if (hasCommittedCandidate()) {
     signal?.throwIfAborted();
-    return reuseCheckpointArtifact(root, relative, identity, checkpoint, limits);
+    return reuseCheckpointArtifact(
+      root, relative, identity, expected, limits, undefined, undefined, sourceContext
+    );
   }
   // Validate the existing retention set before creating a new durable file.
   // Corrupt old state must not turn a successful write into a partial cleanup.
   try {
-    checkpointRecords(root);
+    checkpointRecords(root, {}, input.kind === "engine-source");
   } catch (error) {
     // A same-ID writer can publish between the initial existence check and
     // retention validation. Reopen its durable transaction instead of making
     // validation inflate a sidecar-free (and potentially huge) frontier.
     if (hasCommittedCandidate()) {
       signal?.throwIfAborted();
-      return reuseCheckpointArtifact(root, relative, identity, checkpoint, limits);
+      return reuseCheckpointArtifact(
+        root, relative, identity, expected, limits, undefined, undefined, sourceContext
+      );
     }
     throw error;
   }
   if (hasCommittedCandidate()) {
     signal?.throwIfAborted();
-    return reuseCheckpointArtifact(root, relative, identity, checkpoint, limits);
+    return reuseCheckpointArtifact(
+      root, relative, identity, expected, limits, undefined, undefined, sourceContext
+    );
   }
-  const artifact: CheckpointArtifact = {
+  const artifactMetadata: CheckpointArtifactMetadata = {
     artifactSchemaVersion: format === "framed-v2"
       ? CHECKPOINT_ARTIFACT_V2_SCHEMA_VERSION
       : CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
@@ -3912,11 +4505,13 @@ async function saveCheckpointArtifactExclusive(
     inkcheckVersion: VERSION,
     checkpointSchemaVersion: SHARED_SEARCH_CHECKPOINT_SCHEMA_VERSION,
     source: { entrypoint: relative },
-    storySha256: checkpoint.configuration.storySha256,
-    knotsSha256: checkpoint.configuration.knotsSha256,
-    configuration: checkpoint.configuration,
-    checkpoint,
+    storySha256: expected.configuration.storySha256,
+    knotsSha256: expected.configuration.knotsSha256,
+    configuration: expected.configuration,
   };
+  const graphArtifact: CheckpointArtifact | undefined = input.kind === "checkpoint-graph"
+    ? { ...artifactMetadata, checkpoint: input.checkpoint }
+    : undefined;
   checkpointTestBarrier("before-reserve-transaction");
   let transaction: CheckpointTransaction;
   try {
@@ -3931,7 +4526,9 @@ async function saveCheckpointArtifactExclusive(
     // this loser is scanning the bounded recovery slots. Its verified durable
     // pair makes a slot/preflight failure irrelevant to this logical ID.
     if (hasCommittedCandidate()) {
-      return reuseCheckpointArtifact(root, relative, identity, checkpoint, limits);
+      return reuseCheckpointArtifact(
+        root, relative, identity, expected, limits, undefined, undefined, sourceContext
+      );
     }
     throw error;
   }
@@ -3950,17 +4547,37 @@ async function saveCheckpointArtifactExclusive(
         root,
         relative,
         identity,
-        checkpoint,
+        expected,
         limits,
-        transaction
+        transaction,
+        undefined,
+        sourceContext
       );
       completedPair = true;
       return reference;
     }
     try {
-      written = format === "framed-v2"
-        ? await writeFramedArtifact(temporary, artifact, limits, framedV2Limits, signal)
-        : await writeCompressedArtifact(temporary, artifact, limits, true, signal);
+      if (format === "framed-v2") {
+        const inputs = input.kind === "checkpoint-graph"
+          ? checkpointArtifactV2Frames(graphArtifact!)
+          : checkpointArtifactV2FramesFromSource(artifactMetadata, input.source);
+        const nodeSlots = input.kind === "checkpoint-graph"
+          ? input.checkpoint.state.nodes.length
+          : input.source.nodeSlots;
+        written = await writeFramedArtifact(
+          temporary,
+          inputs,
+          nodeSlots,
+          limits,
+          framedV2Limits,
+          signal
+        );
+      } else {
+        if (!graphArtifact) {
+          throw new RangeError("Engine-native checkpoint sources require framed-v2 storage");
+        }
+        written = await writeCompressedArtifact(temporary, graphArtifact, limits, true, signal);
+      }
     } catch (error) {
       // Cancellation wins even if another writer committed while this request
       // was validating its format-specific limits.
@@ -3976,19 +4593,22 @@ async function saveCheckpointArtifactExclusive(
         root,
         relative,
         identity,
-        checkpoint,
+        expected,
         limits,
-        transaction
+        transaction,
+        undefined,
+        sourceContext
       );
       completedPair = true;
       return reference;
     }
     signal?.throwIfAborted();
     const manifest = manifestForArtifact(
-      artifact,
+      artifactMetadata,
       format === "framed-v2" ? "framed-v2" : "gzip",
       written.sizeBytes,
       written.sha256,
+      expected,
       written.framedV2Manifest
     );
     const rawManifest = serializedManifest(manifest);
@@ -4076,13 +4696,14 @@ async function saveCheckpointArtifactExclusive(
       root,
       relative,
       identity,
-      checkpoint,
+      expected,
       limits,
       transaction,
       {
         outcome: publishedPayload ? "created" : "reused",
         written,
-      }
+      },
+      sourceContext
     );
     completedPair = true;
     return reference;
@@ -4103,13 +4724,14 @@ async function saveCheckpointArtifactExclusive(
         root,
         relative,
         identity,
-        checkpoint,
+        expected,
         limits,
         transaction,
         written ? {
           outcome: publishedPayload ? "created" : "reused",
           written,
-        } : undefined
+        } : undefined,
+        sourceContext
       );
       completedPair = true;
       return reference;
@@ -4152,9 +4774,45 @@ export async function saveCheckpointArtifact(
     root,
     relative,
     identity,
-    checkpoint,
+    { kind: "checkpoint-graph", checkpoint },
     limits,
     format,
+    inputLimits.signal,
+    inputLimits.framedV2Limits
+  );
+}
+
+/**
+ * Persist a callback-scoped engine source directly through the framed-v2
+ * codec. The logical schema and stable ID are identical to the materialized
+ * checkpoint path, but no complete checkpoint graph is constructed.
+ */
+export async function saveCheckpointArtifactFromSource(
+  projectRoot: string,
+  entrypoint: string,
+  source: SharedSearchCheckpointSourceV1,
+  inputLimits: CheckpointStorageLimits = {}
+): Promise<CheckpointArtifactReference> {
+  assertLiveSharedSearchCheckpointSourceV1(source);
+  if (inputLimits.format !== undefined && inputLimits.format !== "framed-v2") {
+    throw new RangeError("Engine-native checkpoint sources require framed-v2 storage");
+  }
+  const root = path.resolve(projectRoot);
+  const relative = relativeEntrypoint(root, entrypoint);
+  const limits = storageLimits(inputLimits);
+  inputLimits.signal?.throwIfAborted();
+  const identity = await checkpointIdentityFromSource(relative, source, inputLimits.signal);
+  const directory = checkpointsDirectory(root);
+  inputLimits.signal?.throwIfAborted();
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") fs.chmodSync(directory, 0o700);
+  return saveCheckpointArtifactExclusive(
+    root,
+    relative,
+    identity,
+    { kind: "engine-source", source },
+    limits,
+    "framed-v2",
     inputLimits.signal,
     inputLimits.framedV2Limits
   );

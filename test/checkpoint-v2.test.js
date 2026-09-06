@@ -302,7 +302,7 @@ test("outer byte caps do not silently raise framed codec defaults", async () => 
       maxCheckpointBytes: raisedOuterCap,
       maxProjectBytes: raisedOuterCap,
     });
-    await openCheckpointArtifact(fixture.root, saved.id, {
+    const opened = await openCheckpointArtifact(fixture.root, saved.id, {
       maxStoredBytes: raisedOuterCap,
       maxDecompressedBytes: raisedOuterCap,
     });
@@ -314,9 +314,106 @@ test("outer byte caps do not silently raise framed codec defaults", async () => 
       readLimits.maxTotalStoredBytes,
       DEFAULT_CHECKPOINT_ARTIFACT_V2_LIMITS.maxTotalStoredBytes
     );
-    assert.ok(
-      readLimits.maxTotalDecodedBytes <= DEFAULT_CHECKPOINT_ARTIFACT_V2_LIMITS.maxTotalDecodedBytes
+    assert.strictEqual(
+      readLimits.maxTotalDecodedBytes,
+      DEFAULT_CHECKPOINT_ARTIFACT_V2_LIMITS.maxTotalDecodedBytes
     );
+    assert.strictEqual(
+      opened.accounting.configuredLimits.framedV2.maxTotalStoredBytes,
+      DEFAULT_CHECKPOINT_ARTIFACT_V2_LIMITS.maxTotalStoredBytes
+    );
+    assert.strictEqual(
+      opened.accounting.configuredLimits.framedV2.maxTotalDecodedBytes,
+      DEFAULT_CHECKPOINT_ARTIFACT_V2_LIMITS.maxTotalDecodedBytes
+    );
+    const aboveWholeStringLimit = require("node:buffer").constants.MAX_STRING_LENGTH + 1024;
+    const independentlyBounded = await openCheckpointArtifact(fixture.root, saved.id, {
+      maxStoredBytes: raisedOuterCap,
+      maxDecompressedBytes: 1,
+      framedV2Limits: { maxTotalDecodedBytes: aboveWholeStringLimit },
+    });
+    assert.strictEqual(readLimits.maxTotalDecodedBytes, aboveWholeStringLimit,
+      "framed cumulative decoded bytes are independent of the schema-v1 whole-string cap");
+    assert.strictEqual(independentlyBounded.accounting.configuredLimits.maxDecompressedBytes, 1);
+    assert.deepStrictEqual(independentlyBounded.accounting.configuredLimits.framedV2, {
+      basis: "effective_codec_limits_not_allocated_capacity",
+      ...DEFAULT_CHECKPOINT_ARTIFACT_V2_LIMITS,
+      maxTotalDecodedBytes: aboveWholeStringLimit,
+    });
+    assert.deepStrictEqual(
+      Object.keys(independentlyBounded.accounting.configuredLimits.framedV2),
+      [
+        "basis",
+        "maxHeaderBytes",
+        "maxStoredFrameBytes",
+        "maxDecodedFrameBytes",
+        "maxRecordBytes",
+        "maxJsonDepth",
+        "maxRecordsPerFrame",
+        "maxFrames",
+        "maxTotalRecords",
+        "maxTotalStoredBytes",
+        "maxTotalDecodedBytes",
+      ],
+      "the public receipt has one exact allowlisted limit shape"
+    );
+    assert.ok(independentlyBounded.accounting.framedV2.codec.data.decodedBytes > 1,
+      "success proves the legacy one-byte string cap was not applied to framed decoded data");
+    await assert.rejects(
+      () => openCheckpointArtifact(fixture.root, saved.id, {
+        maxStoredBytes: raisedOuterCap,
+        maxDecompressedBytes: 1,
+        framedV2Limits: { maxTotalDecodedBytes: 1 },
+      }),
+      (error) => {
+        assert.ok(error instanceof CheckpointReadError);
+        assert.strictEqual(error.kind, "resource_limit");
+        assert.strictEqual(error.accounting.configuredLimits.maxDecompressedBytes, 1);
+        assert.deepStrictEqual(error.accounting.configuredLimits.framedV2, {
+          basis: "effective_codec_limits_not_allocated_capacity",
+          ...DEFAULT_CHECKPOINT_ARTIFACT_V2_LIMITS,
+          maxTotalDecodedBytes: 1,
+        });
+        return true;
+      }
+    );
+    await assert.rejects(
+      () => openCheckpointArtifact(fixture.root, saved.id, {
+        framedV2Limits: { surprise: 1 },
+      }),
+      (error) => {
+        assert.ok(error instanceof CheckpointReadError);
+        assert.strictEqual(error.kind, "unsupported");
+        assert.strictEqual(error.accounting.configuredLimits.framedV2, undefined);
+        assert.deepStrictEqual(Object.keys(error.accounting.configuredLimits), [
+          "basis", "maxManifestBytes", "maxStoredBytes", "maxDecompressedBytes",
+        ]);
+        return true;
+      }
+    );
+    await assert.rejects(
+      () => openCheckpointArtifact(fixture.root, saved.id, {
+        framedV2Limits: { maxFrames: "not-a-number" },
+      }),
+      (error) => {
+        assert.ok(error instanceof CheckpointReadError);
+        assert.strictEqual(error.kind, "resource_limit");
+        assert.strictEqual(error.unit, "count");
+        assert.strictEqual(error.observed, undefined);
+        assert.strictEqual(error.accounting.configuredLimits.framedV2, undefined);
+        return true;
+      }
+    );
+    const nextCheckpoint = structuredClone(fixture.checkpoint);
+    nextCheckpoint.state.dedupeHits += 1;
+    const immediateWrite = await saveCheckpointArtifact(
+      fixture.root,
+      fixture.story,
+      nextCheckpoint,
+      { format: "framed-v2" }
+    );
+    assert.notStrictEqual(immediateWrite.id, saved.id,
+      "failed framed-read teardown settles before the next writer can reuse its descriptor");
   } finally {
     checkpointV2Codec.writeCheckpointArtifactV2 = originalWrite;
     checkpointV2Codec.readCheckpointArtifactV2 = originalRead;

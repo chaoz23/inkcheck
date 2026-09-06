@@ -1649,7 +1649,11 @@ function recordEnding(
   const retained = !endings.has(key);
   endings.set(key, ending);
   visibleOutcomes.add(visibleOutcomeKey(ending.finalText));
-  if (retained) onEvidence?.({ kind: "ending", finding: ending });
+  // The retained finding is part of the live checkpoint graph. Never hand the
+  // same object to caller code: an evidence callback may keep and mutate it
+  // while an async checkpoint-source consumer is between its identity and
+  // frame passes.
+  if (retained) onEvidence?.({ kind: "ending", finding: cloneJsonValue(ending) });
 }
 
 function recordRuntimeError(
@@ -1660,7 +1664,9 @@ function recordRuntimeError(
 ): void {
   if (runtimeErrors.has(key)) return;
   runtimeErrors.set(key, error);
-  onEvidence?.({ kind: "runtime-error", finding: error });
+  // Keep callback ownership disjoint from the engine's retained checkpoint
+  // state for the same reason as endings above.
+  onEvidence?.({ kind: "runtime-error", finding: cloneJsonValue(error) });
 }
 
 /**
@@ -2293,8 +2299,184 @@ export interface SharedSearchCheckpoint {
   };
 }
 
+/**
+ * Callback-scoped, repeatable view of an engine checkpoint. Large retained
+ * collections are exposed as record iterables so a framed writer never needs
+ * to construct the complete SharedSearchCheckpoint graph.
+ *
+ * Every iterator returns detached JSON values and becomes invalid as soon as
+ * the callback supplied to exploreSharedResumableWithCheckpointSource returns.
+ */
+export interface SharedSearchCheckpointSourceV1 {
+  sourceSchemaVersion: 1;
+  checkpointSchemaVersion: 1;
+  engine: SharedSearchCheckpoint["engine"];
+  configuration: Readonly<SharedSearchCheckpoint["configuration"]>;
+  statesExplored: number;
+  totalGranted: number;
+  nodeSlots: number;
+  stateRecords(field: keyof SharedSearchCheckpoint["state"]): Iterable<unknown>;
+  nodePayloadRecords(): Iterable<unknown>;
+  nodeAncestryRecords(): Iterable<unknown>;
+}
+
+interface SharedSearchCheckpointSourceRegistrationV1 {
+  active: boolean;
+}
+
+const sharedSearchCheckpointSourceRegistrationsV1 = new WeakMap<
+  SharedSearchCheckpointSourceV1,
+  SharedSearchCheckpointSourceRegistrationV1
+>();
+
+/**
+ * Fail closed unless a source was minted by a live shared-search engine and is
+ * still inside its callback lifetime. Storage callers use this runtime brand
+ * rather than accepting a structurally fabricated record source.
+ */
+export function assertLiveSharedSearchCheckpointSourceV1(
+  value: unknown
+): asserts value is SharedSearchCheckpointSourceV1 {
+  if (!value || typeof value !== "object") {
+    throw new TypeError("Shared checkpoint source must be minted by a live shared-search engine");
+  }
+  const registration = sharedSearchCheckpointSourceRegistrationsV1.get(
+    value as SharedSearchCheckpointSourceV1
+  );
+  if (!registration) {
+    throw new TypeError("Shared checkpoint source must be minted by a live shared-search engine");
+  }
+  if (!registration.active) {
+    throw new Error("Shared checkpoint source is no longer active outside its callback");
+  }
+}
+
+interface SharedSearchCheckpointSourceLeaseV1 {
+  source: SharedSearchCheckpointSourceV1;
+  release(): void;
+}
+
+interface SharedSearchCheckpointSourceBackingV1 {
+  stateRecords(field: keyof SharedSearchCheckpoint["state"]): Iterable<unknown>;
+  nodePayloadRecords(): Iterable<unknown>;
+  nodeAncestryRecords(): Iterable<unknown>;
+}
+
+interface SharedSearchCheckpointSourceIteratorSlotV1 {
+  iterator?: Iterator<unknown>;
+}
+
+interface SharedSearchCheckpointSourceCellV1 {
+  backing?: SharedSearchCheckpointSourceBackingV1;
+  registration: SharedSearchCheckpointSourceRegistrationV1;
+  activeIterators: Set<SharedSearchCheckpointSourceIteratorSlotV1>;
+}
+
+type SharedSearchCheckpointSourceMetadataV1 = Omit<
+  SharedSearchCheckpointSourceV1,
+  "stateRecords" | "nodePayloadRecords" | "nodeAncestryRecords"
+>;
+
+/**
+ * Construct public wrappers in a lexical scope that owns only a mutable cell,
+ * never the engine collections captured by the backing methods. Releasing the
+ * lease can therefore sever both the backing object and every started iterator
+ * even when user code retains the public source forever.
+ */
+function createSharedSearchCheckpointSourceLeaseV1(
+  metadata: SharedSearchCheckpointSourceMetadataV1,
+  cell: SharedSearchCheckpointSourceCellV1
+): SharedSearchCheckpointSourceLeaseV1 {
+  const liveBacking = (): SharedSearchCheckpointSourceBackingV1 => {
+    if (!cell.registration.active || !cell.backing) {
+      throw new Error("Shared checkpoint source is no longer active outside its callback");
+    }
+    return cell.backing;
+  };
+  const leasedRecords = (
+    kind: "state" | "nodePayload" | "nodeAncestry",
+    field?: keyof SharedSearchCheckpoint["state"]
+  ): Iterable<unknown> => {
+    liveBacking();
+    return {
+      [Symbol.iterator](): Iterator<unknown> {
+        const selected = liveBacking();
+        const records = kind === "state"
+          ? selected.stateRecords(field as keyof SharedSearchCheckpoint["state"])
+          : kind === "nodePayload"
+            ? selected.nodePayloadRecords()
+            : selected.nodeAncestryRecords();
+        const slot: SharedSearchCheckpointSourceIteratorSlotV1 = {
+          iterator: records[Symbol.iterator](),
+        };
+        cell.activeIterators.add(slot);
+        return {
+          next(): IteratorResult<unknown> {
+            liveBacking();
+            const iterator = slot.iterator;
+            if (!iterator) {
+              throw new Error("Shared checkpoint source is no longer active outside its callback");
+            }
+            let result: IteratorResult<unknown>;
+            try {
+              result = iterator.next();
+            } catch (error) {
+              slot.iterator = undefined;
+              cell.activeIterators.delete(slot);
+              throw error;
+            }
+            if (result.done) {
+              slot.iterator = undefined;
+              cell.activeIterators.delete(slot);
+              return { done: true, value: undefined };
+            }
+            return { done: false, value: cloneJsonValue(result.value) };
+          },
+          return(value?: unknown): IteratorResult<unknown> {
+            const iterator = slot.iterator;
+            slot.iterator = undefined;
+            cell.activeIterators.delete(slot);
+            if (!iterator?.return) return { done: true, value };
+            const result = iterator.return(value);
+            return result.done
+              ? result
+              : { done: false, value: cloneJsonValue(result.value) };
+          },
+        };
+      },
+    };
+  };
+  const source: SharedSearchCheckpointSourceV1 = Object.freeze({
+    ...metadata,
+    stateRecords: (field: keyof SharedSearchCheckpoint["state"]) => leasedRecords("state", field),
+    nodePayloadRecords: () => leasedRecords("nodePayload"),
+    nodeAncestryRecords: () => leasedRecords("nodeAncestry"),
+  });
+  sharedSearchCheckpointSourceRegistrationsV1.set(source, cell.registration);
+  return {
+    source,
+    release(): void {
+      if (!cell.registration.active) return;
+      cell.registration.active = false;
+      cell.backing = undefined;
+      for (const slot of cell.activeIterators) {
+        const iterator = slot.iterator;
+        slot.iterator = undefined;
+        try {
+          iterator?.return?.();
+        } catch {
+          // The source is already invalid. Always sever engine ownership even
+          // if an iterator's cleanup path itself fails.
+        }
+      }
+      cell.activeIterators.clear();
+    },
+  };
+}
+
 interface SharedPassEngine extends PassEngine {
   checkpoint(): SharedSearchCheckpoint;
+  checkpointSource(): SharedSearchCheckpointSourceLeaseV1;
 }
 
 class SharedMaxHeap {
@@ -2355,6 +2537,10 @@ class SharedMaxHeap {
 
   checkpoint(): SharedCheckpointHeapItem[] {
     return this.items.map((item) => ({ ...item }));
+  }
+
+  *checkpointRecords(): Generator<SharedCheckpointHeapItem> {
+    for (const item of this.items) yield { ...item };
   }
 }
 
@@ -3585,6 +3771,17 @@ function createSharedEngine(
   opts: ExploreOptions,
   checkpoint?: SharedSearchCheckpoint
 ): SharedPassEngine {
+  // The source API deliberately awaits caller code while the engine is
+  // paused. Detach every mutable configuration input up front so reentrant or
+  // async caller mutation cannot change later findings, checkpoint records,
+  // final result fields, or callback selection.
+  knots = knots.map(({ name, isFunction, file, line }) => ({ name, isFunction, file, line }));
+  externals = [...externals];
+  opts = {
+    ...opts,
+    ...(opts.assertions ? { assertions: cloneJsonValue(opts.assertions) } : {}),
+    ...(opts.goals ? { goals: cloneJsonValue(opts.goals) } : {}),
+  };
   const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 1_000) {
     throw new RangeError("maxDepth must be an integer from 1 to 1000");
@@ -3609,6 +3806,7 @@ function createSharedEngine(
   }
   const variableAware = opts.sharedVariableAware ?? false;
   const goalAware = opts.sharedGoalAware ?? false;
+  const reportGoalResults = (opts.goals?.length ?? 0) > 0;
   if (checkpoint && (variableAware || goalAware || opts.assertions?.length || opts.goals?.length)) {
     throw new RangeError("Invalid shared checkpoint: this schema supports only base shared search without assertions or goals");
   }
@@ -3639,8 +3837,11 @@ function createSharedEngine(
     && checkpoint.state.sharedObservability.sampleIntervalStates !== observabilityIntervalStates) {
     throw new RangeError("Invalid shared checkpoint: observability interval changed");
   }
+  // Preserve caller ownership without constructing one artifact-sized JSON
+  // string. Framed readback can exceed the runtime's single-string ceiling;
+  // the validated flat checkpoint graph is therefore cloned structurally.
   const restored = checkpoint
-    ? JSON.parse(JSON.stringify(checkpoint.state)) as SharedSearchCheckpoint["state"]
+    ? cloneJsonValue(checkpoint.state)
     : undefined;
 
   const endings = new Map<string, EndingReport>(restored?.endings ?? []);
@@ -3653,7 +3854,11 @@ function createSharedEngine(
   const variableStateCounts = new Map<string, number>(restored?.variableStateCounts ?? []);
   const variableTransitionCounts = new Map<string, number>(restored?.variableTransitionCounts ?? []);
   let meaningfulVariableTransitions = restored?.meaningfulVariableTransitions ?? 0;
-  const nonFunctionKnots = knots.filter((k) => !k.isFunction);
+  // Snapshot caller-owned discovery metadata before any async checkpoint
+  // consumer can mutate the inputs used to build the final result.
+  const nonFunctionKnots = knots
+    .filter((k) => !k.isFunction)
+    .map(({ name, isFunction, file, line }) => ({ name, isFunction, file, line }));
   const nodes: Array<SharedCheckpointNode | undefined> = restored?.nodes.map((node) => node ?? undefined) ?? [];
   const deep: number[] = restored?.deep ?? [];
   const random: number[] = restored?.random ?? [];
@@ -4785,25 +4990,31 @@ function createSharedEngine(
     endingsFound: [...endings.values()],
     runtimeErrors: [...runtimeErrors.values()],
     assertionResults: assertions.results(exhaustive),
-    ...(opts.goals?.length ? { goalResults: goals.results(exhaustive) } : {}),
+    ...(reportGoalResults ? { goalResults: goals.results(exhaustive) } : {}),
     runtimeWarnings: [...runtimeWarnings],
     unvisitedKnots: nonFunctionKnots
       .filter((knot) => !visitedKnots.has(knot.name))
       .map(({ name, file, line }) => ({ name, file, line })),
     visitedKnots: [...visitedKnots],
-    externalFunctionsStubbed: [...externals],
-    randomnessDetected: opts.randomnessDetected ?? false,
+    externalFunctionsStubbed: [...checkpointConfiguration.externals],
+    randomnessDetected: checkpointConfiguration.randomnessDetected,
     truncated,
     truncatedBy,
     exhaustive,
-    limits: { maxDepth, maxStates: totalGranted, seed, storySeed: normalizeStorySeed(opts.storySeed) },
+    limits: { maxDepth, maxStates: totalGranted, seed, storySeed: checkpointConfiguration.storySeed },
     });
   };
 
-  const buildCheckpoint = (): SharedSearchCheckpoint => {
+  const assertCheckpointable = (): void => {
     if (done() || memoryStopped || timeStopped) {
       throw new RangeError("Shared search cannot checkpoint after completion or a resource stop");
     }
+  };
+
+  const checkpointOwnerState = (): Pick<
+    SharedSearchCheckpoint["state"],
+    "sharedObservability" | "ownerAccounting"
+  > => {
     const sharedObservabilityBody = sharedObservabilityCheckpointBody();
     const orderedSharedObservabilityBody = orderedSharedObservabilityCheckpointV2Body(
       sharedObservabilityBody,
@@ -4818,6 +5029,15 @@ function createSharedEngine(
     if (!orderedSharedObservabilityBody || !integritySha256 || !emittedLedger) {
       throw new Error("Shared observability v2 checkpoint could not be canonicalized");
     }
+    return {
+      sharedObservability: { ...orderedSharedObservabilityBody, integritySha256 },
+      ownerAccounting: sharedOwnerAccountingCheckpoint(emittedLedger),
+    };
+  };
+
+  const buildCheckpoint = (): SharedSearchCheckpoint => {
+    assertCheckpointable();
+    const ownerState = checkpointOwnerState();
     const value: SharedSearchCheckpoint = {
       schemaVersion: SHARED_SEARCH_CHECKPOINT_SCHEMA_VERSION,
       engine: "shared:deep-novelty-v1",
@@ -4867,11 +5087,133 @@ function createSharedEngine(
         findingBytes,
         ancestryPayloadBytes,
         peakRetainedMemory: { ...peakRetainedMemory },
-        sharedObservability: { ...orderedSharedObservabilityBody, integritySha256 },
-        ownerAccounting: sharedOwnerAccountingCheckpoint(emittedLedger),
+        sharedObservability: ownerState.sharedObservability,
+        ownerAccounting: ownerState.ownerAccounting,
       },
     };
     return cloneJsonValue(value);
+  };
+
+  const checkpointSource = (): SharedSearchCheckpointSourceLeaseV1 => {
+    assertCheckpointable();
+    const ownerState = checkpointOwnerState();
+    const configuration = cloneJsonValue(checkpointConfiguration);
+    Object.freeze(configuration.externals);
+    Object.freeze(configuration);
+    const scalarState: Partial<SharedSearchCheckpoint["state"]> = {
+      meaningfulVariableTransitions,
+      rngState: rng.checkpoint(),
+      policyCursor,
+      insertionOrder,
+      current: cloneJsonValue(current),
+      pendingStates,
+      pendingBytes,
+      pendingVariableBytes,
+      activeStateBytes,
+      activeVariableBytes,
+      peakPendingStates,
+      peakPendingBytes,
+      retainedNodes,
+      dedupeBytes,
+      semanticIndexBytes,
+      releasedNodes,
+      frontierCompactions,
+      guardChecksSinceLast: sinceGuard,
+      statesExplored,
+      totalGranted,
+      dedupeHits,
+      maxDepthReached,
+      deepestStateDiscovered,
+      lastDiscoveryAtState,
+      discoveryCurve: discoveryCurve.checkpoint(),
+      truncated,
+      truncatedBy: { ...truncatedBy },
+      finished,
+      findingBytes,
+      ancestryPayloadBytes,
+      peakRetainedMemory: { ...peakRetainedMemory },
+      sharedObservability: ownerState.sharedObservability,
+      ownerAccounting: ownerState.ownerAccounting,
+    };
+    const registration: SharedSearchCheckpointSourceRegistrationV1 = { active: true };
+    const nodeRecords = function *(): Generator<SharedCheckpointNode | null> {
+      for (const node of nodes) yield node ?? null;
+    };
+    const nodePayloadRecords = function *(): Generator<unknown> {
+      for (let index = 0; index < nodes.length; index++) {
+        const node = nodes[index];
+        if (!node) continue;
+        yield {
+          index,
+          ...(node.stateJson === undefined ? {} : { stateJson: node.stateJson }),
+          ...(node.variables === undefined ? {} : { variables: node.variables }),
+        };
+      }
+    };
+    const nodeAncestryRecords = function *(): Generator<unknown> {
+      for (let index = 0; index < nodes.length; index++) {
+        const node = nodes[index];
+        if (!node) continue;
+        yield {
+          index,
+          parent: node.parent,
+          ...(node.choiceText === undefined ? {} : { choiceText: node.choiceText }),
+          ...(node.choiceIndex === undefined ? {} : { choiceIndex: node.choiceIndex }),
+          depth: node.depth,
+          active: node.active,
+          childRefs: node.childRefs,
+          stateBytes: node.stateBytes,
+          variableBytes: node.variableBytes,
+          ancestryBytes: node.ancestryBytes,
+        };
+      }
+    };
+    const rawRecordsForField = (
+      field: keyof SharedSearchCheckpoint["state"]
+    ): Iterable<unknown> => {
+      switch (field) {
+        case "endings": return endings.entries();
+        case "visibleOutcomes": return visibleOutcomes.values();
+        case "runtimeErrors": return runtimeErrors.entries();
+        case "runtimeWarnings": return runtimeWarnings.values();
+        case "visitedKnots": return visitedKnots.values();
+        case "seenStates": return seenStates.values();
+        case "seenChoiceSets": return seenChoiceSets.values();
+        case "variableStateCounts": return variableStateCounts.entries();
+        case "variableTransitionCounts": return variableTransitionCounts.entries();
+        case "nodes": return nodeRecords();
+        case "deep": return deep.values();
+        case "random": return random.values();
+        case "novelty": return novelty.checkpointRecords();
+        default: {
+          if (!Object.prototype.hasOwnProperty.call(scalarState, field)) {
+            throw new Error(`Shared checkpoint source does not recognize state field ${String(field)}`);
+          }
+          const value = scalarState[field];
+          return value === undefined ? [] : [value];
+        }
+      }
+    };
+    return createSharedSearchCheckpointSourceLeaseV1(
+      {
+        sourceSchemaVersion: 1,
+        checkpointSchemaVersion: SHARED_SEARCH_CHECKPOINT_SCHEMA_VERSION,
+        engine: "shared:deep-novelty-v1",
+        configuration,
+        statesExplored,
+        totalGranted,
+        nodeSlots: nodes.length,
+      },
+      {
+        backing: {
+          stateRecords: rawRecordsForField,
+          nodePayloadRecords,
+          nodeAncestryRecords,
+        },
+        registration,
+        activeIterators: new Set<SharedSearchCheckpointSourceIteratorSlotV1>(),
+      }
+    );
   };
 
   return {
@@ -4913,6 +5255,7 @@ function createSharedEngine(
     stoppedForTime: () => timeStopped,
     snapshot: buildResult,
     checkpoint: buildCheckpoint,
+    checkpointSource,
     finalize(): ExploreResult {
       if (memoryStopped) {
         truncated = true;
@@ -4989,22 +5332,23 @@ export interface SharedResumableRun {
   checkpoint?: SharedSearchCheckpoint;
 }
 
-/**
- * Run the base shared search to a total state grant and preserve its exact live
- * frontier when work remains. A resumed run receives a new total grant, not an
- * additional budget, so callers can safely grow 100k -> 1m without double-counting.
- *
- * This first checkpoint schema intentionally excludes assertions, goals, and
- * experimental frontier scoring. Those modes need their own explicit state
- * contracts before they can make the same exact-resume promise.
- */
-export function exploreSharedResumable(
+export interface SharedCheckpointSourceRun<T> {
+  result: ExploreResult;
+  /** Result returned by the scoped source consumer while resumable work remains. */
+  checkpoint?: T;
+}
+
+function runSharedToCheckpointBoundary(
   storyJson: string,
   knots: KnotInfo[],
-  externals: string[] = [],
-  opts: ExploreOptions = {},
-  checkpoint?: SharedSearchCheckpoint
-): SharedResumableRun {
+  externals: string[],
+  opts: ExploreOptions,
+  checkpoint?: SharedSearchCheckpoint,
+  onProgress: ExploreOptions["onProgress"] = opts.onProgress
+): SharedPassEngine {
+  // Keep cadence and validation inputs stable even if an early evidence
+  // callback mutates the caller-owned options object during engine creation.
+  opts = { ...opts };
   if (opts.sharedVariableAware || opts.sharedGoalAware || opts.assertions?.length || opts.goals?.length) {
     throw new RangeError("Shared resumable search supports only the base shared strategy without assertions or goals");
   }
@@ -5033,7 +5377,7 @@ export function exploreSharedResumable(
     const consumed = engine.run(1);
     remaining--;
     statesExplored += consumed;
-    if (opts.onProgress) {
+    if (onProgress) {
       grantsSinceClock++;
       const stateDue = statesExplored - lastStates >= stateInterval;
       if (stateDue || grantsSinceClock >= 64 || timeInterval === 0) {
@@ -5043,20 +5387,118 @@ export function exploreSharedResumable(
           const snapshot = engine.snapshot();
           lastStates = statesExplored;
           lastAt = now;
-          opts.onProgress(progressFromSnapshot(engine.label, statesExplored, snapshot));
+          onProgress(progressFromSnapshot(engine.label, statesExplored, snapshot));
         }
       }
     }
     if (consumed === 0) break;
   }
+  return engine;
+}
+
+function finalizeSharedResumableEngine(
+  engine: SharedPassEngine,
+  onProgress: ExploreOptions["onProgress"]
+): ExploreResult {
+  const result = engine.finalize();
+  result.passes = [engine.telemetry()];
+  onProgress?.(progressFromSnapshot(engine.label, result.statesExplored, result));
+  return result;
+}
+
+/**
+ * Run the base shared search to a total state grant and preserve its exact live
+ * frontier when work remains. A resumed run receives a new total grant, not an
+ * additional budget, so callers can safely grow 100k -> 1m without double-counting.
+ *
+ * This first checkpoint schema intentionally excludes assertions, goals, and
+ * experimental frontier scoring. Those modes need their own explicit state
+ * contracts before they can make the same exact-resume promise.
+ */
+export function exploreSharedResumable(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {},
+  checkpoint?: SharedSearchCheckpoint
+): SharedResumableRun {
+  const onProgress = opts.onProgress;
+  const engine = runSharedToCheckpointBoundary(storyJson, knots, externals, opts, checkpoint, onProgress);
 
   const nextCheckpoint = !engine.done() && !engine.stoppedForMemory() && !engine.stoppedForTime()
     ? engine.checkpoint()
     : undefined;
-  const result = engine.finalize();
-  result.passes = [engine.telemetry()];
-  opts.onProgress?.(progressFromSnapshot(engine.label, result.statesExplored, result));
+  const result = finalizeSharedResumableEngine(engine, onProgress);
   return nextCheckpoint ? { result, checkpoint: nextCheckpoint } : { result };
+}
+
+/**
+ * Run the same exact resumable search, but hand a live, read-only checkpoint
+ * source to an async consumer instead of materializing the complete checkpoint
+ * graph. The engine remains quiescent until the callback settles; every source
+ * iterator is then invalidated before finalization mutates termination state.
+ */
+export async function exploreSharedResumableWithCheckpointSource<T>(
+  storyJson: string,
+  knots: KnotInfo[],
+  externals: string[] = [],
+  opts: ExploreOptions = {},
+  consume: (source: SharedSearchCheckpointSourceV1) => T | Promise<T>,
+  checkpoint?: SharedSearchCheckpoint
+): Promise<SharedCheckpointSourceRun<T>> {
+  const onProgress = opts.onProgress;
+  const engine = runSharedToCheckpointBoundary(storyJson, knots, externals, opts, checkpoint, onProgress);
+  let checkpointResult: T | undefined;
+  if (!engine.done() && !engine.stoppedForMemory() && !engine.stoppedForTime()) {
+    const lease = engine.checkpointSource();
+    let consumed: T | Promise<T>;
+    try {
+      consumed = consume(lease.source);
+    } catch (error) {
+      lease.release();
+      throw error;
+    }
+    let then: unknown;
+    try {
+      then = consumed !== null
+        && (typeof consumed === "object" || typeof consumed === "function")
+        ? (consumed as PromiseLike<T>).then
+        : undefined;
+    } catch (error) {
+      lease.release();
+      throw error;
+    }
+    if (typeof then === "function") {
+      try {
+        // We already performed the one PromiseResolve-style Get of `then` to
+        // distinguish a plain synchronous value. Adopt that exact method in a
+        // job instead of `await consumed`, which would read a stateful getter
+        // a second time. Native resolving functions provide once-only
+        // fulfillment/rejection if a hostile thenable calls both or throws.
+        checkpointResult = await new Promise<T>((resolve, reject) => {
+          queueMicrotask(() => {
+            try {
+              Reflect.apply(then, consumed, [resolve, reject]);
+            } catch (error) {
+              reject(error);
+            }
+          });
+        });
+      } finally {
+        lease.release();
+      }
+    } else {
+      // A synchronous callback has already settled. Release before the async
+      // function reaches its first suspension point so the source cannot be
+      // used in the microtask gap outside the callback.
+      checkpointResult = consumed as T;
+      lease.release();
+    }
+  }
+  const result = finalizeSharedResumableEngine(engine, onProgress);
+  return checkpointResult === undefined
+    ? { result }
+    : { result, checkpoint: checkpointResult };
 }
 
 export function exploreSharedVariableAware(
