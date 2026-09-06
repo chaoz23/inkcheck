@@ -1,0 +1,754 @@
+{
+  "schemaVersion": 1,
+  "kind": "checkpoint_v2_promotion_evaluation",
+  "evaluationId": "checkpoint-v2-promotion-v1",
+  "generatedAt": "2026-09-06T02:55:15.731Z",
+  "candidate": {
+    "manifestSha256": "7f28003f7eaae71f4805450d22b62f29a248b0d632a8ce7b33e2e76699e85988",
+    "git": {
+      "head": "9312811be8f0e79b8f05ce7e0d09a2626063b8ea",
+      "tree": "966ef5aece7d00974b6c8c9e870d4013762c596b",
+      "clean": true,
+      "dirtyEntryCount": 0
+    },
+    "packageVersion": "0.7.2",
+    "dependencyLockSha256": "118098bc49f332257dfa566496148d89d9141cfffa4971009982fa5c333c605e",
+    "dist": {
+      "fileCount": 48,
+      "bundleSha256": "dd52f43f9b438990f5dde7b10257afdc0e2139324e807403c026117c45d36c19"
+    }
+  },
+  "runtime": {
+    "nodeVersion": "v22.13.1",
+    "v8Version": "12.4.254.21-node.22",
+    "platform": "darwin",
+    "architecture": "arm64",
+    "logicalCpuCount": 8,
+    "cpuModel": "Apple M1",
+    "totalMemoryBytes": 8589934592,
+    "v8HeapLimitBytes": 6492782592,
+    "maxOldSpaceSizeMb": 6144
+  },
+  "compiler": {
+    "name": "inklecate",
+    "version": "1.2.1",
+    "executableSha256": "df0f53f321203bb5f7ccfe7debb3f0f9abb3f328a56363bef4dde605baf17e5e",
+    "resolutionClass": "managed_cache"
+  },
+  "selection": {
+    "serial": true,
+    "requestedCellIds": [],
+    "selectedCellIds": [
+      "heresy2-legacy-split",
+      "heresy2-framed-split",
+      "heresy2-uninterrupted",
+      "intercept-uninterrupted",
+      "intercept-framed-split",
+      "intercept-legacy-split"
+    ],
+    "completeMatrix": true
+  },
+  "progress": {
+    "status": "completed",
+    "selectedCellCount": 6,
+    "recordedCellCount": 6,
+    "recordedCellIds": [
+      "heresy2-legacy-split",
+      "heresy2-framed-split",
+      "heresy2-uninterrupted",
+      "intercept-uninterrupted",
+      "intercept-framed-split",
+      "intercept-legacy-split"
+    ]
+  },
+  "controls": {
+    "cellOrder": [
+      "heresy2-legacy-split",
+      "heresy2-framed-split",
+      "heresy2-uninterrupted",
+      "intercept-uninterrupted",
+      "intercept-framed-split",
+      "intercept-legacy-split"
+    ],
+    "maxDepth": 100,
+    "searchSeed": 7,
+    "storySeed": 1,
+    "concurrency": 1,
+    "minimizeRepros": false,
+    "stateSensitivity": "source_semantics",
+    "loopRiskDetection": "only_without_turns_randomness_visit_counts_or_externals",
+    "maxMemoryMb": 4096,
+    "maxTimeMs": 840000,
+    "workerTimeoutMs": 900000,
+    "coordinatorMaxOldSpaceMb": 6144,
+    "storage": {
+      "maxCheckpointBytes": 536870912,
+      "maxProjectBytes": 2147483648,
+      "framedV2": {
+        "maxTotalDecodedBytes": 2147483648
+      }
+    }
+  },
+  "sources": [
+    {
+      "id": "heresy2",
+      "upstream": "randall-frank/heresy2-assets",
+      "commit": "37b8a7804217bb40a9f69f6fd9c173f2017d550e",
+      "license": "CC-BY-4.0",
+      "entrypointSha256": "49db768479e523f39ae9eb838f6daa0798244b7bbe266d686a7a967ccf66f7ea",
+      "licenseSha256": "7e7170e3cebf88a9f60c7b8421418323c09304da1af4d5e90f4da1dc1c8a2661",
+      "bundleSha256": "2991d13fbf2d036c9bfb5cf4207c16509dfdf77dae24fa410ace1a0d3a36b626",
+      "fileCount": 21,
+      "compiledStorySha256": "5c65cf077478ad70985341e564695cb8ab35af20ec574d12b517d1e18f9a4bb7"
+    },
+    {
+      "id": "intercept",
+      "upstream": "inkle/the-intercept",
+      "commit": "2a816b56e61ce4bf02bec1c638074645bdd871e3",
+      "license": "MIT",
+      "entrypointSha256": "1d7b5653b689a9da6801bbfaaa3fbd20b0cc47113b28bb1b1774f6cd11e9eea4",
+      "licenseSha256": "4b0d7e6b2ccac7794d0705ee40a6728d664ff1cd80994b5d31077a4cde38f3da",
+      "bundleSha256": "c9865a7d2d334e39b68f788f790d202a7c1fbd9acb2bf2fc54fa1a4d549db6c9",
+      "fileCount": 1,
+      "compiledStorySha256": "2a441a97a345cfc7d3c944e758949d6c3b37ccfe88a75ddad06cf3ac83a637c6"
+    }
+  ],
+  "cases": [
+    {
+      "schemaVersion": 1,
+      "id": "heresy2-legacy-split",
+      "sourceId": "heresy2",
+      "mode": "legacy-split",
+      "expected": "resume_exact",
+      "configuration": {
+        "baseStates": 100000,
+        "targetStates": 150000,
+        "maxDepth": 100,
+        "searchSeed": 7,
+        "storySeed": 1,
+        "concurrency": 1,
+        "preserveTurnState": false,
+        "preserveRandomState": true,
+        "detectLoopRisks": false
+      },
+      "compiler": {
+        "name": "inklecate",
+        "version": "1.2.1",
+        "executableSha256": "df0f53f321203bb5f7ccfe7debb3f0f9abb3f328a56363bef4dde605baf17e5e",
+        "resolutionClass": "managed_cache"
+      },
+      "source": {
+        "fileCount": 21,
+        "bundleSha256": "2991d13fbf2d036c9bfb5cf4207c16509dfdf77dae24fa410ace1a0d3a36b626",
+        "compiledStorySha256": "5c65cf077478ad70985341e564695cb8ab35af20ec574d12b517d1e18f9a4bb7"
+      },
+      "elapsedMs": 205456,
+      "peakRssBytes": 2349662208,
+      "status": "completed",
+      "base": {
+        "digest": {
+          "sha256": "b9d81a35ead806b2cb742a38515dbdcf61df3177c548ad7a2fe6b3194f66e3b2",
+          "utf8Bytes": 70116
+        },
+        "statesExplored": 100000,
+        "exhaustive": false,
+        "truncated": true,
+        "truncatedBy": {
+          "maxDepth": true,
+          "maxStates": true,
+          "beamWidth": false,
+          "frontier": false,
+          "memory": false,
+          "time": false,
+          "loop": false,
+          "worker": false
+        },
+        "counts": {
+          "endings": 1,
+          "visibleOutcomes": 1,
+          "runtimeErrors": 0,
+          "runtimeWarnings": 0,
+          "visitedKnots": 14,
+          "unvisitedKnots": 16
+        }
+      },
+      "checkpoint": {
+        "requestedFormat": "legacy-v1",
+        "storageEncoding": "gzip",
+        "id": "checkpoint-5358f1fd60cd22200b9db873",
+        "logicalCheckpointUtf8Bytes": 370262984,
+        "payloadSizeBytes": 39126345,
+        "durableSizeBytes": 39126905,
+        "write": {
+          "outcome": "created",
+          "materializedCheckpointGraphs": 1,
+          "engineSourceMaterializedGraphs": null,
+          "engineSourceIdentityPasses": null,
+          "engineSourceFramePasses": null,
+          "legacySerializationApplied": true,
+          "legacyCompressionApplied": true,
+          "framedV2Applied": false
+        },
+        "logicalCheckpoint": {
+          "sha256": "cfb4640deb4acda8cf2c617dee55c428f8941e8c5e65de3cb6b1bad3467c2fa4",
+          "utf8Bytes": 370262984
+        },
+        "readback": {
+          "status": "completed",
+          "storageEncoding": "gzip"
+        },
+        "preservation": {
+          "payloadBytesUnchanged": true,
+          "listingUnchanged": true,
+          "listedBefore": 1,
+          "listedAfter": 1
+        }
+      },
+      "resumed": {
+        "digest": {
+          "sha256": "7e4eef738f7ae2c34a2abf031d3bb16b781a9f1eba8dcc6949f53aa42d526571",
+          "utf8Bytes": 78083
+        },
+        "statesExplored": 150000,
+        "exhaustive": false,
+        "truncated": true,
+        "truncatedBy": {
+          "maxDepth": true,
+          "maxStates": true,
+          "beamWidth": false,
+          "frontier": false,
+          "memory": false,
+          "time": false,
+          "loop": false,
+          "worker": false
+        },
+        "counts": {
+          "endings": 1,
+          "visibleOutcomes": 1,
+          "runtimeErrors": 0,
+          "runtimeWarnings": 0,
+          "visitedKnots": 14,
+          "unvisitedKnots": 16
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "heresy2-framed-split",
+      "sourceId": "heresy2",
+      "mode": "framed-split",
+      "expected": "resume_exact",
+      "configuration": {
+        "baseStates": 100000,
+        "targetStates": 150000,
+        "maxDepth": 100,
+        "searchSeed": 7,
+        "storySeed": 1,
+        "concurrency": 1,
+        "preserveTurnState": false,
+        "preserveRandomState": true,
+        "detectLoopRisks": false
+      },
+      "compiler": {
+        "name": "inklecate",
+        "version": "1.2.1",
+        "executableSha256": "df0f53f321203bb5f7ccfe7debb3f0f9abb3f328a56363bef4dde605baf17e5e",
+        "resolutionClass": "managed_cache"
+      },
+      "source": {
+        "fileCount": 21,
+        "bundleSha256": "2991d13fbf2d036c9bfb5cf4207c16509dfdf77dae24fa410ace1a0d3a36b626",
+        "compiledStorySha256": "5c65cf077478ad70985341e564695cb8ab35af20ec574d12b517d1e18f9a4bb7"
+      },
+      "elapsedMs": 88327,
+      "peakRssBytes": 1752760320,
+      "status": "completed",
+      "base": {
+        "digest": {
+          "sha256": "b9d81a35ead806b2cb742a38515dbdcf61df3177c548ad7a2fe6b3194f66e3b2",
+          "utf8Bytes": 70116
+        },
+        "statesExplored": 100000,
+        "exhaustive": false,
+        "truncated": true,
+        "truncatedBy": {
+          "maxDepth": true,
+          "maxStates": true,
+          "beamWidth": false,
+          "frontier": false,
+          "memory": false,
+          "time": false,
+          "loop": false,
+          "worker": false
+        },
+        "counts": {
+          "endings": 1,
+          "visibleOutcomes": 1,
+          "runtimeErrors": 0,
+          "runtimeWarnings": 0,
+          "visitedKnots": 14,
+          "unvisitedKnots": 16
+        }
+      },
+      "checkpoint": {
+        "requestedFormat": "framed-v2",
+        "storageEncoding": "framed-v2",
+        "id": "checkpoint-5358f1fd60cd22200b9db873",
+        "logicalCheckpointUtf8Bytes": 370262984,
+        "payloadSizeBytes": 38472302,
+        "durableSizeBytes": 38475807,
+        "write": {
+          "outcome": "created",
+          "materializedCheckpointGraphs": 0,
+          "engineSourceMaterializedGraphs": 0,
+          "engineSourceIdentityPasses": 1,
+          "engineSourceFramePasses": 1,
+          "legacySerializationApplied": false,
+          "legacyCompressionApplied": false,
+          "framedV2Applied": true
+        },
+        "logicalCheckpoint": {
+          "sha256": "cfb4640deb4acda8cf2c617dee55c428f8941e8c5e65de3cb6b1bad3467c2fa4",
+          "utf8Bytes": 370262984
+        },
+        "readback": {
+          "status": "completed",
+          "storageEncoding": "framed-v2"
+        },
+        "preservation": {
+          "payloadBytesUnchanged": true,
+          "listingUnchanged": true,
+          "listedBefore": 1,
+          "listedAfter": 1
+        }
+      },
+      "resumed": {
+        "digest": {
+          "sha256": "7e4eef738f7ae2c34a2abf031d3bb16b781a9f1eba8dcc6949f53aa42d526571",
+          "utf8Bytes": 78083
+        },
+        "statesExplored": 150000,
+        "exhaustive": false,
+        "truncated": true,
+        "truncatedBy": {
+          "maxDepth": true,
+          "maxStates": true,
+          "beamWidth": false,
+          "frontier": false,
+          "memory": false,
+          "time": false,
+          "loop": false,
+          "worker": false
+        },
+        "counts": {
+          "endings": 1,
+          "visibleOutcomes": 1,
+          "runtimeErrors": 0,
+          "runtimeWarnings": 0,
+          "visitedKnots": 14,
+          "unvisitedKnots": 16
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "heresy2-uninterrupted",
+      "sourceId": "heresy2",
+      "mode": "uninterrupted",
+      "expected": "endpoint",
+      "configuration": {
+        "baseStates": 100000,
+        "targetStates": 150000,
+        "maxDepth": 100,
+        "searchSeed": 7,
+        "storySeed": 1,
+        "concurrency": 1,
+        "preserveTurnState": false,
+        "preserveRandomState": true,
+        "detectLoopRisks": false
+      },
+      "compiler": {
+        "name": "inklecate",
+        "version": "1.2.1",
+        "executableSha256": "df0f53f321203bb5f7ccfe7debb3f0f9abb3f328a56363bef4dde605baf17e5e",
+        "resolutionClass": "managed_cache"
+      },
+      "source": {
+        "fileCount": 21,
+        "bundleSha256": "2991d13fbf2d036c9bfb5cf4207c16509dfdf77dae24fa410ace1a0d3a36b626",
+        "compiledStorySha256": "5c65cf077478ad70985341e564695cb8ab35af20ec574d12b517d1e18f9a4bb7"
+      },
+      "elapsedMs": 58327,
+      "peakRssBytes": 1373896704,
+      "status": "completed",
+      "uninterrupted": {
+        "digest": {
+          "sha256": "7e4eef738f7ae2c34a2abf031d3bb16b781a9f1eba8dcc6949f53aa42d526571",
+          "utf8Bytes": 78083
+        },
+        "statesExplored": 150000,
+        "exhaustive": false,
+        "truncated": true,
+        "truncatedBy": {
+          "maxDepth": true,
+          "maxStates": true,
+          "beamWidth": false,
+          "frontier": false,
+          "memory": false,
+          "time": false,
+          "loop": false,
+          "worker": false
+        },
+        "counts": {
+          "endings": 1,
+          "visibleOutcomes": 1,
+          "runtimeErrors": 0,
+          "runtimeWarnings": 0,
+          "visitedKnots": 14,
+          "unvisitedKnots": 16
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "intercept-uninterrupted",
+      "sourceId": "intercept",
+      "mode": "uninterrupted",
+      "expected": "endpoint",
+      "configuration": {
+        "baseStates": 600000,
+        "targetStates": 650000,
+        "maxDepth": 100,
+        "searchSeed": 7,
+        "storySeed": 1,
+        "concurrency": 1,
+        "preserveTurnState": false,
+        "preserveRandomState": false,
+        "detectLoopRisks": true
+      },
+      "compiler": {
+        "name": "inklecate",
+        "version": "1.2.1",
+        "executableSha256": "df0f53f321203bb5f7ccfe7debb3f0f9abb3f328a56363bef4dde605baf17e5e",
+        "resolutionClass": "managed_cache"
+      },
+      "source": {
+        "fileCount": 1,
+        "bundleSha256": "c9865a7d2d334e39b68f788f790d202a7c1fbd9acb2bf2fc54fa1a4d549db6c9",
+        "compiledStorySha256": "2a441a97a345cfc7d3c944e758949d6c3b37ccfe88a75ddad06cf3ac83a637c6"
+      },
+      "elapsedMs": 213395,
+      "peakRssBytes": 1841954816,
+      "status": "completed",
+      "uninterrupted": {
+        "digest": {
+          "sha256": "fec8965d6d4ea44c7466313474a753840ab6801587451d8abc0ffad2d1097346",
+          "utf8Bytes": 1983483
+        },
+        "statesExplored": 650000,
+        "exhaustive": false,
+        "truncated": true,
+        "truncatedBy": {
+          "maxDepth": false,
+          "maxStates": true,
+          "beamWidth": false,
+          "frontier": false,
+          "memory": false,
+          "time": false,
+          "loop": false,
+          "worker": false
+        },
+        "counts": {
+          "endings": 1375,
+          "visibleOutcomes": 12,
+          "runtimeErrors": 0,
+          "runtimeWarnings": 0,
+          "visitedKnots": 29,
+          "unvisitedKnots": 1
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "intercept-framed-split",
+      "sourceId": "intercept",
+      "mode": "framed-split",
+      "expected": "resume_exact",
+      "configuration": {
+        "baseStates": 600000,
+        "targetStates": 650000,
+        "maxDepth": 100,
+        "searchSeed": 7,
+        "storySeed": 1,
+        "concurrency": 1,
+        "preserveTurnState": false,
+        "preserveRandomState": false,
+        "detectLoopRisks": true
+      },
+      "compiler": {
+        "name": "inklecate",
+        "version": "1.2.1",
+        "executableSha256": "df0f53f321203bb5f7ccfe7debb3f0f9abb3f328a56363bef4dde605baf17e5e",
+        "resolutionClass": "managed_cache"
+      },
+      "source": {
+        "fileCount": 1,
+        "bundleSha256": "c9865a7d2d334e39b68f788f790d202a7c1fbd9acb2bf2fc54fa1a4d549db6c9",
+        "compiledStorySha256": "2a441a97a345cfc7d3c944e758949d6c3b37ccfe88a75ddad06cf3ac83a637c6"
+      },
+      "elapsedMs": 273913,
+      "peakRssBytes": 2092597248,
+      "status": "completed",
+      "base": {
+        "digest": {
+          "sha256": "93fa7fe49e1fe8a882c04c5b4ac181825e040b8879681b6a8977256e93c5746f",
+          "utf8Bytes": 1914724
+        },
+        "statesExplored": 600000,
+        "exhaustive": false,
+        "truncated": true,
+        "truncatedBy": {
+          "maxDepth": false,
+          "maxStates": true,
+          "beamWidth": false,
+          "frontier": false,
+          "memory": false,
+          "time": false,
+          "loop": false,
+          "worker": false
+        },
+        "counts": {
+          "endings": 1290,
+          "visibleOutcomes": 12,
+          "runtimeErrors": 0,
+          "runtimeWarnings": 0,
+          "visitedKnots": 29,
+          "unvisitedKnots": 1
+        }
+      },
+      "checkpoint": {
+        "requestedFormat": "framed-v2",
+        "storageEncoding": "framed-v2",
+        "id": "checkpoint-27fe6780e1c0ac80fbcbbbe5",
+        "logicalCheckpointUtf8Bytes": 624765446,
+        "payloadSizeBytes": 67737494,
+        "durableSizeBytes": 67741016,
+        "write": {
+          "outcome": "created",
+          "materializedCheckpointGraphs": 0,
+          "engineSourceMaterializedGraphs": 0,
+          "engineSourceIdentityPasses": 1,
+          "engineSourceFramePasses": 1,
+          "legacySerializationApplied": false,
+          "legacyCompressionApplied": false,
+          "framedV2Applied": true
+        },
+        "logicalCheckpoint": {
+          "sha256": "a99fd85b123691421981f289c82e49afeb3a6ee5b32b717c20c3a84b9f5de682",
+          "utf8Bytes": 624765446
+        },
+        "readback": {
+          "status": "completed",
+          "storageEncoding": "framed-v2"
+        },
+        "preservation": {
+          "payloadBytesUnchanged": true,
+          "listingUnchanged": true,
+          "listedBefore": 1,
+          "listedAfter": 1
+        }
+      },
+      "resumed": {
+        "digest": {
+          "sha256": "fec8965d6d4ea44c7466313474a753840ab6801587451d8abc0ffad2d1097346",
+          "utf8Bytes": 1983483
+        },
+        "statesExplored": 650000,
+        "exhaustive": false,
+        "truncated": true,
+        "truncatedBy": {
+          "maxDepth": false,
+          "maxStates": true,
+          "beamWidth": false,
+          "frontier": false,
+          "memory": false,
+          "time": false,
+          "loop": false,
+          "worker": false
+        },
+        "counts": {
+          "endings": 1375,
+          "visibleOutcomes": 12,
+          "runtimeErrors": 0,
+          "runtimeWarnings": 0,
+          "visitedKnots": 29,
+          "unvisitedKnots": 1
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "intercept-legacy-split",
+      "sourceId": "intercept",
+      "mode": "legacy-split",
+      "expected": "legacy_readback_resource_limit",
+      "configuration": {
+        "baseStates": 600000,
+        "targetStates": 650000,
+        "maxDepth": 100,
+        "searchSeed": 7,
+        "storySeed": 1,
+        "concurrency": 1,
+        "preserveTurnState": false,
+        "preserveRandomState": false,
+        "detectLoopRisks": true
+      },
+      "compiler": {
+        "name": "inklecate",
+        "version": "1.2.1",
+        "executableSha256": "df0f53f321203bb5f7ccfe7debb3f0f9abb3f328a56363bef4dde605baf17e5e",
+        "resolutionClass": "managed_cache"
+      },
+      "source": {
+        "fileCount": 1,
+        "bundleSha256": "c9865a7d2d334e39b68f788f790d202a7c1fbd9acb2bf2fc54fa1a4d549db6c9",
+        "compiledStorySha256": "2a441a97a345cfc7d3c944e758949d6c3b37ccfe88a75ddad06cf3ac83a637c6"
+      },
+      "elapsedMs": 360631,
+      "peakRssBytes": 1957625856,
+      "status": "completed",
+      "base": {
+        "digest": {
+          "sha256": "93fa7fe49e1fe8a882c04c5b4ac181825e040b8879681b6a8977256e93c5746f",
+          "utf8Bytes": 1914724
+        },
+        "statesExplored": 600000,
+        "exhaustive": false,
+        "truncated": true,
+        "truncatedBy": {
+          "maxDepth": false,
+          "maxStates": true,
+          "beamWidth": false,
+          "frontier": false,
+          "memory": false,
+          "time": false,
+          "loop": false,
+          "worker": false
+        },
+        "counts": {
+          "endings": 1290,
+          "visibleOutcomes": 12,
+          "runtimeErrors": 0,
+          "runtimeWarnings": 0,
+          "visitedKnots": 29,
+          "unvisitedKnots": 1
+        }
+      },
+      "checkpoint": {
+        "requestedFormat": "legacy-v1",
+        "storageEncoding": "gzip",
+        "id": "checkpoint-27fe6780e1c0ac80fbcbbbe5",
+        "logicalCheckpointUtf8Bytes": 624765446,
+        "payloadSizeBytes": 67731526,
+        "durableSizeBytes": 67732091,
+        "write": {
+          "outcome": "created",
+          "materializedCheckpointGraphs": 1,
+          "engineSourceMaterializedGraphs": null,
+          "engineSourceIdentityPasses": null,
+          "engineSourceFramePasses": null,
+          "legacySerializationApplied": true,
+          "legacyCompressionApplied": true,
+          "framedV2Applied": false
+        },
+        "logicalCheckpoint": {
+          "sha256": "a99fd85b123691421981f289c82e49afeb3a6ee5b32b717c20c3a84b9f5de682",
+          "utf8Bytes": 624765446
+        },
+        "readback": {
+          "status": "resource_limit",
+          "kind": "resource_limit",
+          "stage": "decompression",
+          "unit": "bytes",
+          "limit": 536870888,
+          "payloadVerified": true
+        },
+        "preservation": {
+          "payloadBytesUnchanged": true,
+          "listingUnchanged": true,
+          "listedBefore": 1,
+          "listedAfter": 1
+        }
+      }
+    }
+  ],
+  "verdict": {
+    "status": "passed",
+    "completeMatrix": true,
+    "gates": [
+      {
+        "id": "heresy2_base_storage_parity",
+        "status": "passed",
+        "checks": {
+          "baseResult": true,
+          "checkpointId": true,
+          "logicalCheckpointBytes": true,
+          "loadedCheckpoint": true
+        }
+      },
+      {
+        "id": "heresy2_exact_resume",
+        "status": "passed",
+        "checks": {
+          "legacyVsUninterrupted": true,
+          "framedVsUninterrupted": true,
+          "legacyVsFramed": true
+        }
+      },
+      {
+        "id": "intercept_base_storage_parity",
+        "status": "passed",
+        "checks": {
+          "baseResult": true,
+          "checkpointId": true,
+          "logicalCheckpointBytes": true
+        }
+      },
+      {
+        "id": "intercept_framed_exact_resume",
+        "status": "passed",
+        "checks": {
+          "framedVsUninterrupted": true,
+          "engineNativeNoGraph": true,
+          "legacyStagesNotApplied": true
+        }
+      },
+      {
+        "id": "intercept_legacy_readback_boundary",
+        "status": "passed",
+        "checks": {
+          "typedResourceLimit": true,
+          "payloadPreserved": true,
+          "listingPreserved": true
+        }
+      }
+    ],
+    "violations": [],
+    "uncertainties": [],
+    "allowedClaims": [
+      "declared_cell_exact_resume",
+      "engine_native_zero_materialized_checkpoint_graph",
+      "typed_legacy_readback_boundary",
+      "artifact_preservation_after_readback_limit"
+    ],
+    "forbiddenClaims": [
+      "universal_performance_improvement",
+      "portable_memory_improvement",
+      "story_coverage",
+      "defect_absence",
+      "allocation_policy_promotion",
+      "checkpoint_default_format_change",
+      "inkbench_improvement"
+    ]
+  }
+}

@@ -164,11 +164,12 @@ not a whole-checkpoint JSON string, but both graphs may overlap until the caller
 releases its loaded value. This work does not make framed v2 the default,
 stream provisional read callbacks directly into a live engine, change
 allocation, compaction, eviction, stopping, or epoch policy, publish a release,
-or establish an InkBench improvement claim. Promotion still requires exact
-split-versus-uninterrupted resume evidence, the observed Intercept schema-v1
-readback-limit cell under identical ceilings, and a second public story family
-such as Heresy II, together with the adversarial truncation, checksum, bounds,
-cancellation, crash, and mixed-layout gates.
+or establish an InkBench improvement claim. The checked
+[checkpoint-v2 promotion evaluation](checkpoint-v2-promotion-evaluation.md)
+now supplies exact split-versus-uninterrupted resume evidence for the matched
+Intercept readback-limit cell and Heresy II, alongside the codec's adversarial
+truncation, checksum, bounds, cancellation, crash, and mixed-layout gates.
+That functional result does not itself select or promote a default format.
 
 Checkpoint records can contain authored text, variables, serialized runtime
 state, findings, and witness paths. Treat `.inkcp` files as sensitive project

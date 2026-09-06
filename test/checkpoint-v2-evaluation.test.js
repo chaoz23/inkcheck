@@ -390,5 +390,6 @@ test("the proof package entrypoint rebuilds ignored dist and ships its frozen co
     "npm run --silent build && node --max-old-space-size=6144 dist/checkpoint-v2-evaluation-cli.js"
   );
   assert.ok(packageValue.files.includes("benchmarks/checkpoint-v2-promotion-v1.json"));
+  assert.ok(packageValue.files.includes("benchmarks/results/checkpoint-v2-promotion-v1.json"));
   assert.ok(packageValue.files.includes("docs/checkpoint-v2-promotion-evaluation.md"));
 });

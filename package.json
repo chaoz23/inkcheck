@@ -62,6 +62,7 @@
     "benchmarks/results/long-tail-promotion-v2.json",
     "benchmarks/results/loop-specialist-intercept-100k-v1.json",
     "benchmarks/results/gate-probe-intercept-5m-v1.json",
+    "benchmarks/results/checkpoint-v2-promotion-v1.json",
     "skills/inkcheck",
     "docs/inkjam-qa-guide.md",
     "docs/hosted-checker.md",

@@ -109,6 +109,33 @@ hard-killed worker, dirty candidate, missing 6 GiB coordinator flag, source or
 compiler drift, or unexpected legacy-readback success is never converted into
 a pass.
 
+## Checked result
+
+The complete matrix finished at `2026-09-06T02:55:15.731Z` on implementation
+commit `9312811be8f0e79b8f05ce7e0d09a2626063b8ea` (tree
+`966ef5aece7d00974b6c8c9e870d4013762c596b`). The checked
+[machine result](../benchmarks/results/checkpoint-v2-promotion-v1.json) has
+SHA-256 `0443af81a3aa3312101ccbbf14161e7162d3332a613e14b5d27cbb94ee880088`.
+All six cells completed, all five declared gates passed, and the report records
+no violations or uncertainties.
+
+- Heresy II legacy and framed checkpoints shared the same stable ID and
+  370,262,984-byte logical checkpoint. Both 100,000-state splits resumed to the
+  exact uninterrupted 150,000-state result.
+- The Intercept framed checkpoint at 600,000 states reported zero materialized
+  checkpoint graphs, one identity pass, and one frame pass. Its
+  624,765,446-byte logical checkpoint reopened and resumed to the exact
+  uninterrupted 650,000-state result.
+- The matched Intercept legacy checkpoint shared the same stable ID and logical
+  byte count, then returned the expected typed `resource_limit` at the
+  runtime-reported 536,870,888-byte decompression ceiling. Its payload bytes and
+  public listing remained unchanged.
+
+The result permits only the four claims enumerated in its `allowedClaims`.
+Single-run elapsed time and peak RSS remain descriptive observations; they are
+not comparative evidence and do not support any forbidden default-format,
+InkBench, portable-memory, or universal-performance claim.
+
 ## Exactness and resource-limit rules
 
 The framed base uses `exploreSharedResumableWithCheckpointSource` and writes
