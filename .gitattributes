@@ -1,0 +1,3 @@
+benchmarks/authored/**/*.ink text eol=lf
+benchmarks/authored/**/LICENSE text eol=lf
+benchmarks/authored/**/LICENSE*.md text eol=lf
