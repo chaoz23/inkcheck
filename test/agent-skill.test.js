@@ -53,6 +53,18 @@ test("bundled agent skill is compact, versioned, progressively linked, and packa
 
   const packageFiles = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")).files;
   assert.ok(packageFiles.includes("skills/inkcheck"));
+  const runtimeSchemas = capabilities().schemas;
+  const packagedCapabilities = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "tool.json"), "utf8")
+  ).cli.jsonSchema.capabilities;
+  assert.strictEqual(runtimeSchemas.checkpointArtifact, 2);
+  assert.deepStrictEqual(runtimeSchemas.checkpointArtifactSupported, [1, 2]);
+  assert.strictEqual(runtimeSchemas.checkpointArtifactDefaultWrite, 1);
+  assert.strictEqual(runtimeSchemas.checkpointListResponse, 1);
+  for (const field of [
+    "checkpointArtifact", "checkpointArtifactSupported", "checkpointArtifactDefaultWrite",
+    "checkpointListResponse",
+  ]) assert.match(packagedCapabilities, new RegExp(`\\b${field}\\b`));
 });
 
 test("ten golden exercises cover the declared agent QA curriculum and reproduce their signals", async () => {

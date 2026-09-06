@@ -6,6 +6,7 @@ import { VERSION } from "./version";
 import { CONFIG_SCHEMA_VERSION } from "./config";
 import {
   CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
+  CHECKPOINT_ARTIFACT_V2_SCHEMA_VERSION,
   DEFAULT_CHECKPOINT_GENERATIONS,
   DEFAULT_MAX_CHECKPOINT_BYTES,
   DEFAULT_MAX_PROJECT_CHECKPOINT_BYTES,
@@ -54,7 +55,20 @@ export const MAX_INSPECTION_OVERVIEW_BYTES = 16 * 1024;
 export interface InkcheckCapabilities {
   schemaVersion: number;
   inkcheckVersion: string;
-  schemas: { report: number; config: number; projectInspection: number; artifact: number; checkpointArtifact: number; searchSession: number; regressionArtifact: number; campaignPolicy: number };
+  schemas: {
+    report: number;
+    config: number;
+    projectInspection: number;
+    artifact: number;
+    /** Latest supported persisted checkpoint artifact envelope. */
+    checkpointArtifact: number;
+    checkpointArtifactSupported: number[];
+    checkpointArtifactDefaultWrite: number;
+    checkpointListResponse: number;
+    searchSession: number;
+    regressionArtifact: number;
+    campaignPolicy: number;
+  };
   limits: {
     maxDepth: number;
     maxStates: number;
@@ -122,7 +136,13 @@ export function capabilities(): InkcheckCapabilities {
       config: CONFIG_SCHEMA_VERSION,
       projectInspection: PROJECT_INSPECTION_SCHEMA_VERSION,
       artifact: ARTIFACT_SCHEMA_VERSION,
-      checkpointArtifact: CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
+      checkpointArtifact: CHECKPOINT_ARTIFACT_V2_SCHEMA_VERSION,
+      checkpointArtifactSupported: [
+        CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
+        CHECKPOINT_ARTIFACT_V2_SCHEMA_VERSION,
+      ],
+      checkpointArtifactDefaultWrite: CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
+      checkpointListResponse: CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
       searchSession: SEARCH_SESSION_SCHEMA_VERSION,
       regressionArtifact: REGRESSION_ARTIFACT_SCHEMA_VERSION,
       campaignPolicy: CAMPAIGN_POLICY_SCHEMA_VERSION,
