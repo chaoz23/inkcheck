@@ -8,6 +8,8 @@ const {
   planCampaignRun,
   commitCampaignRun,
 } = require("../dist/campaign-policy");
+const { createLongRunTelemetryRecorder } = require("../dist/long-run-telemetry");
+const { explainCampaignDecision } = require("../dist/campaign-controls");
 
 const fingerprint = "source-config-0123456789abcdef";
 const start = "2026-07-14T12:00:00.000Z";
@@ -74,6 +76,108 @@ test("identical inputs produce identical campaign IDs, allocations, and reasons"
     frontier: "root",
     maxDepth: 200,
   });
+});
+
+test("campaign commits validate and detach bounded window cost without changing monetary spend", () => {
+  const ledger = createCampaignLedger(policy("balanced"), fingerprint, start);
+  const planned = planCampaignRun(ledger, {
+    now: start,
+    bindingFingerprint: fingerprint,
+    recommendation: "continue",
+  });
+  assert.strictEqual(planned.action, "allocate");
+  const windowCost = createLongRunTelemetryRecorder().finalize([]);
+  const completed = commitCampaignRun(planned.ledger, {
+    now: "2026-07-14T12:00:01.000Z",
+    bindingFingerprint: fingerprint,
+    allocationId: planned.allocation.id,
+    consumedStates: 1,
+    peakMemoryBytes: 100,
+    currentDiskBytes: 100,
+    stopReason: "window_complete",
+    reportId: "report-000000000000000000000001",
+    cost: windowCost,
+  });
+  assert.deepStrictEqual(completed.allocations[0].provenance.cost, windowCost);
+  assert.notStrictEqual(completed.allocations[0].provenance.cost, windowCost);
+  assert.strictEqual(completed.spend.costMicrounits, 0);
+  windowCost.phases.setupMs = 99;
+  assert.strictEqual(completed.allocations[0].provenance.cost.phases.setupMs, 0);
+
+  const malformed = createLongRunTelemetryRecorder().finalize([]);
+  malformed.unbounded = true;
+  assert.throws(() => commitCampaignRun(planned.ledger, {
+    now: "2026-07-14T12:00:01.000Z",
+    bindingFingerprint: fingerprint,
+    allocationId: planned.allocation.id,
+    consumedStates: 1,
+    peakMemoryBytes: 100,
+    currentDiskBytes: 100,
+    stopReason: "window_complete",
+    reportId: "report-000000000000000000000001",
+    cost: malformed,
+  }), /invalid shape/);
+  assert.throws(() => commitCampaignRun(planned.ledger, {
+    now: "2026-07-14T12:00:01.000Z",
+    bindingFingerprint: fingerprint,
+    allocationId: planned.allocation.id,
+    consumedStates: 1,
+    peakMemoryBytes: 100,
+    currentDiskBytes: 100,
+    stopReason: "window_complete",
+    cost: createLongRunTelemetryRecorder().finalize([]),
+  }), /requires reportId provenance/);
+});
+
+test("legacy observability commit input is normalized without changing campaign identities", () => {
+  const ledger = createCampaignLedger(policy("balanced"), fingerprint, start);
+  const planned = planCampaignRun(ledger, {
+    now: start,
+    bindingFingerprint: fingerprint,
+    recommendation: "continue",
+  });
+  assert.strictEqual(planned.action, "allocate");
+  const campaignNewYield = { critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: 2 };
+  const legacyObservability = {
+    schemaVersion: 1,
+    observedYield: { critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: 3 },
+    rediscoveredYield: { critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: 1 },
+    discoverySpacing: {
+      scope: "report_meaningful_events",
+      discoveryEvents: 3,
+      firstDiscoveryAtState: 1,
+      lastDiscoveryAtState: 90,
+      statesSinceLastDiscovery: 10,
+      latestDiscoveryGap: 10,
+      longestObservedDiscoveryGap: 20,
+    },
+  };
+  const commit = (observability) => commitCampaignRun(planned.ledger, {
+    now: "2026-07-14T12:00:01.000Z",
+    bindingFingerprint: fingerprint,
+    allocationId: planned.allocation.id,
+    consumedStates: 100,
+    peakMemoryBytes: 100,
+    currentDiskBytes: 100,
+    stopReason: "window_complete",
+    reportId: "report-000000000000000000000001",
+    yield: campaignNewYield,
+    observability,
+  });
+  const normalizedLegacy = commit(legacyObservability);
+  const explicit = commit({ ...legacyObservability, campaignNewYield });
+  assert.deepStrictEqual(normalizedLegacy, explicit);
+  assert.deepStrictEqual(normalizedLegacy.allocations[0].observability.campaignNewYield, campaignNewYield);
+  assert.strictEqual(normalizedLegacy.campaignId, ledger.campaignId);
+  assert.strictEqual(normalizedLegacy.allocations[0].id, planned.allocation.id);
+  assert.strictEqual(
+    explainCampaignDecision(normalizedLegacy).policyId,
+    explainCampaignDecision(explicit).policyId
+  );
+  assert.throws(
+    () => commit({ ...legacyObservability, campaignNewYield: null }),
+    /yield categories are incomplete/
+  );
 });
 
 test("ordinary windows cannot consume regression or long-tail reserves", () => {

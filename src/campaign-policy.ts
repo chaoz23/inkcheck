@@ -1,4 +1,8 @@
 import { createHash } from "crypto";
+import {
+  validateLongRunTelemetryV1,
+  type LongRunTelemetryV1,
+} from "./long-run-telemetry";
 
 export const CAMPAIGN_POLICY_SCHEMA_VERSION = 1;
 export const CAMPAIGN_POLICY_VERSION = 2;
@@ -104,6 +108,8 @@ export interface CampaignAllocation {
     schemaVersion: 1;
     /** Distinct evidence identities present in this report, before campaign deduplication. */
     observedYield: NonNullable<CampaignAllocation["yield"]>;
+    /** Distinct evidence identities first observed by this campaign in this window. Legacy callers may omit it. */
+    campaignNewYield?: NonNullable<CampaignAllocation["yield"]>;
     /** Observed identities already present in an earlier campaign report. */
     rediscoveredYield: NonNullable<CampaignAllocation["yield"]>;
     /** Report-local factual spacing across meaningful discovery events. */
@@ -123,6 +129,8 @@ export interface CampaignAllocation {
     elapsedMs: number;
     peakMemoryBytes: number;
     diskBytes: number;
+    /** Bounded pass-local resource cost for this completed window. */
+    cost?: LongRunTelemetryV1;
   };
 }
 
@@ -187,6 +195,7 @@ export interface CommitCampaignRunInput {
   reportId?: string;
   checkpointId?: string;
   windowElapsedMs?: number;
+  cost?: LongRunTelemetryV1;
 }
 
 export type CampaignPlan =
@@ -584,27 +593,41 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
   integer(input.consumedStates, "consumedStates", 0);
   integer(input.peakMemoryBytes, "peakMemoryBytes", 0);
   integer(input.currentDiskBytes, "currentDiskBytes", 0);
-  const cost = input.costMicrounits ?? 0;
-  integer(cost, "costMicrounits", 0);
+  const costMicrounits = input.costMicrounits ?? 0;
+  integer(costMicrounits, "costMicrounits", 0);
   if (!/^[A-Za-z0-9._:-]{1,256}$/.test(input.stopReason)) throw new Error("stopReason must be a compact machine-readable value");
   if (input.yield) {
     for (const [key, value] of Object.entries(input.yield)) integer(value, `yield.${key}`, 0);
   }
+  let normalizedObservability: CampaignAllocation["observability"];
   if (input.observability) {
     if (input.observability.schemaVersion !== 1) throw new Error("unsupported campaign observability schema");
     if (!input.yield) throw new Error("campaign observability requires yield");
     const yieldKeys = ["authoredCoverage", "critical", "intent", "terminalVariants"] as const;
     const expectedKeys = [...yieldKeys].sort().join(",");
-    if (Object.keys(input.observability.observedYield).sort().join(",") !== expectedKeys
+    const observabilityKeys = Object.keys(input.observability).sort().join(",");
+    const legacyObservabilityKeys = ["discoverySpacing", "observedYield", "rediscoveredYield", "schemaVersion"].sort().join(",");
+    const currentObservabilityKeys = ["campaignNewYield", "discoverySpacing", "observedYield", "rediscoveredYield", "schemaVersion"].sort().join(",");
+    const hasCampaignNewYield = Object.prototype.hasOwnProperty.call(input.observability, "campaignNewYield");
+    const campaignNewYield = hasCampaignNewYield ? input.observability.campaignNewYield : input.yield;
+    if ((observabilityKeys !== legacyObservabilityKeys && observabilityKeys !== currentObservabilityKeys)
+      || Object.keys(input.yield).sort().join(",") !== expectedKeys
+      || Object.keys(input.observability.observedYield).sort().join(",") !== expectedKeys
+      || !campaignNewYield || typeof campaignNewYield !== "object" || Array.isArray(campaignNewYield)
+      || Object.keys(campaignNewYield).sort().join(",") !== expectedKeys
       || Object.keys(input.observability.rediscoveredYield).sort().join(",") !== expectedKeys) {
       throw new Error("campaign observability yield categories are incomplete");
     }
     for (const key of yieldKeys) {
       const observed = input.observability.observedYield[key];
       integer(observed, `observability.observedYield.${key}`, 0);
+      const campaignNew = campaignNewYield[key];
+      integer(campaignNew, `observability.campaignNewYield.${key}`, 0);
       const rediscovered = input.observability.rediscoveredYield[key];
       integer(rediscovered, `observability.rediscoveredYield.${key}`, 0);
-      const campaignNew = input.yield[key];
+      if (campaignNew !== input.yield[key]) {
+        throw new Error(`observability.campaignNewYield.${key} must equal the allocation yield`);
+      }
       if (campaignNew + rediscovered !== observed) {
         throw new Error(`observability.${key} must equal campaign-new plus rediscovered evidence`);
       }
@@ -634,11 +657,14 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
       && spacing.latestDiscoveryGap > spacing.longestObservedDiscoveryGap) {
       throw new Error("latest discovery gap cannot exceed the longest observed gap");
     }
+    normalizedObservability = clone({ ...input.observability, campaignNewYield });
   }
   if (input.reportId !== undefined && !/^report-[0-9a-f]{24}$/.test(input.reportId)) throw new Error("reportId is invalid");
   if (input.checkpointId !== undefined && !/^checkpoint-[0-9a-f]{24}$/.test(input.checkpointId)) throw new Error("checkpointId is invalid");
   if (input.checkpointId !== undefined && input.reportId === undefined) throw new Error("checkpointId requires reportId provenance");
   if (input.windowElapsedMs !== undefined) integer(input.windowElapsedMs, "windowElapsedMs", 0);
+  const windowCost = input.cost === undefined ? undefined : validateLongRunTelemetryV1(input.cost);
+  if (windowCost !== undefined && input.reportId === undefined) throw new Error("window cost requires reportId provenance");
   if (input.consumedStates > allocation.grantedStates) throw new Error("child run consumed more states than its allocation");
   const elapsedMs = elapsed(ledger, input.now);
   const timeStop = input.stopReason === "time" || input.stopReason === "maxTime" || input.stopReason === "time_ceiling";
@@ -657,7 +683,7 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
     throw new Error("child result crossed the campaign state ceiling");
   }
   if (ledger.policy.ceilings.maxCostMicrounits !== undefined
-    && ledger.spend.costMicrounits + cost > ledger.policy.ceilings.maxCostMicrounits) {
+    && ledger.spend.costMicrounits + costMicrounits > ledger.policy.ceilings.maxCostMicrounits) {
     throw new Error("child result crossed the campaign cost ceiling");
   }
   const next = clone(ledger);
@@ -667,7 +693,7 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
   target.completedAt = new Date(input.now).toISOString();
   target.stopReason = input.stopReason;
   if (input.yield) target.yield = clone(input.yield);
-  if (input.observability) target.observability = clone(input.observability);
+  if (normalizedObservability) target.observability = normalizedObservability;
   if (input.reportId) {
     target.provenance = {
       reportId: input.reportId,
@@ -675,6 +701,7 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
       elapsedMs: input.windowElapsedMs ?? elapsedMs,
       peakMemoryBytes: input.peakMemoryBytes,
       diskBytes: input.currentDiskBytes,
+      ...(windowCost ? { cost: windowCost } : {}),
     };
   }
   next.spend = {
@@ -682,7 +709,7 @@ export function commitCampaignRun(ledger: CampaignLedger, input: CommitCampaignR
     elapsedMs,
     peakMemoryBytes: Math.max(next.spend.peakMemoryBytes, input.peakMemoryBytes),
     currentDiskBytes: input.currentDiskBytes,
-    costMicrounits: next.spend.costMicrounits + cost,
+    costMicrounits: next.spend.costMicrounits + costMicrounits,
   };
   next.events.push({
     sequence: next.events.length + 1,

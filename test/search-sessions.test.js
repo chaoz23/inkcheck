@@ -16,6 +16,12 @@ const {
   continueSearchSession,
   continueCampaign,
   inspectSearchSession,
+  MAX_MCP_CAMPAIGN_COST_BYTES,
+  MAX_MCP_CAMPAIGN_COST_PASSES,
+  MAX_MCP_CAMPAIGN_GENERATED_ALLOCATION_BYTES,
+  MAX_MCP_CAMPAIGN_GENERATED_COST_BYTES,
+  MAX_MCP_CAMPAIGN_WINDOW_INCREMENT_BYTES,
+  MAX_MCP_CAMPAIGN_WINDOW_STORAGE_BYTES,
   openSessionFinding,
   openSessionReport,
   pinSessionRegression,
@@ -25,7 +31,10 @@ const {
 } = require("../dist/search-sessions");
 const { inspectProject } = require("../dist/discovery");
 const { campaignLedgerDigest } = require("../dist/campaign-policy");
-const { MAX_MCP_SESSION_RESPONSE_BYTES } = require("../dist/search-session-contract");
+const {
+  MAX_MCP_SESSION_BYTES,
+  MAX_MCP_SESSION_RESPONSE_BYTES,
+} = require("../dist/search-session-contract");
 
 const FIXTURE = path.join(__dirname, "fixtures", "search", "low-dedup-wide.ink");
 
@@ -34,6 +43,25 @@ function project() {
   const file = path.join(root, "story.ink");
   fs.copyFileSync(FIXTURE, file);
   return { root, file };
+}
+
+function assertWindowCost(cost) {
+  assert.strictEqual(cost.schemaVersion, 1);
+  assert.deepStrictEqual(Object.keys(cost).sort(), ["passes", "phases", "schemaVersion"]);
+  assert.ok(cost.passes.length <= 32);
+  for (const duration of Object.values(cost.phases)) {
+    assert.ok(Number.isSafeInteger(duration) && duration >= 0);
+  }
+  for (const pass of cost.passes) {
+    assert.strictEqual(pass.schemaVersion, 1);
+    assert.match(pass.pass, /^[A-Za-z0-9._:=/-]{1,128}$/);
+    assert.ok(Number.isSafeInteger(pass.transitions) && pass.transitions >= 0);
+    assert.strictEqual(pass.logicalRetained.basis, "deterministic_logical_accounted_bytes");
+    assert.strictEqual(pass.processRss.basis, "observed_process_rss_bytes");
+    assert.deepStrictEqual(Object.keys(pass.yield).sort(), [
+      "authoredCoverage", "critical", "intent", "semanticTransitions", "terminalVariants", "visibleOutcomes",
+    ]);
+  }
 }
 
 test("MCP result-window continuation equals one uninterrupted shared run", async () => {
@@ -113,6 +141,40 @@ test("search-session event cursors return only incremental bounded activity", as
   }
 });
 
+test("explicit session cursors retain every newer event until response sizing requires pagination", async () => {
+  const { root, file } = project();
+  try {
+    const started = await startSearchSession({ file, maxStates: 73, maxDepth: 150, seed: 7 });
+    const directory = path.join(root, ".inkcheck", "sessions");
+    const metadata = path.join(directory, fs.readdirSync(directory)[0]);
+    const value = JSON.parse(fs.readFileSync(metadata, "utf8"));
+    const template = value.events[0];
+    for (let sequence = 2; sequence <= 21; sequence += 1) {
+      value.events.push({
+        ...template,
+        sequence,
+        type: "continued",
+      });
+    }
+    fs.writeFileSync(metadata, JSON.stringify(value));
+
+    const inspected = await inspectSearchSession({
+      file,
+      sessionCapability: started.sessionCapability,
+      since: started.session.eventPage.nextSince,
+    });
+    assert.deepStrictEqual(
+      inspected.session.events.map((event) => event.sequence),
+      Array.from({ length: 20 }, (_, index) => index + 2)
+    );
+    assert.strictEqual(inspected.session.eventPage.returned, 20);
+    assert.strictEqual(inspected.session.eventPage.omittedBeforeSequence, 1);
+    assert.ok(Buffer.byteLength(JSON.stringify(inspected), "utf8") < MAX_MCP_SESSION_RESPONSE_BYTES);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("campaign result-window continuation equals one uninterrupted shared run", async () => {
   const split = project();
   const full = project();
@@ -133,6 +195,9 @@ test("campaign result-window continuation equals one uninterrupted shared run", 
     assert.strictEqual(first.session.status, "paused");
     assert.strictEqual(first.campaign.windows, 1);
     assert.strictEqual(first.campaign.unusedStates, 1_000 - first.session.statesExplored);
+    assertWindowCost(first.campaign.latestWindow.cost);
+    assert.ok(first.campaign.latestWindow.cost.passes.length > 0);
+    const firstWindowCost = structuredClone(first.campaign.latestWindow.cost);
     await assert.rejects(
       () => continueSearchSession({
         file: split.file,
@@ -168,6 +233,20 @@ test("campaign result-window continuation equals one uninterrupted shared run", 
     assert.ok(resumed.campaign.spend.currentDiskBytes > 0);
     assert.strictEqual(resumed.campaign.latestWindow.reportId, resumed.session.latestReportId);
     assert.strictEqual(resumed.campaign.latestWindow.checkpointId, resumed.session.latestCheckpointId);
+    assertWindowCost(resumed.campaign.latestWindow.cost);
+    assert.ok(resumed.campaign.latestWindow.cost.passes.length > 0);
+    assert.ok(Buffer.byteLength(JSON.stringify(resumed), "utf8") <= MAX_MCP_SESSION_RESPONSE_BYTES);
+    const inspected = await inspectSearchSession({
+      file: split.file,
+      sessionCapability: first.sessionCapability,
+    });
+    assert.deepStrictEqual(inspected.campaign.latestWindow.cost, resumed.campaign.latestWindow.cost);
+    const sessionDirectory = path.join(split.root, ".inkcheck", "sessions");
+    const metadata = JSON.parse(fs.readFileSync(path.join(sessionDirectory, fs.readdirSync(sessionDirectory)[0]), "utf8"));
+    const completedAllocations = metadata.campaign.ledger.allocations.filter((allocation) => allocation.status === "completed");
+    assert.strictEqual(completedAllocations.length, 2);
+    assert.deepStrictEqual(completedAllocations[0].provenance.cost, firstWindowCost);
+    for (const allocation of completedAllocations) assertWindowCost(allocation.provenance.cost);
     assert.strictEqual(resumed.nextOperation.tool, "continue_campaign");
   } finally {
     fs.rmSync(split.root, { recursive: true, force: true });
@@ -219,10 +298,11 @@ test("protected long-tail work runs an independent portfolio and preserves the e
     ]);
     const observability = continued.campaign.latestWindow.observability;
     assert.strictEqual(observability.schemaVersion, 1);
+    assert.deepStrictEqual(observability.campaignNewYield, continued.campaign.latestWindow.yield);
     for (const key of ["authoredCoverage", "critical", "intent", "terminalVariants"]) {
       assert.strictEqual(
         observability.observedYield[key],
-        continued.campaign.latestWindow.yield[key] + observability.rediscoveredYield[key]
+        observability.campaignNewYield[key] + observability.rediscoveredYield[key]
       );
     }
     assert.strictEqual(observability.discoverySpacing.scope, "report_meaningful_events");
@@ -232,6 +312,10 @@ test("protected long-tail work runs an independent portfolio and preserves the e
     assert.ok(continued.campaign.decision.longTailShadow.signals.discoverySpacing);
     assert.strictEqual(continued.campaign.decision.longTailShadow.liveEffect, false);
     assert.ok(continued.campaign.spend.states > baseStates);
+    assertWindowCost(continued.campaign.latestWindow.cost);
+    assert.deepStrictEqual(continued.campaign.latestWindow.cost.passes, []);
+    assert.ok(continued.campaign.latestWindow.cost.phases.replayScoringMs > 0);
+    assert.ok(Buffer.byteLength(JSON.stringify(continued), "utf8") <= MAX_MCP_SESSION_RESPONSE_BYTES);
 
     const child = await openSessionReport({
       file,
@@ -243,22 +327,45 @@ test("protected long-tail work runs an independent portfolio and preserves the e
     assert.strictEqual(child.report.effectiveConfiguration.concurrencyMode, "auto");
     assert.strictEqual(child.report.explore.limits.seed, continued.campaign.latestWindow.partition.seed);
 
-    const metadata = JSON.parse(fs.readFileSync(
-      path.join(root, ".inkcheck", "sessions", fs.readdirSync(path.join(root, ".inkcheck", "sessions"))[0]),
-      "utf8"
-    ));
+    const sessionDirectory = path.join(root, ".inkcheck", "sessions");
+    const sessionPath = path.join(sessionDirectory, fs.readdirSync(sessionDirectory)[0]);
+    const metadata = JSON.parse(fs.readFileSync(sessionPath, "utf8"));
     assert.strictEqual(metadata.latestCheckpointId, baseCheckpointId);
     assert.strictEqual(metadata.campaign.ledger.allocations.at(-1).provenance.checkpointId, undefined);
+    assert.deepStrictEqual(
+      metadata.campaign.ledger.allocations.at(-1).provenance.cost,
+      continued.campaign.latestWindow.cost
+    );
+
+    // Legacy schema-v5 ledgers had the same four observability fields but did
+    // not spell out campaign-new yield. Reading derives it; the next mutation
+    // rewrites the exact current shape without changing the session schema.
+    delete metadata.campaign.ledger.allocations.at(-1).observability.campaignNewYield;
+    metadata.campaign.digest = campaignLedgerDigest(metadata.campaign.ledger);
+    fs.writeFileSync(sessionPath, JSON.stringify(metadata));
+    const legacyInspected = await inspectSearchSession({
+      file,
+      sessionCapability: started.sessionCapability,
+    });
+    assert.deepStrictEqual(
+      legacyInspected.campaign.latestWindow.observability.campaignNewYield,
+      legacyInspected.campaign.latestWindow.yield
+    );
+    assert.deepStrictEqual(legacyInspected.campaign.latestWindow.cost, continued.campaign.latestWindow.cost);
 
     const resumedBase = await continueCampaign({
       file,
       sessionCapability: started.sessionCapability,
-      revision: continued.session.revision,
+      revision: legacyInspected.session.revision,
     });
     assert.strictEqual(resumedBase.campaign.latestWindow.purpose, "typical");
     assert.ok(resumedBase.session.statesExplored > baseStates);
     assert.notStrictEqual(resumedBase.session.latestReportId, baseReportId);
     assert.strictEqual(resumedBase.session.recoverable, true);
+    const migrated = JSON.parse(fs.readFileSync(sessionPath, "utf8"));
+    for (const allocation of migrated.campaign.ledger.allocations.filter((item) => item.observability)) {
+      assert.deepStrictEqual(allocation.observability.campaignNewYield, allocation.yield);
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -356,6 +463,8 @@ test("approved-goal campaigns accept additive children without changing the exac
     const inspected = await inspectSearchSession({ file, sessionCapability: started.sessionCapability });
     assert.strictEqual(inspected.campaign.spend.states, started.session.statesExplored);
     assert.strictEqual(inspected.campaign.latestWindow.purpose, "approved_goal");
+    assertWindowCost(inspected.campaign.latestWindow.cost);
+    assert.ok(inspected.campaign.latestWindow.cost.phases.replayScoringMs > 0);
     const repeated = await addSessionGoal({
       file,
       sessionCapability: started.sessionCapability,
@@ -409,6 +518,8 @@ test("runtime-assertion campaign children deduplicate yield and preserve broad Q
     assert.strictEqual(first.session.budget.directed.granted, 20);
     const firstInspect = await inspectSearchSession({ file, sessionCapability: started.sessionCapability });
     assert.strictEqual(firstInspect.campaign.latestWindow.purpose, "assertion");
+    assertWindowCost(firstInspect.campaign.latestWindow.cost);
+    assert.ok(firstInspect.campaign.latestWindow.cost.phases.replayScoringMs > 0);
     const sessionPath = path.join(root, ".inkcheck", "sessions", fs.readdirSync(path.join(root, ".inkcheck", "sessions"))[0]);
     const firstLedger = JSON.parse(fs.readFileSync(sessionPath, "utf8")).campaign.ledger;
     assert.ok(firstLedger.allocations.at(-1).yield.critical > 0);
@@ -426,6 +537,7 @@ test("runtime-assertion campaign children deduplicate yield and preserve broad Q
     assert.strictEqual(second.session.budget.directed.granted, 40);
     assert.strictEqual(secondInspect.campaign.spend.states, started.session.statesExplored);
     assert.strictEqual(secondInspect.campaign.unusedStates, 1_000 - started.session.statesExplored);
+    assertWindowCost(secondInspect.campaign.latestWindow.cost);
     const report = await openReportArtifact(root, second.assertionReportId);
     assert.strictEqual(report.report.effectiveConfiguration.executionScope, "assertion-probe");
   } finally {
@@ -520,9 +632,17 @@ test("a state-limited base campaign accepts an additive assertion child", async 
   }
 });
 
-test("campaign policies are bounded by the durable metadata window quota", async () => {
+test("campaign policies reserve worst-case durable space for every telemetry window", async () => {
   const { root, file } = project();
   try {
+    assert.strictEqual(MAX_MCP_CAMPAIGN_COST_PASSES, 5);
+    assert.ok(MAX_MCP_CAMPAIGN_GENERATED_COST_BYTES <= MAX_MCP_CAMPAIGN_COST_BYTES);
+    assert.ok(MAX_MCP_CAMPAIGN_GENERATED_ALLOCATION_BYTES <= MAX_MCP_CAMPAIGN_WINDOW_STORAGE_BYTES);
+    assert.ok(MAX_MCP_CAMPAIGN_COST_BYTES < MAX_MCP_SESSION_RESPONSE_BYTES);
+    assert.strictEqual(
+      MAX_MCP_CAMPAIGN_WINDOW_INCREMENT_BYTES - MAX_MCP_CAMPAIGN_WINDOW_STORAGE_BYTES,
+      8 * 1024
+    );
     await assert.rejects(
       () => startCampaign({
         file,
@@ -538,6 +658,57 @@ test("campaign policies are bounded by the durable metadata window quota", async
       /more than 1024 durable windows/
     );
     assert.strictEqual(fs.existsSync(path.join(root, ".inkcheck", "sessions")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("campaign checks exact durable capacity before executing the next telemetry window", async () => {
+  const { root, file } = project();
+  try {
+    const started = await startCampaign({
+      file,
+      intent: "balanced",
+      totalStates: 1_000,
+      windowStates: 73,
+      maxElapsedSeconds: 60,
+      maxDiskMb: 100,
+      longTailShare: 0,
+      minLongTailProbes: 0,
+      regressionReserveStates: 0,
+    });
+    const sessionDirectory = path.join(root, ".inkcheck", "sessions");
+    const sessionPath = path.join(sessionDirectory, fs.readdirSync(sessionDirectory)[0]);
+    const value = JSON.parse(fs.readFileSync(sessionPath, "utf8"));
+    const template = value.campaign.ledger.allocations[0];
+    while (true) {
+      value.campaign.digest = campaignLedgerDigest(value.campaign.ledger);
+      const serialized = `${JSON.stringify(value, null, 2)}\n`;
+      if (Buffer.byteLength(serialized, "utf8") + MAX_MCP_CAMPAIGN_WINDOW_INCREMENT_BYTES
+        > MAX_MCP_SESSION_BYTES) {
+        fs.writeFileSync(sessionPath, serialized);
+        break;
+      }
+      const sequence = value.campaign.ledger.allocations.length + 1;
+      value.campaign.ledger.allocations.push({
+        ...structuredClone(template),
+        sequence,
+        id: `run-${String(sequence).padStart(24, "0")}`,
+        consumedStates: 0,
+      });
+    }
+    assert.ok(fs.statSync(sessionPath).size <= MAX_MCP_SESSION_BYTES);
+    const reportDirectory = path.join(root, ".inkcheck", "reports");
+    const reportsBefore = fs.readdirSync(reportDirectory).sort();
+    await assert.rejects(
+      () => continueCampaign({
+        file,
+        sessionCapability: started.sessionCapability,
+        revision: started.session.revision,
+      }),
+      /insufficient bounded metadata space/
+    );
+    assert.deepStrictEqual(fs.readdirSync(reportDirectory).sort(), reportsBefore);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -563,6 +734,8 @@ test("campaign metadata is private, restart-safe, provenance-bound, and digest c
     const directory = path.join(root, ".inkcheck", "sessions");
     const metadata = path.join(directory, fs.readdirSync(directory)[0]);
     const raw = fs.readFileSync(metadata, "utf8");
+    assert.ok(Buffer.byteLength(raw, "utf8") <= MAX_MCP_SESSION_BYTES);
+    assert.ok(Buffer.byteLength(JSON.stringify(inspected), "utf8") <= MAX_MCP_SESSION_RESPONSE_BYTES);
     assert.strictEqual(raw.includes(started.sessionCapability), false);
     for (const sensitive of ["stateJson", "choicePath", "transcript", "variables", "frontier", "nodes"]) {
       assert.strictEqual(raw.includes(sensitive), false, `campaign metadata leaked ${sensitive}`);
@@ -572,8 +745,34 @@ test("campaign metadata is private, restart-safe, provenance-bound, and digest c
     assert.match(allocation.provenance.reportId, /^report-[0-9a-f]{24}$/);
     assert.match(allocation.provenance.checkpointId, /^checkpoint-[0-9a-f]{24}$/);
     assert.ok(allocation.provenance.elapsedMs >= 0);
-    value.campaign.ledger.spend.states += 1;
+    assertWindowCost(allocation.provenance.cost);
+    const originalValue = structuredClone(value);
+    const pass = allocation.provenance.cost.passes[0];
+    allocation.provenance.cost.passes = Array.from({ length: MAX_MCP_CAMPAIGN_COST_PASSES }, (_, index) => ({
+      ...structuredClone(pass),
+      pass: `pass-${index}`.padEnd(128, "x"),
+    }));
+    value.campaign.digest = campaignLedgerDigest(value.campaign.ledger);
     fs.writeFileSync(metadata, JSON.stringify(value));
+    const widest = await inspectSearchSession({
+      file,
+      sessionCapability: started.sessionCapability,
+      findingLimit: 100,
+    });
+    assert.strictEqual(widest.campaign.latestWindow.cost.passes.length, MAX_MCP_CAMPAIGN_COST_PASSES);
+    assert.ok(Buffer.byteLength(JSON.stringify(widest), "utf8") <= MAX_MCP_SESSION_RESPONSE_BYTES);
+
+    const missingCostReport = structuredClone(value);
+    delete missingCostReport.campaign.ledger.allocations[0].provenance.reportId;
+    missingCostReport.campaign.digest = campaignLedgerDigest(missingCostReport.campaign.ledger);
+    fs.writeFileSync(metadata, JSON.stringify(missingCostReport));
+    await assert.rejects(
+      () => inspectSearchSession({ file, sessionCapability: started.sessionCapability }),
+      /missing required bounded fields/
+    );
+
+    originalValue.campaign.ledger.spend.states += 1;
+    fs.writeFileSync(metadata, JSON.stringify(originalValue));
     await assert.rejects(
       () => inspectSearchSession({ file, sessionCapability: started.sessionCapability }),
       /missing required bounded fields/
