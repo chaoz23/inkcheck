@@ -78,6 +78,12 @@ const {
   validateAssertions,
 } = require("../dist/assertions");
 const { parseGoalDefinitions } = require("../dist/goals");
+const {
+  LONG_RUN_PHASES,
+  MAX_LONG_RUN_BYTE_MILLISECONDS_DIGITS,
+  MAX_LONG_RUN_TELEMETRY_PASSES,
+  validateLongRunTelemetryV1,
+} = require("../dist/long-run-telemetry");
 
 const MANOR = path.join(__dirname, "..", "examples", "manor.ink");
 const BROKEN = path.join(__dirname, "..", "examples", "broken.ink");
@@ -101,6 +107,77 @@ const INSPECT_PROJECT = path.join(__dirname, "fixtures", "inspect", "project.ink
 const DUPLICATE_CHOICE_TEXT = path.join(__dirname, "fixtures", "duplicate-choice-text.ink");
 const ASSERTION_STORY = path.join(__dirname, "fixtures", "assertions.ink");
 const POLICY_LATE_ERROR = path.join(__dirname, "fixtures", "policy-late-error.ink");
+
+const LONG_RUN_PHASE_FIELDS = [
+  "setupMs",
+  "compilationMs",
+  "sourceScanMs",
+  "searchActiveMs",
+  "minimumReproductionMs",
+  "checkpointWriteMs",
+  "checkpointReopenMs",
+  "replayScoringMs",
+  "reportEnrichmentMs",
+  "reportWriteMs",
+  "finalizationMs",
+];
+
+function assertLongRunTelemetryShape(value) {
+  assert.deepStrictEqual(validateLongRunTelemetryV1(value), value);
+  assert.strictEqual(value.schemaVersion, 1);
+  assert.deepStrictEqual(Object.keys(value.phases), LONG_RUN_PHASE_FIELDS);
+  assert.strictEqual(LONG_RUN_PHASES.length, LONG_RUN_PHASE_FIELDS.length);
+  assert.ok(Object.values(value.phases).every(
+    (duration) => Number.isSafeInteger(duration) && duration >= 0
+  ));
+  assert.ok(value.passes.length <= MAX_LONG_RUN_TELEMETRY_PASSES);
+  for (const pass of value.passes) {
+    assert.strictEqual(pass.schemaVersion, 1);
+    assert.strictEqual(pass.logicalRetained.basis, "deterministic_logical_accounted_bytes");
+    assert.strictEqual(pass.logicalRetained.divisor, 2);
+    assert.strictEqual(pass.processRss.basis, "observed_process_rss_bytes");
+    assert.strictEqual(pass.processRss.divisor, 2);
+    for (const integral of [pass.logicalRetained, pass.processRss]) {
+      assert.match(integral.byteMillisecondsTimesTwo, /^(0|[1-9]\d*)$/);
+      assert.ok(
+        integral.byteMillisecondsTimesTwo.length <= MAX_LONG_RUN_BYTE_MILLISECONDS_DIGITS
+      );
+    }
+    assert.deepStrictEqual(Object.keys(pass.yield), [
+      "critical",
+      "intent",
+      "authoredCoverage",
+      "visibleOutcomes",
+      "semanticTransitions",
+      "terminalVariants",
+    ]);
+    if (pass.samplesObserved <= 1) {
+      assert.strictEqual(pass.transitions, 0);
+      assert.strictEqual(pass.searchActiveMs, 0);
+      assert.strictEqual(pass.logicalRetained.byteMillisecondsTimesTwo, "0");
+      assert.strictEqual(pass.processRss.byteMillisecondsTimesTwo, "0");
+      for (const rate of Object.values(pass.yield)) {
+        assert.deepStrictEqual(rate, {
+          identities: 0,
+          identitiesPerMillionTransitions: null,
+          identitiesPerSearchActiveMinute: null,
+          identitiesPerRetainedGiBMinute: null,
+        });
+      }
+    }
+  }
+  assert.doesNotMatch(
+    JSON.stringify(value),
+    /story\.ink|choice|finalText|variable|message|sourceLocation|checkpoint-|report-/i
+  );
+  return value;
+}
+
+function withoutLongRunTelemetry(value) {
+  const projected = structuredClone(value);
+  if (projected.resources) delete projected.resources.longRunTelemetry;
+  return projected;
+}
 
 function runCheckpointSaveWorker(projectRoot, maxStates = 20, environment = {}) {
   return new Promise((resolve, reject) => {
@@ -1292,6 +1369,8 @@ test("versioned JSON reports have stable identities and exact replay instruction
   const compileFailure = JSON.parse(broken.stdout);
   assert.strictEqual(compileFailure.schemaVersion, 1);
   assert.ok(compileFailure.compile.issues.every((issue) => issue.id && issue.kind));
+  assert.strictEqual("resources" in compileFailure, false,
+    "compile failures keep their existing machine envelope without search-cost claims");
 });
 
 test("approximate runtime locations do not change stable finding identity across search strategies", async () => {
@@ -1412,7 +1491,15 @@ test("CLI saves, lists, and reopens source-bound report artifacts by stable ID",
     const withoutReference = structuredClone(saved);
     delete withoutReference.artifact;
     delete withoutReference.resources.ownerAccounting.reportFinalization;
-    assert.deepStrictEqual(withoutReference, ordinaryOutput);
+    assert.deepStrictEqual(
+      withoutLongRunTelemetry(withoutReference),
+      withoutLongRunTelemetry(ordinaryOutput),
+      "observational phase/resource timings stay outside stable report content"
+    );
+    assertLongRunTelemetryShape(ordinaryOutput.resources.longRunTelemetry);
+    assertLongRunTelemetryShape(saved.resources.longRunTelemetry);
+    assert.strictEqual(ordinaryOutput.resources.longRunTelemetry.phases.reportWriteMs, 0);
+    assert.strictEqual(ordinaryOutput.resources.longRunTelemetry.phases.minimumReproductionMs, 0);
 
     const repeated = spawnSync(process.execPath, [...args, "--save-report"], { cwd: tmp, encoding: "utf8" });
     const repeatedOutput = JSON.parse(repeated.stdout);
@@ -4326,6 +4413,35 @@ test("--next follows recommendations to an exhaustive result", () => {
   assert.match(md.stdout, /Suggested next run \(deepen\)/);
 });
 
+test("--next isolates reset shared counters in telemetry-only run segments", () => {
+  const proc = spawnSync(
+    process.execPath,
+    [
+      CLI,
+      DEEP_CHAIN,
+      "--max-states",
+      "500",
+      "--search=shared",
+      "--no-min-repro",
+      "--next",
+      "--json",
+    ],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(proc.status, 0, proc.stderr);
+  const out = JSON.parse(proc.stdout);
+  assert.strictEqual(out.runs.length, 2);
+  const telemetry = assertLongRunTelemetryShape(out.resources.longRunTelemetry);
+  assert.deepStrictEqual(
+    telemetry.passes.map((pass) => pass.pass.split("/")[0]),
+    ["run=1", "run=2"],
+    "fresh --next searches keep reset engine counters in distinct telemetry-only pass segments"
+  );
+  assert.ok(telemetry.passes.every((pass) => pass.samplesObserved > 0));
+  assert.ok(out.explore.passes.every((pass) => !pass.pass.startsWith("run=")),
+    "telemetry run qualifiers do not change canonical report pass labels");
+});
+
 // The memory guard stops cleanly before a V8 OOM (which cannot be caught
 // after the fact) and keeps whatever was found so far.
 test("memory guard stops each engine early and reports truncatedBy.memory", async () => {
@@ -4797,7 +4913,7 @@ test("CLI separates reproducible story randomness from the search sampling seed"
   assert.match(invalid.stderr, /requires an integer from 1 to 2147483646/);
 });
 
-test("CLI streams versioned progress to stderr without changing the final JSON report", () => {
+test("CLI progress mode leaves canonical JSON fields unchanged while telemetry stays collected", () => {
   const plain = spawnSync(process.execPath, [CLI, CLEAN_BRANCH, "--max-states", "100", "--json"], {
     encoding: "utf8",
   });
@@ -4807,15 +4923,27 @@ test("CLI streams versioned progress to stderr without changing the final JSON r
     { encoding: "utf8" }
   );
   assert.strictEqual(streamed.status, plain.status);
-  assert.strictEqual(streamed.stdout, plain.stdout);
+  const plainOutput = JSON.parse(plain.stdout);
+  const streamedOutput = JSON.parse(streamed.stdout);
+  assert.deepStrictEqual(
+    withoutLongRunTelemetry(streamedOutput),
+    withoutLongRunTelemetry(plainOutput)
+  );
   const disabled = spawnSync(
     process.execPath,
     [CLI, CLEAN_BRANCH, "--max-states", "100", "--json", "--progress=off"],
     { encoding: "utf8" }
   );
-  assert.strictEqual(disabled.stdout, plain.stdout);
+  const disabledOutput = JSON.parse(disabled.stdout);
+  assert.deepStrictEqual(
+    withoutLongRunTelemetry(disabledOutput),
+    withoutLongRunTelemetry(plainOutput)
+  );
   assert.strictEqual(disabled.stderr, plain.stderr);
-  const report = JSON.parse(streamed.stdout);
+  assertLongRunTelemetryShape(plainOutput.resources.longRunTelemetry);
+  assertLongRunTelemetryShape(streamedOutput.resources.longRunTelemetry);
+  assertLongRunTelemetryShape(disabledOutput.resources.longRunTelemetry);
+  const report = streamedOutput;
   const events = streamed.stderr.trim().split("\n").map((line) => JSON.parse(line));
   assert.ok(events.length >= 7);
   assert.ok(events.every((event) => event.schemaVersion === 1));
@@ -4847,15 +4975,20 @@ test("CLI streams versioned progress to stderr without changing the final JSON r
   assert.strictEqual(final.outcome, "clean");
 });
 
-test("shared CLI progress emits bounded resource observations without changing canonical JSON", () => {
+test("shared CLI progress and terminal costs share observations without changing canonical JSON", () => {
   const story = path.join(SEARCH_FIXTURES, "low-dedup-wide.ink");
   const args = [CLI, story, "--search=shared", "--max-states", "100", "--no-min-repro", "--json"];
   const plain = spawnSync(process.execPath, [...args, "--progress=off"], { encoding: "utf8" });
   const streamed = spawnSync(process.execPath, [...args, "--progress=ndjson"], { encoding: "utf8" });
   assert.strictEqual(streamed.status, plain.status, streamed.stderr);
-  assert.strictEqual(streamed.stdout, plain.stdout);
+  const plainReport = JSON.parse(plain.stdout);
+  const streamedReport = JSON.parse(streamed.stdout);
+  assert.deepStrictEqual(
+    withoutLongRunTelemetry(streamedReport),
+    withoutLongRunTelemetry(plainReport)
+  );
 
-  const report = JSON.parse(streamed.stdout);
+  const report = streamedReport;
   const events = streamed.stderr.trim().split("\n").map((line) => JSON.parse(line));
   const resources = events.filter((event) => event.type === "resource");
   assert.ok(resources.length >= 1);
@@ -4880,8 +5013,129 @@ test("shared CLI progress emits bounded resource observations without changing c
         .sharedOwnerAccounting.current.observabilityLedger.logicalUtf8Bytes
   );
   assert.deepStrictEqual(events.at(-1).sharedObservability, terminalObservation);
+  const costs = assertLongRunTelemetryShape(report.resources.longRunTelemetry);
+  const plainCosts = assertLongRunTelemetryShape(plainReport.resources.longRunTelemetry);
+  assert.deepStrictEqual(
+    costs.passes.map((pass) => pass.pass),
+    report.explore.passes
+      .filter((pass) => pass.sharedObservability?.schemaVersion === 2)
+      .map((pass) => pass.pass),
+    "ordinary runs retain the engine's canonical pass labels"
+  );
+  assert.ok(plainCosts.passes.every((pass) => pass.samplesObserved > 0));
+  assert.strictEqual(plain.stderr, "", "progress off suppresses stderr resource events");
+  assert.strictEqual(
+    costs.passes.reduce((total, pass) => total + pass.samplesObserved, 0),
+    resources.length,
+    "live progress and terminal cost use the same observations"
+  );
   assert.doesNotMatch(JSON.stringify(resources), /path_code|wide tree leaf|"Left"|"Center"|"Right"/i);
   assert.doesNotMatch(streamed.stdout, /heapUsedBytes|heapTotalBytes|rssBytes|unattributedBytes/);
+});
+
+test("non-JSON outputs keep live resource progress without constructing long-run telemetry", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-no-hidden-telemetry-"));
+  const preload = path.join(tmp, "reject-long-run-observation.cjs");
+  const telemetryModule = path.join(ROOT, "dist", "long-run-telemetry.js");
+  fs.writeFileSync(preload, `
+    "use strict";
+    const telemetry = require(${JSON.stringify(telemetryModule)});
+    telemetry.createLongRunTelemetryRecorder = () => {
+      throw new Error("non-JSON output constructed long-run telemetry");
+    };
+  `);
+  try {
+    for (const [label, output] of [
+      ["default", []],
+      ["human", ["--human"]],
+      ["markdown", ["--markdown"]],
+    ]) {
+      const proc = spawnSync(process.execPath, [
+        "--require",
+        preload,
+        CLI,
+        CLEAN_BRANCH,
+        "--search=shared",
+        "--max-states",
+        "100",
+        "--no-min-repro",
+        "--progress=ndjson",
+        ...output,
+      ], { encoding: "utf8" });
+      assert.strictEqual(proc.status, 0, `${label}: ${proc.stderr}`);
+      const events = proc.stderr.trim().split("\n").map((line) => JSON.parse(line));
+      assert.ok(events.some((event) => event.type === "resource"), label);
+      assert.doesNotMatch(proc.stdout, /longRunTelemetry/, label);
+    }
+
+    for (const [label, command] of [
+      ["inspect JSON", [CLI, "inspect", CLEAN_BRANCH, "--json"]],
+      ["profile JSON", [CLI, CLEAN_BRANCH, "--profile", "--json"]],
+    ]) {
+      const proc = spawnSync(
+        process.execPath,
+        ["--require", preload, ...command],
+        { encoding: "utf8" }
+      );
+      assert.strictEqual(proc.status, 0, `${label}: ${proc.stderr}`);
+      assert.doesNotThrow(() => JSON.parse(proc.stdout), label);
+      assert.doesNotMatch(proc.stdout, /longRunTelemetry/, label);
+    }
+
+    const machineControl = spawnSync(process.execPath, [
+      "--require",
+      preload,
+      CLI,
+      CLEAN_BRANCH,
+      "--search=shared",
+      "--max-states",
+      "100",
+      "--no-min-repro",
+      "--json",
+      "--progress=off",
+    ], { encoding: "utf8" });
+    assert.notStrictEqual(machineControl.status, 0);
+    assert.match(machineControl.stderr, /constructed long-run telemetry/,
+      "the preload proves machine intent still reaches the guarded constructor");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("CLI long-run observation intervals stay monotonic across wall-clock regressions", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkcheck-monotonic-telemetry-"));
+  const preload = path.join(tmp, "regress-wall-clock.cjs");
+  fs.writeFileSync(preload, `
+    "use strict";
+    let wallClock = 2_000_000_000_000;
+    Date.now = () => (wallClock -= 1_000);
+  `);
+  try {
+    const proc = spawnSync(process.execPath, [
+      CLI,
+      LOW_DEDUP_WIDE,
+      "--search=shared",
+      "--max-states",
+      "100",
+      "--no-min-repro",
+      "--json",
+      "--progress=off",
+    ], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --require=${preload}`.trim(),
+      },
+    });
+    assert.strictEqual(proc.status, 0, proc.stderr);
+    assert.strictEqual(proc.stderr, "");
+    const telemetry = assertLongRunTelemetryShape(
+      JSON.parse(proc.stdout).resources.longRunTelemetry
+    );
+    assert.ok(telemetry.passes.some((pass) => pass.samplesObserved > 0));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("CLI resource progress stays global across additive shared-goal work", () => {
@@ -5004,7 +5258,32 @@ test("--json-stream emits replayable evidence and a bounded terminal summary", (
   );
   assert.ok(terminal.resources.observedProcessAtTermination.heapUsedBytes > 0);
   assert.ok(terminal.resources.observedProcessAtTermination.rssBytes > 0);
+  const telemetry = assertLongRunTelemetryShape(terminal.resources.longRunTelemetry);
+  assert.ok(telemetry.passes.length > 0);
+  assert.ok(telemetry.passes.every((pass) => pass.samplesObserved > 0));
+  assert.strictEqual(telemetry.phases.minimumReproductionMs, 0);
+  assert.strictEqual(telemetry.phases.checkpointWriteMs, 0);
+  assert.strictEqual(telemetry.phases.checkpointReopenMs, 0);
+  assert.strictEqual(telemetry.phases.replayScoringMs, 0);
+  assert.strictEqual(telemetry.phases.reportEnrichmentMs, 0);
+  assert.strictEqual(telemetry.phases.reportWriteMs, 0);
+  assert.strictEqual(proc.stderr, "", "progress off suppresses stderr resource events");
   assert.ok(Buffer.byteLength(JSON.stringify(terminal)) < 16 * 1024);
+});
+
+test("--json-stream compile failures keep the documented terminal exception", () => {
+  const proc = spawnSync(
+    process.execPath,
+    [CLI, BROKEN, "--concurrency", "1", "--json-stream", "--progress=off"],
+    { encoding: "utf8" }
+  );
+  assert.strictEqual(proc.status, 1, proc.stderr);
+  assert.strictEqual(proc.stderr, "");
+  const events = proc.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepStrictEqual(events.map((event) => event.type), ["run_start", "run_end"]);
+  assert.strictEqual(events.at(-1).compile.success, false);
+  assert.strictEqual(events.at(-1).explore, null);
+  assert.strictEqual("resources" in events.at(-1), false);
 });
 
 test("--json-stream samples process memory at termination independently of progress mode", () => {
@@ -5031,6 +5310,7 @@ test("--json-stream samples process memory at termination independently of progr
 
   try {
     const observations = [];
+    const callCounts = [];
     for (const progress of ["off", "ndjson"]) {
       const callsPath = path.join(tmp, `${progress}-calls.txt`);
       const proc = spawnSync(process.execPath, [
@@ -5047,6 +5327,8 @@ test("--json-stream samples process memory at termination independently of progr
       const observed = terminal.resources.observedProcessAtTermination;
       assert.strictEqual(observed.heapUsedBytes, heapUsedBase + memoryCalls, progress);
       observations.push(observed);
+      callCounts.push(memoryCalls);
+      assertLongRunTelemetryShape(terminal.resources.longRunTelemetry);
 
       if (progress === "ndjson") {
         const progressEvents = proc.stderr.trim().split("\n").map((line) => JSON.parse(line));
@@ -5054,6 +5336,10 @@ test("--json-stream samples process memory at termination independently of progr
         assert.ok(progressEvents.some((event) => event.type === "phase_end" && event.phase === "min_repro"));
       }
     }
+    assert.ok(observations.every((observation) => observation.rssBytes > 0));
+    assert.strictEqual(callCounts[0], callCounts[1],
+      "progress off keeps the same shared-observation collector installed");
+    assert.ok(callCounts[0] > 1, "the run observed more than its terminal-only sample");
     assert.strictEqual(
       observations[0].comparedLogicalAccountedBytes,
       observations[1].comparedLogicalAccountedBytes
@@ -5092,6 +5378,7 @@ test("--json-stream stays discoverable across machine and agent front doors", ()
   const tool = JSON.parse(fs.readFileSync(path.join(ROOT, "tool.json"), "utf8"));
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
   const rootSkill = fs.readFileSync(path.join(ROOT, "SKILL.md"), "utf8");
+  const evidenceDocs = fs.readFileSync(path.join(ROOT, "docs", "evidence-ndjson.md"), "utf8");
   const streamFlag = tool.cli.flags.find((entry) => entry.flag === "--json-stream");
 
   assert.strictEqual(tool.cli.streamingMachineOutput, "--json-stream");
@@ -5102,6 +5389,14 @@ test("--json-stream stays discoverable across machine and agent front doors", ()
   assert.match(tool.cli.jsonSchema.evidenceStream, /run_end/);
   assert.match(readme, /--human\|--json\|--json-stream\|--markdown/);
   assert.match(rootSkill, /--json-stream --concurrency 1/);
+  assert.match(evidenceDocs, /resources\.longRunTelemetry/);
+  assert.match(evidenceDocs, /retained-GiB-minute/);
+  assert.match(evidenceDocs, /there is no weighted usefulness score/);
+  assert.match(evidenceDocs, /--progress=off` still emits no stderr `resource` events/);
+  assert.match(evidenceDocs, /`passes: \[\]` means that no compatible V2 shared live interval was observed/);
+  assert.match(evidenceDocs, /saved checkpoint\/report payloads, their stable IDs, and finding identities exclude/);
+  assert.match(evidenceDocs, /ends before recorder finalization\/validation, terminal process-memory observation/);
+  assert.match(evidenceDocs, /Exact-head matched calibration is therefore required/);
 });
 
 test("ordinary CLI runs bypass benchmark evidence extraction", () => {
@@ -5261,6 +5556,10 @@ test("NDJSON progress contract docs stay linked and privacy-focused", () => {
   assert.match(docs, /"type":"discovery"/);
   assert.match(docs, /"type":"resource"/);
   assert.match(docs, /"type":"run_end"/);
+  assert.match(docs, /--progress=off` writes no progress or `resource` events to stderr/);
+  assert.match(docs, /resources\.longRunTelemetry/);
+  assert.match(docs, /Human, Markdown, and default output may still request live resource progress/);
+  assert.match(docs, /near-boundary memory\/time stop can shift/);
   assert.match(docs, /must not contain:[\s\S]*story source text[\s\S]*choice prose[\s\S]*variable names or values/);
 });
 
@@ -5293,7 +5592,7 @@ test("shared observability contract is linked, packaged, and explicit about its 
   assert.match(docs, /checkpoint save\/reopen, epoch lifecycle, memory\/time pressure[\s\S]*do not emit those boundaries yet/);
   assert.match(docs, /never produces a weighted usefulness score/);
   assert.match(docs, /Owner attribution remains incomplete/);
-  assert.match(docs, /does not add kth-event milestones, campaign-new versus rediscovered identities[\s\S]*retained-GiB-minute rates/);
+  assert.match(docs, /pass ledger itself does not add kth-event milestones, campaign-new versus rediscovered identities[\s\S]*outer `LongRunTelemetryV1` lifecycle record[\s\S]*retained-GiB-minute rates/);
   assert.match(docs, /excluded from shared checkpoints, canonical JSON reports/);
   assert.match(docs, /runWideState/);
   assert.match(docs, /never rewrites the nested pass-local sample/);

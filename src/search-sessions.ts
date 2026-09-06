@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import { performance } from "node:perf_hooks";
 import { recommendNextRun } from "./advice";
 import {
   artifactProjectRoot,
@@ -46,6 +47,13 @@ import { buildReportEnvelope, type EffectiveReportConfiguration } from "./report
 import { createResourceGuards } from "./resource-guards";
 import { runtimeFindingIdentity } from "./runtime-identity";
 import {
+  createLongRunTelemetryRecorder,
+  MAX_LONG_RUN_BYTE_MILLISECONDS_DIGITS,
+  validateLongRunTelemetryV1,
+  type LongRunPhaseV1,
+  type LongRunTelemetryV1,
+} from "./long-run-telemetry";
+import {
   allocateDirectedCampaignRun,
   campaignLedgerDigest,
   commitCampaignRun,
@@ -90,6 +98,206 @@ import {
 import { VERSION } from "./version";
 
 const CAMPAIGN_RUN_MEMORY_SHARE = 0.9;
+/** Current campaign engines produce at most five distinct portfolio passes per window. */
+export const MAX_MCP_CAMPAIGN_COST_PASSES = 5;
+/** Larger than the maximum lexical JSON width of five core-schema pass records. */
+export const MAX_MCP_CAMPAIGN_COST_BYTES = 12 * 1024;
+/** One complete cost-bearing allocation receives this much of the durable session envelope. */
+export const MAX_MCP_CAMPAIGN_WINDOW_STORAGE_BYTES = 24 * 1024;
+/** Adds an 8 KiB reserve for one bounded event/goal summary and record bookkeeping. */
+export const MAX_MCP_CAMPAIGN_WINDOW_INCREMENT_BYTES = 32 * 1024;
+
+function maximumGeneratedCampaignCostShape(): Record<string, unknown> {
+  const integer = Number.MAX_SAFE_INTEGER;
+  const rate = {
+    identities: integer,
+    identitiesPerMillionTransitions: Number.MAX_VALUE,
+    identitiesPerSearchActiveMinute: Number.MAX_VALUE,
+    identitiesPerRetainedGiBMinute: Number.MAX_VALUE,
+  };
+  const yieldRates = {
+    critical: rate,
+    intent: rate,
+    authoredCoverage: rate,
+    visibleOutcomes: rate,
+    semanticTransitions: rate,
+    terminalVariants: rate,
+  };
+  const integral = "9".repeat(MAX_LONG_RUN_BYTE_MILLISECONDS_DIGITS);
+  const passes = Array.from({ length: MAX_MCP_CAMPAIGN_COST_PASSES }, (_, index) => ({
+    schemaVersion: 1,
+    pass: `p${index}`.padEnd(128, "x"),
+    samplesObserved: integer,
+    firstObservationElapsedMs: integer,
+    lastObservationElapsedMs: integer,
+    searchActiveMs: integer,
+    transitions: integer,
+    logicalRetained: { basis: "deterministic_logical_accounted_bytes", byteMillisecondsTimesTwo: integral, divisor: 2 },
+    processRss: { basis: "observed_process_rss_bytes", byteMillisecondsTimesTwo: integral, divisor: 2 },
+    yield: yieldRates,
+  }));
+  return {
+    schemaVersion: 1,
+    phases: {
+      schemaVersion: 1,
+      setupMs: integer,
+      compilationMs: integer,
+      sourceScanMs: integer,
+      searchActiveMs: integer,
+      minimumReproductionMs: integer,
+      checkpointWriteMs: integer,
+      checkpointReopenMs: integer,
+      replayScoringMs: integer,
+      reportEnrichmentMs: integer,
+      reportWriteMs: integer,
+      finalizationMs: integer,
+    },
+    passes,
+  };
+}
+
+const MAXIMUM_GENERATED_CAMPAIGN_COST = maximumGeneratedCampaignCostShape();
+export const MAX_MCP_CAMPAIGN_GENERATED_COST_BYTES = Buffer.byteLength(
+  JSON.stringify(MAXIMUM_GENERATED_CAMPAIGN_COST),
+  "utf8"
+);
+if (MAX_MCP_CAMPAIGN_GENERATED_COST_BYTES > MAX_MCP_CAMPAIGN_COST_BYTES) {
+  throw new Error("campaign cost envelope is smaller than the maximum generated telemetry shape");
+}
+
+export const MAX_MCP_CAMPAIGN_GENERATED_ALLOCATION_BYTES = Buffer.byteLength(JSON.stringify({
+  campaign: { ledger: { allocations: [{
+    sequence: Number.MAX_SAFE_INTEGER,
+    id: `run-${"f".repeat(24)}`,
+    purpose: "approved_goal",
+    grantedStates: Number.MAX_SAFE_INTEGER,
+    createdAt: "9999-12-31T23:59:59.999Z",
+    reason: "x".repeat(256),
+    partition: {
+      strategy: "shared",
+      seed: Number.MAX_SAFE_INTEGER,
+      frontier: "x".repeat(256),
+      goalId: "x".repeat(256),
+      maxDepth: Number.MAX_SAFE_INTEGER,
+    },
+    status: "completed",
+    consumedStates: Number.MAX_SAFE_INTEGER,
+    completedAt: "9999-12-31T23:59:59.999Z",
+    stopReason: "x".repeat(256),
+    yield: {
+      critical: Number.MAX_SAFE_INTEGER,
+      intent: Number.MAX_SAFE_INTEGER,
+      authoredCoverage: Number.MAX_SAFE_INTEGER,
+      terminalVariants: Number.MAX_SAFE_INTEGER,
+    },
+    observability: {
+      schemaVersion: 1,
+      observedYield: {
+        critical: Number.MAX_SAFE_INTEGER,
+        intent: Number.MAX_SAFE_INTEGER,
+        authoredCoverage: Number.MAX_SAFE_INTEGER,
+        terminalVariants: Number.MAX_SAFE_INTEGER,
+      },
+      campaignNewYield: {
+        critical: Number.MAX_SAFE_INTEGER,
+        intent: Number.MAX_SAFE_INTEGER,
+        authoredCoverage: Number.MAX_SAFE_INTEGER,
+        terminalVariants: Number.MAX_SAFE_INTEGER,
+      },
+      rediscoveredYield: {
+        critical: Number.MAX_SAFE_INTEGER,
+        intent: Number.MAX_SAFE_INTEGER,
+        authoredCoverage: Number.MAX_SAFE_INTEGER,
+        terminalVariants: Number.MAX_SAFE_INTEGER,
+      },
+      discoverySpacing: {
+        scope: "report_meaningful_events",
+        discoveryEvents: Number.MAX_SAFE_INTEGER,
+        firstDiscoveryAtState: Number.MAX_SAFE_INTEGER,
+        lastDiscoveryAtState: Number.MAX_SAFE_INTEGER,
+        statesSinceLastDiscovery: Number.MAX_SAFE_INTEGER,
+        latestDiscoveryGap: Number.MAX_SAFE_INTEGER,
+        longestObservedDiscoveryGap: Number.MAX_SAFE_INTEGER,
+      },
+    },
+    provenance: {
+      reportId: `report-${"f".repeat(24)}`,
+      checkpointId: `checkpoint-${"f".repeat(24)}`,
+      elapsedMs: Number.MAX_SAFE_INTEGER,
+      peakMemoryBytes: Number.MAX_SAFE_INTEGER,
+      diskBytes: Number.MAX_SAFE_INTEGER,
+      cost: MAXIMUM_GENERATED_CAMPAIGN_COST,
+    },
+  }] } },
+}, null, 2), "utf8");
+if (MAX_MCP_CAMPAIGN_GENERATED_ALLOCATION_BYTES > MAX_MCP_CAMPAIGN_WINDOW_STORAGE_BYTES) {
+  throw new Error("campaign allocation envelope is smaller than the maximum generated telemetry allocation");
+}
+
+interface LongRunWindowCapture {
+  recorder: ReturnType<typeof createLongRunTelemetryRecorder>;
+  startedAtMs: number;
+}
+
+function createLongRunWindowCapture(): LongRunWindowCapture {
+  const nowMs = (): number => Math.floor(performance.now());
+  return { recorder: createLongRunTelemetryRecorder({ nowMs }), startedAtMs: nowMs() };
+}
+
+function observeLongRunWindow(
+  capture: LongRunWindowCapture,
+  observation: Parameters<LongRunWindowCapture["recorder"]["observeShared"]>[0]
+): void {
+  capture.recorder.observeShared(observation, Math.max(0, Math.floor(performance.now()) - capture.startedAtMs));
+}
+
+function measureLongRunPhase<T>(
+  capture: LongRunWindowCapture | undefined,
+  phase: LongRunPhaseV1,
+  operation: () => T
+): T {
+  if (!capture) return operation();
+  capture.recorder.startPhase(phase);
+  try {
+    return operation();
+  } finally {
+    capture.recorder.endPhase(phase);
+  }
+}
+
+async function measureLongRunPhaseAsync<T>(
+  capture: LongRunWindowCapture | undefined,
+  phase: LongRunPhaseV1,
+  operation: () => Promise<T>
+): Promise<T> {
+  if (!capture) return operation();
+  capture.recorder.startPhase(phase);
+  try {
+    return await operation();
+  } finally {
+    capture.recorder.endPhase(phase);
+  }
+}
+
+function finalizeLongRunWindow(capture: LongRunWindowCapture, result: ExploreResult): LongRunTelemetryV1 {
+  return boundedWindowCost(capture.recorder.finalize(result.passes ?? []));
+}
+
+function boundedWindowCost(value: unknown): LongRunTelemetryV1 {
+  const cost = validateLongRunTelemetryV1(value);
+  if (cost.passes.length > MAX_MCP_CAMPAIGN_COST_PASSES) {
+    throw new RangeError(`campaign window cost must contain at most ${MAX_MCP_CAMPAIGN_COST_PASSES} pass records`);
+  }
+  if (Buffer.byteLength(JSON.stringify(cost), "utf8") > MAX_MCP_CAMPAIGN_COST_BYTES) {
+    throw new RangeError(`campaign window cost exceeds its ${MAX_MCP_CAMPAIGN_COST_BYTES}-byte response envelope`);
+  }
+  return cost;
+}
+
+function requiredWindowCost(run: { cost?: LongRunTelemetryV1 }): LongRunTelemetryV1 {
+  if (!run.cost) throw new Error("campaign window completed without bounded pass-local cost telemetry");
+  return boundedWindowCost(run.cost);
+}
 
 function campaignRunMemoryMb(maxMemoryBytes: number): number {
   return Math.max(1, Math.floor(maxMemoryBytes / (1024 * 1024) * CAMPAIGN_RUN_MEMORY_SHARE));
@@ -218,7 +426,10 @@ export interface SearchSessionResponse {
       stopReason: string;
       partition: CampaignLedger["allocations"][number]["partition"];
       yield: NonNullable<CampaignLedger["allocations"][number]["yield"]>;
-      observability?: NonNullable<CampaignLedger["allocations"][number]["observability"]>;
+      observability?: NonNullable<CampaignLedger["allocations"][number]["observability"]> & {
+        campaignNewYield: NonNullable<CampaignLedger["allocations"][number]["yield"]>;
+      };
+      cost?: LongRunTelemetryV1;
     };
   };
   savedFindings: FindingPage;
@@ -249,6 +460,7 @@ interface SearchBindings {
 
 interface WindowBindings extends SearchBindings {
   commitMemoryBytes?: number;
+  longRunWindow?: LongRunWindowCapture;
 }
 
 interface FindingOptions {
@@ -458,6 +670,123 @@ function relativeEntrypoint(projectRoot: string, entrypoint: string): string {
   return relative.split(path.sep).join("/");
 }
 
+const CAMPAIGN_YIELD_KEYS = ["authoredCoverage", "critical", "intent", "terminalVariants"] as const;
+type CampaignYieldRecord = NonNullable<CampaignAllocation["yield"]>;
+
+function boundedCampaignYield(value: unknown): CampaignYieldRecord | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.keys(value).sort().join(",") !== [...CAMPAIGN_YIELD_KEYS].sort().join(",")) return undefined;
+  const record = value as Partial<CampaignYieldRecord>;
+  if (!CAMPAIGN_YIELD_KEYS.every((key) => Number.isSafeInteger(record[key]) && (record[key] as number) >= 0)) {
+    return undefined;
+  }
+  return record as CampaignYieldRecord;
+}
+
+function validDiscoverySpacing(value: unknown, consumedStates: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const spacing = value as {
+    scope?: unknown;
+    discoveryEvents?: unknown;
+    firstDiscoveryAtState?: unknown;
+    lastDiscoveryAtState?: unknown;
+    statesSinceLastDiscovery?: unknown;
+    latestDiscoveryGap?: unknown;
+    longestObservedDiscoveryGap?: unknown;
+  };
+  const expectedKeys = [
+    "discoveryEvents", "firstDiscoveryAtState", "lastDiscoveryAtState", "latestDiscoveryGap",
+    "longestObservedDiscoveryGap", "scope", "statesSinceLastDiscovery",
+  ].sort().join(",");
+  if (Object.keys(spacing).sort().join(",") !== expectedKeys
+    || spacing.scope !== "report_meaningful_events"
+    || !Number.isSafeInteger(spacing.discoveryEvents) || (spacing.discoveryEvents as number) < 0) return false;
+  const nullableLocations = [
+    spacing.firstDiscoveryAtState,
+    spacing.lastDiscoveryAtState,
+    spacing.statesSinceLastDiscovery,
+    spacing.latestDiscoveryGap,
+    spacing.longestObservedDiscoveryGap,
+  ];
+  if (!nullableLocations.every((item) => item === null || (Number.isSafeInteger(item) && (item as number) >= 0))) {
+    return false;
+  }
+  const eventLocations = [
+    spacing.firstDiscoveryAtState,
+    spacing.lastDiscoveryAtState,
+    spacing.statesSinceLastDiscovery,
+  ];
+  if (spacing.discoveryEvents === 0 && eventLocations.some((item) => item !== null)) return false;
+  if ((spacing.discoveryEvents as number) > 0) {
+    if (!Number.isSafeInteger(consumedStates) || (consumedStates as number) < 0
+      || eventLocations.some((item) => item === null)
+      || (spacing.firstDiscoveryAtState as number) > (spacing.lastDiscoveryAtState as number)
+      || (spacing.lastDiscoveryAtState as number) + (spacing.statesSinceLastDiscovery as number) !== consumedStates) {
+      return false;
+    }
+  }
+  return spacing.latestDiscoveryGap === null || spacing.longestObservedDiscoveryGap === null
+    || (spacing.latestDiscoveryGap as number) <= (spacing.longestObservedDiscoveryGap as number);
+}
+
+function campaignAllocationStorageBytes(allocation: unknown): number {
+  const envelope = { campaign: { ledger: { allocations: [allocation] } } };
+  return Buffer.byteLength(JSON.stringify(envelope, null, 2), "utf8");
+}
+
+function validCampaignTelemetryExtensions(ledger: unknown): boolean {
+  if (!ledger || typeof ledger !== "object" || !Array.isArray((ledger as { allocations?: unknown }).allocations)) return false;
+  try {
+    for (const rawAllocation of (ledger as { allocations: unknown[] }).allocations) {
+      if (!rawAllocation || typeof rawAllocation !== "object" || Array.isArray(rawAllocation)) return false;
+      const allocation = rawAllocation as {
+        consumedStates?: unknown;
+        yield?: unknown;
+        observability?: unknown;
+        provenance?: { cost?: unknown; reportId?: unknown };
+      };
+      if (allocation.provenance?.cost !== undefined) {
+        if (!allocation.provenance || typeof allocation.provenance !== "object"
+          || Array.isArray(allocation.provenance)
+          || typeof allocation.provenance.reportId !== "string"
+          || !/^report-[0-9a-f]{24}$/.test(allocation.provenance.reportId)) return false;
+        const cost = boundedWindowCost(allocation.provenance.cost);
+        if (cost.passes.length > MAX_MCP_CAMPAIGN_COST_PASSES
+          || campaignAllocationStorageBytes(rawAllocation) > MAX_MCP_CAMPAIGN_WINDOW_STORAGE_BYTES) return false;
+      }
+      if (allocation.observability === undefined) continue;
+      if (!allocation.observability || typeof allocation.observability !== "object"
+        || Array.isArray(allocation.observability)) return false;
+      const observability = allocation.observability as {
+        schemaVersion?: unknown;
+        observedYield?: unknown;
+        campaignNewYield?: unknown;
+        rediscoveredYield?: unknown;
+        discoverySpacing?: unknown;
+      };
+      const keys = Object.keys(observability).sort().join(",");
+      const legacyKeys = ["discoverySpacing", "observedYield", "rediscoveredYield", "schemaVersion"].sort().join(",");
+      const currentKeys = ["campaignNewYield", "discoverySpacing", "observedYield", "rediscoveredYield", "schemaVersion"].sort().join(",");
+      if (observability.schemaVersion !== 1 || (keys !== legacyKeys && keys !== currentKeys)) return false;
+      const allocationYield = boundedCampaignYield(allocation.yield);
+      const observedYield = boundedCampaignYield(observability.observedYield);
+      const campaignNewYield = observability.campaignNewYield === undefined
+        ? allocationYield
+        : boundedCampaignYield(observability.campaignNewYield);
+      const rediscoveredYield = boundedCampaignYield(observability.rediscoveredYield);
+      if (!allocationYield || !observedYield || !campaignNewYield || !rediscoveredYield
+        || !validDiscoverySpacing(observability.discoverySpacing, allocation.consumedStates)) return false;
+      for (const key of CAMPAIGN_YIELD_KEYS) {
+        if (campaignNewYield[key] !== allocationYield[key]
+          || campaignNewYield[key] + rediscoveredYield[key] !== observedYield[key]) return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function parseRecord(raw: string, expectedHash?: string): SearchSessionRecord {
   if (Buffer.byteLength(raw, "utf8") > MAX_MCP_SESSION_BYTES) {
     throw new Error(`search session metadata exceeds the ${MAX_MCP_SESSION_BYTES}-byte limit`);
@@ -568,6 +897,7 @@ function parseRecord(raw: string, expectedHash?: string): SearchSessionRecord {
     && campaign.ledger.bindingFingerprint.length <= 256
     && ["active", "complete", "invalidated"].includes(campaign.ledger.status)
     && Array.isArray(campaign.ledger.allocations)
+    && validCampaignTelemetryExtensions(campaign.ledger)
     && Array.isArray(campaign.ledger.events));
   if (record.artifactType !== "mcp-search-session" || typeof record.inkcheckVersion !== "string"
     || typeof record.capabilityHash !== "string" || !/^[0-9a-f]{64}$/.test(record.capabilityHash)
@@ -646,7 +976,10 @@ function writeRecord(projectRoot: string, record: SearchSessionRecord, expectedR
   } else if (fs.existsSync(destination)) {
     throw new Error("search session capability collision; retry start_search");
   }
-  const serialized = `${JSON.stringify(record, null, 2)}\n`;
+  const normalizedRecord = record.campaign
+    ? { ...record, campaign: persistedCampaign(record.campaign.ledger) }
+    : record;
+  const serialized = `${JSON.stringify(normalizedRecord, null, 2)}\n`;
   if (Buffer.byteLength(serialized, "utf8") > MAX_MCP_SESSION_BYTES) {
     throw new Error(`search session metadata exceeds the ${MAX_MCP_SESSION_BYTES}-byte limit`);
   }
@@ -704,7 +1037,38 @@ function appendEvent(record: SearchSessionRecord, event: Omit<SearchSessionEvent
 }
 
 function persistedCampaign(ledger: CampaignLedger): SearchSessionRecord["campaign"] {
-  return { ledger, digest: campaignLedgerDigest(ledger) };
+  const normalized = structuredClone(ledger);
+  for (const allocation of normalized.allocations) {
+    if (!allocation.observability) continue;
+    const legacy = allocation.observability as typeof allocation.observability & {
+      campaignNewYield?: CampaignYieldRecord;
+    };
+    if (legacy.campaignNewYield !== undefined || !allocation.yield) continue;
+    allocation.observability = {
+      schemaVersion: 1,
+      observedYield: structuredClone(legacy.observedYield),
+      campaignNewYield: structuredClone(allocation.yield),
+      rediscoveredYield: structuredClone(legacy.rediscoveredYield),
+      discoverySpacing: structuredClone(legacy.discoverySpacing),
+    };
+  }
+  for (const allocation of normalized.allocations) {
+    if (!allocation.provenance?.cost) continue;
+    allocation.provenance.cost = boundedWindowCost(allocation.provenance.cost);
+    if (campaignAllocationStorageBytes(allocation) > MAX_MCP_CAMPAIGN_WINDOW_STORAGE_BYTES) {
+      throw new RangeError(`campaign cost-bearing allocation exceeds its ${MAX_MCP_CAMPAIGN_WINDOW_STORAGE_BYTES}-byte storage envelope`);
+    }
+  }
+  return { ledger: normalized, digest: campaignLedgerDigest(normalized) };
+}
+
+function ensureCampaignTelemetryCapacity(record: SearchSessionRecord): void {
+  if (!record.campaign) return;
+  const normalized = { ...record, campaign: persistedCampaign(record.campaign.ledger) };
+  const currentBytes = Buffer.byteLength(`${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  if (currentBytes + MAX_MCP_CAMPAIGN_WINDOW_INCREMENT_BYTES > MAX_MCP_SESSION_BYTES) {
+    throw new RangeError("campaign session has insufficient bounded metadata space for another telemetry-bearing window; start a new campaign");
+  }
 }
 
 function findingCounts(result: ExploreResult): SearchSessionRecord["findings"] {
@@ -765,10 +1129,44 @@ function campaignDiskBytes(
   return files.reduce((total, file) => total + (fs.existsSync(file) ? fs.statSync(file).size : 0), 0);
 }
 
+function copyCampaignYield(value?: CampaignAllocation["yield"]): CampaignYieldRecord {
+  return {
+    critical: value?.critical ?? 0,
+    intent: value?.intent ?? 0,
+    authoredCoverage: value?.authoredCoverage ?? 0,
+    terminalVariants: value?.terminalVariants ?? 0,
+  };
+}
+
+function campaignObservabilitySummary(
+  allocation: CampaignAllocation
+): (NonNullable<CampaignAllocation["observability"]> & { campaignNewYield: CampaignYieldRecord }) | undefined {
+  if (!allocation.observability) return undefined;
+  const legacy = allocation.observability as typeof allocation.observability & {
+    campaignNewYield?: CampaignYieldRecord;
+  };
+  return {
+    schemaVersion: 1,
+    observedYield: copyCampaignYield(legacy.observedYield),
+    campaignNewYield: copyCampaignYield(legacy.campaignNewYield ?? allocation.yield),
+    rediscoveredYield: copyCampaignYield(legacy.rediscoveredYield),
+    discoverySpacing: {
+      scope: "report_meaningful_events",
+      discoveryEvents: legacy.discoverySpacing.discoveryEvents,
+      firstDiscoveryAtState: legacy.discoverySpacing.firstDiscoveryAtState,
+      lastDiscoveryAtState: legacy.discoverySpacing.lastDiscoveryAtState,
+      statesSinceLastDiscovery: legacy.discoverySpacing.statesSinceLastDiscovery,
+      latestDiscoveryGap: legacy.discoverySpacing.latestDiscoveryGap,
+      longestObservedDiscoveryGap: legacy.discoverySpacing.longestObservedDiscoveryGap,
+    },
+  };
+}
+
 function campaignSummary(record: SearchSessionRecord): SearchSessionResponse["campaign"] {
   if (!record.campaign) return undefined;
   const ledger = record.campaign.ledger;
   const latest = [...ledger.allocations].reverse().find((allocation) => allocation.provenance);
+  const latestObservability = latest ? campaignObservabilitySummary(latest) : undefined;
   return {
     campaignId: ledger.campaignId,
     intent: ledger.policy.intent,
@@ -787,8 +1185,9 @@ function campaignSummary(record: SearchSessionRecord): SearchSessionResponse["ca
         ...(latest.provenance.checkpointId ? { checkpointId: latest.provenance.checkpointId } : {}),
         stopReason: latest.stopReason ?? "window_complete",
         partition: latest.partition,
-        yield: latest.yield ?? { critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: 0 },
-        ...(latest.observability ? { observability: latest.observability } : {}),
+        yield: copyCampaignYield(latest.yield),
+        ...(latestObservability ? { observability: latestObservability } : {}),
+        ...(latest.provenance.cost ? { cost: validateLongRunTelemetryV1(latest.provenance.cost) } : {}),
       },
     } : {}),
   };
@@ -809,22 +1208,25 @@ async function runWindow(
   peakMemoryBytes: number;
   artifactBytes: number;
   diskLimited: boolean;
+  cost?: LongRunTelemetryV1;
 }> {
   const startedAtMs = Date.now();
-  const compiled = await compile(file);
+  const compiled = await measureLongRunPhaseAsync(bindings.longRunWindow, "compilation", () => compile(file));
   if (!compiled.success || !compiled.storyJson) {
     throw new Error(`Compilation failed; run compile_story and fix ${compiled.issues.length} issue(s) before starting search`);
   }
   const { storyJson, ...compileReport } = compiled;
-  const knots = scanKnots(file);
-  const externals = scanExternals(file);
-  const semantics = scanStorySemantics(file);
+  const { knots, externals, semantics } = measureLongRunPhase(bindings.longRunWindow, "source_scan", () => ({
+    knots: scanKnots(file),
+    externals: scanExternals(file),
+    semantics: scanStorySemantics(file),
+  }));
   const guards = createResourceGuards({
     maxMemoryMb: bindings.maxMemoryMb,
     maxTimeMs: bindings.maxTimeMs,
     startedAtMs,
   });
-  const run = exploreSharedResumable(storyJson, knots, externals, {
+  const run = measureLongRunPhase(bindings.longRunWindow, "search_active", () => exploreSharedResumable(storyJson, knots, externals, {
     maxDepth: bindings.maxDepth,
     maxStates: totalGrant,
     seed: bindings.seed,
@@ -837,7 +1239,13 @@ async function runWindow(
     randomnessDetected: semantics.usesRandomness,
     sharedMaxPendingStates: bindings.maxFrontierStates,
     sharedMaxPendingBytes: bindings.maxFrontierMb === undefined ? undefined : bindings.maxFrontierMb * 1024 * 1024,
-  }, checkpoint);
+    ...(bindings.longRunWindow ? {
+      onSharedObservability: (observation) => {
+        if (observation.schemaVersion === 2) observeLongRunWindow(bindings.longRunWindow!, observation);
+      },
+    } : {}),
+  }, checkpoint));
+  bindings.longRunWindow?.recorder.startPhase("finalization");
   let checkpointCandidate = run.checkpoint;
   let memoryLimited = bindings.commitMemoryBytes !== undefined
     && guards.peakMemoryBytes() > bindings.commitMemoryBytes;
@@ -848,7 +1256,8 @@ async function runWindow(
     run.result.truncatedBy.memory = true;
     run.result.truncatedBy.maxStates = false;
   }
-  classifyUnvisitedKnots(run.result, scanInboundDiverts(file));
+  const inboundDiverts = measureLongRunPhase(bindings.longRunWindow, "source_scan", () => scanInboundDiverts(file));
+  classifyUnvisitedKnots(run.result, inboundDiverts);
   const configuration: EffectiveReportConfiguration = {
     search: "shared",
     minRepro: false,
@@ -860,13 +1269,14 @@ async function runWindow(
     goalMaxStates: 0,
     storySeed: bindings.storySeed ?? DEFAULT_STORY_SEED,
   };
-  const report = buildReportEnvelope({
+  const shapeProfile = measureLongRunPhase(bindings.longRunWindow, "source_scan", () => scanShapeProfile(file));
+  const report = measureLongRunPhase(bindings.longRunWindow, "report_enrichment", () => buildReportEnvelope({
     compile: compileReport,
     explore: run.result,
-    nextRun: recommendNextRun(run.result, scanShapeProfile(file)),
+    nextRun: recommendNextRun(run.result, shapeProfile),
     storyJson,
     configuration,
-  });
+  }));
   const relative = relativeEntrypoint(projectRoot, file);
   const estimate = (value: unknown): number => Buffer.byteLength(`${JSON.stringify(value, null, 2)}\n`, "utf8");
   const reportEstimate = estimate({
@@ -884,7 +1294,8 @@ async function runWindow(
   if (bindings.maxArtifactBytes !== undefined && reportEstimate > bindings.maxArtifactBytes) {
     throw new Error("campaign disk ceiling cannot retain the next partial report; raise maxDiskMb before starting more work");
   }
-  const reportReference = saveReportArtifact(projectRoot, file, report);
+  const reportReference = measureLongRunPhase(bindings.longRunWindow, "report_write", () =>
+    saveReportArtifact(projectRoot, file, report));
   const reportBytes = fs.statSync(path.resolve(projectRoot, reportReference.path)).size;
   let diskLimited = false;
   if (bindings.commitMemoryBytes !== undefined && guards.peakMemoryBytes() > bindings.commitMemoryBytes) {
@@ -899,9 +1310,10 @@ async function runWindow(
       diskLimited = true;
     } else {
       try {
-        persistedCheckpointReference = await saveCheckpointArtifact(projectRoot, file, checkpointCandidate, {
-          maxCheckpointBytes: availableBytes,
-        });
+        persistedCheckpointReference = await measureLongRunPhaseAsync(bindings.longRunWindow, "checkpoint_write", () =>
+          saveCheckpointArtifact(projectRoot, file, checkpointCandidate!, {
+            maxCheckpointBytes: availableBytes,
+          }));
       } catch (error) {
         if (!(error instanceof CheckpointSizeLimitError)) throw error;
         diskLimited = true;
@@ -917,6 +1329,8 @@ async function runWindow(
   const artifactBytes = [reportReference.path, persistedCheckpointReference?.path]
     .filter((value): value is string => Boolean(value))
     .reduce((total, relative) => total + fs.statSync(path.resolve(projectRoot, relative)).size, 0);
+  bindings.longRunWindow?.recorder.endPhase("finalization");
+  const cost = bindings.longRunWindow ? finalizeLongRunWindow(bindings.longRunWindow, run.result) : undefined;
   return {
     result: run.result,
     reportId: reportReference.id,
@@ -926,6 +1340,7 @@ async function runWindow(
     peakMemoryBytes,
     artifactBytes,
     diskLimited,
+    ...(cost ? { cost } : {}),
   };
 }
 
@@ -944,20 +1359,23 @@ async function runIndependentLongTailWindow(
   artifactBytes: number;
 }> {
   const startedAtMs = Date.now();
-  const compiled = await compile(file);
+  const compiled = await measureLongRunPhaseAsync(bindings.longRunWindow, "compilation", () => compile(file));
   if (!compiled.success || !compiled.storyJson) {
     throw new Error(`Compilation failed; run compile_story and fix ${compiled.issues.length} issue(s) before starting search`);
   }
   const { storyJson, ...compileReport } = compiled;
-  const knots = scanKnots(file);
-  const externals = scanExternals(file);
-  const semantics = scanStorySemantics(file);
+  const { knots, externals, semantics } = measureLongRunPhase(bindings.longRunWindow, "source_scan", () => ({
+    knots: scanKnots(file),
+    externals: scanExternals(file),
+    semantics: scanStorySemantics(file),
+  }));
   const guards = createResourceGuards({
     maxMemoryMb: bindings.maxMemoryMb,
     maxTimeMs: bindings.maxTimeMs,
     startedAtMs,
   });
-  const result = explorePortfolioPilotHandoffConcurrent(storyJson, knots, externals, {
+  const result = measureLongRunPhase(bindings.longRunWindow, "search_active", () =>
+    explorePortfolioPilotHandoffConcurrent(storyJson, knots, externals, {
     maxDepth: partition.maxDepth ?? bindings.maxDepth ?? DEFAULT_MAX_DEPTH,
     maxStates: grantedStates,
     seed: partition.seed ?? bindings.seed ?? 1,
@@ -973,8 +1391,15 @@ async function runIndependentLongTailWindow(
     randomnessDetected: semantics.usesRandomness,
     sharedMaxPendingStates: bindings.maxFrontierStates,
     sharedMaxPendingBytes: bindings.maxFrontierMb === undefined ? undefined : bindings.maxFrontierMb * 1024 * 1024,
-  });
-  classifyUnvisitedKnots(result, scanInboundDiverts(file));
+    ...(bindings.longRunWindow ? {
+      onSharedObservability: (observation) => {
+        if (observation.schemaVersion === 2) observeLongRunWindow(bindings.longRunWindow!, observation);
+      },
+    } : {}),
+  }));
+  bindings.longRunWindow?.recorder.startPhase("finalization");
+  const inboundDiverts = measureLongRunPhase(bindings.longRunWindow, "source_scan", () => scanInboundDiverts(file));
+  classifyUnvisitedKnots(result, inboundDiverts);
   const configuration: EffectiveReportConfiguration = {
     search: "portfolio",
     concurrency: 4,
@@ -989,13 +1414,14 @@ async function runIndependentLongTailWindow(
     goalMaxStates: 0,
     storySeed: bindings.storySeed ?? DEFAULT_STORY_SEED,
   };
-  const report = buildReportEnvelope({
+  const shapeProfile = measureLongRunPhase(bindings.longRunWindow, "source_scan", () => scanShapeProfile(file));
+  const report = measureLongRunPhase(bindings.longRunWindow, "report_enrichment", () => buildReportEnvelope({
     compile: compileReport,
     explore: result,
-    nextRun: recommendNextRun(result, scanShapeProfile(file)),
+    nextRun: recommendNextRun(result, shapeProfile),
     storyJson,
     configuration,
-  });
+  }));
   const estimatedArtifactBytes = Buffer.byteLength(JSON.stringify({
     artifactSchemaVersion: 1,
     artifactType: "report",
@@ -1011,7 +1437,8 @@ async function runIndependentLongTailWindow(
   if (bindings.maxArtifactBytes !== undefined && estimatedArtifactBytes > bindings.maxArtifactBytes) {
     throw new Error("campaign disk ceiling cannot retain the independent long-tail report; raise maxDiskMb before starting more work");
   }
-  const reportReference = saveReportArtifact(projectRoot, file, report);
+  const reportReference = measureLongRunPhase(bindings.longRunWindow, "report_write", () =>
+    saveReportArtifact(projectRoot, file, report));
   const artifactBytes = fs.statSync(path.resolve(projectRoot, reportReference.path)).size;
   return {
     result,
@@ -1032,7 +1459,7 @@ function eventCursor(record: SearchSessionRecord, sequence: number): string {
 }
 
 function eventSequence(record: SearchSessionRecord, since?: string): number {
-  if (!since) return Math.max(record.droppedEventCount, record.droppedEventCount + record.events.length - DEFAULT_MCP_SESSION_EVENT_PAGE_SIZE);
+  if (!since) return record.droppedEventCount;
   if (!since.startsWith("session-event-cursor-")) throw new Error("invalid search-session event cursor");
   try {
     const value = JSON.parse(Buffer.from(since.slice("session-event-cursor-".length), "base64url").toString("utf8")) as {
@@ -1048,13 +1475,18 @@ function eventSequence(record: SearchSessionRecord, since?: string): number {
   }
 }
 
-function responseSession(record: SearchSessionRecord, since?: string): SearchSessionResponse["session"] {
+function responseSession(
+  record: SearchSessionRecord,
+  since?: string,
+  eventLimit = DEFAULT_MCP_SESSION_EVENT_PAGE_SIZE,
+  goalLimit = DEFAULT_MCP_SESSION_GOAL_PAGE_SIZE
+): SearchSessionResponse["session"] {
   const campaignGranted = record.totalGranted + record.directedGranted;
   const campaignConsumed = record.statesExplored + record.directedStatesExplored;
-  const afterSequence = eventSequence(record, since);
-  const events = record.events.filter((event) => event.sequence > afterSequence);
   const latestSequence = record.droppedEventCount + record.events.length;
-  const goalProbes = record.goalProbes.slice(-DEFAULT_MCP_SESSION_GOAL_PAGE_SIZE);
+  const afterSequence = Math.max(eventSequence(record, since), latestSequence - eventLimit);
+  const events = record.events.filter((event) => event.sequence > afterSequence);
+  const goalProbes = goalLimit === 0 ? [] : record.goalProbes.slice(-goalLimit);
   return {
     revision: record.revision,
     status: record.status,
@@ -1095,7 +1527,7 @@ async function sessionResponse(
   findings: FindingOptions,
   capability?: string
 ): Promise<SearchSessionResponse> {
-  const savedFindings = await listReportFindings(projectRoot, record.latestReportId, {
+  let savedFindings = await listReportFindings(projectRoot, record.latestReportId, {
     limit: findings.findingLimit,
     cursor: findings.findingCursor,
   });
@@ -1108,18 +1540,45 @@ async function sessionResponse(
       : record.campaign
         ? { tool: "start_campaign" as const, reason: `The campaign stopped at ${record.campaign.ledger.stopReason ?? record.bindingLimit ?? "a resource boundary"}; its latest partial report remains available.` }
         : { tool: "start_search" as const, reason: `The run stopped at ${record.bindingLimit ?? "a resource boundary"} without a recoverable frontier.` };
-  const response: SearchSessionResponse = {
-    schemaVersion: SEARCH_SESSION_SCHEMA_VERSION,
-    inkcheckVersion: VERSION,
-    ...(capability ? { sessionCapability: capability } : {}),
-    session: responseSession(record, findings.since),
-    ...(record.campaign ? { campaign: campaignSummary(record) } : {}),
-    savedFindings,
-    nextOperation,
+  // An explicit cursor promises every retained event after that cursor. Start
+  // with the full retained history and shrink only if the response envelope
+  // actually requires pagination. Cursor-free inspection keeps the compact
+  // default page.
+  let eventLimit = findings.since === undefined
+    ? DEFAULT_MCP_SESSION_EVENT_PAGE_SIZE
+    : record.events.length;
+  let goalLimit = DEFAULT_MCP_SESSION_GOAL_PAGE_SIZE;
+  const buildResponse = (): SearchSessionResponse => ({
+      schemaVersion: SEARCH_SESSION_SCHEMA_VERSION,
+      inkcheckVersion: VERSION,
+      ...(capability ? { sessionCapability: capability } : {}),
+      session: responseSession(record, findings.since, eventLimit, goalLimit),
+      ...(record.campaign ? { campaign: campaignSummary(record) } : {}),
+      savedFindings,
+      nextOperation,
+    });
+  let response = buildResponse();
+  const worstCaseBytes = (value: SearchSessionResponse): number => {
+    const bytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+    const cost = value.campaign?.latestWindow?.cost;
+    return cost
+      ? bytes - Buffer.byteLength(JSON.stringify(cost), "utf8") + MAX_MCP_CAMPAIGN_COST_BYTES
+      : bytes;
   };
-  const bytes = Buffer.byteLength(JSON.stringify(response), "utf8");
-  if (bytes > MAX_MCP_SESSION_RESPONSE_BYTES) {
-    throw new Error(`bounded search-session response exceeded ${MAX_MCP_SESSION_RESPONSE_BYTES} bytes`);
+  while (worstCaseBytes(response) > MAX_MCP_SESSION_RESPONSE_BYTES) {
+    if (savedFindings.findings.length > 1) {
+      savedFindings = await listReportFindings(projectRoot, record.latestReportId, {
+        limit: Math.max(1, Math.floor(savedFindings.findings.length / 2)),
+        cursor: findings.findingCursor,
+      });
+    } else if (eventLimit > 0) {
+      eventLimit = Math.floor(eventLimit / 2);
+    } else if (goalLimit > 0) {
+      goalLimit = Math.floor(goalLimit / 2);
+    } else {
+      throw new Error(`bounded search-session response exceeded ${MAX_MCP_SESSION_RESPONSE_BYTES} bytes`);
+    }
+    response = buildResponse();
   }
   return response;
 }
@@ -1258,6 +1717,7 @@ function campaignObservability(
   return {
     schemaVersion: 1,
     observedYield,
+    campaignNewYield: marginalYield,
     rediscoveredYield: {
       critical: observedYield.critical - marginalYield.critical,
       intent: observedYield.intent - marginalYield.intent,
@@ -1423,7 +1883,8 @@ export async function startCampaign(input: StartCampaignInput): Promise<SearchSe
   if (policy.typicalWindowStates > MAX_MCP_SESSION_WINDOW_STATES) {
     throw new RangeError(`campaign window must not exceed ${MAX_MCP_SESSION_WINDOW_STATES} states`);
   }
-  if (Math.ceil(policy.ceilings.totalStates / policy.typicalWindowStates) + policy.longTail.minProbes > MAX_MCP_CAMPAIGN_WINDOWS) {
+  const projectedWindows = Math.ceil(policy.ceilings.totalStates / policy.typicalWindowStates) + policy.longTail.minProbes;
+  if (projectedWindows > MAX_MCP_CAMPAIGN_WINDOWS) {
     throw new RangeError(`campaign policy may require more than ${MAX_MCP_CAMPAIGN_WINDOWS} durable windows; increase windowStates or reduce totalStates/minLongTailProbes`);
   }
   const projectRoot = artifactProjectRoot(input.file);
@@ -1445,7 +1906,11 @@ export async function startCampaign(input: StartCampaignInput): Promise<SearchSe
   });
   if (plan.action !== "allocate") throw new Error(`campaign could not allocate its first window: ${plan.reason}`);
   const remainingMs = policy.ceilings.maxElapsedMs - plan.ledger.spend.elapsedMs;
-  const run = await runWindow(projectRoot, input.file, plan.allocation.grantedStates, campaignRunBindings(input, policy, remainingMs));
+  const longRunWindow = createLongRunWindowCapture();
+  const run = await runWindow(projectRoot, input.file, plan.allocation.grantedStates, {
+    ...campaignRunBindings(input, policy, remainingMs),
+    longRunWindow,
+  });
   const completedAt = new Date().toISOString();
   const diskBytes = campaignDiskBytes(projectRoot, ledger, run.reportId, run.checkpointId);
   ledger = commitCampaignRun(plan.ledger, {
@@ -1460,6 +1925,7 @@ export async function startCampaign(input: StartCampaignInput): Promise<SearchSe
     reportId: run.reportId,
     checkpointId: run.checkpointId,
     windowElapsedMs: run.elapsedMs,
+    cost: requiredWindowCost(run),
   });
   if (!run.checkpointId) {
     ledger = finishCampaignLedger(ledger, {
@@ -1641,7 +2107,10 @@ export async function continueCampaign(input: ContinueCampaignInput): Promise<Se
     return sessionResponse(projectRoot, updated, input);
   }
   if (plan.action === "wait") throw new Error("campaign concurrency ceiling is occupied; inspect the active window before retrying");
-  const resumed = await loadCheckpointForResume(projectRoot, record.latestCheckpointId);
+  ensureCampaignTelemetryCapacity(record);
+  const longRunWindow = createLongRunWindowCapture();
+  const resumed = await measureLongRunPhaseAsync(longRunWindow, "checkpoint_reopen", () =>
+    loadCheckpointForResume(projectRoot, record.latestCheckpointId!));
   const saved = resumed.checkpoint.configuration;
   const remainingMs = Math.max(1, ledger.policy.ceilings.maxElapsedMs - plan.ledger.spend.elapsedMs);
   if (plan.allocation.purpose === "long_tail") {
@@ -1659,11 +2128,15 @@ export async function continueCampaign(input: ContinueCampaignInput): Promise<Se
         maxMemoryMb: campaignRunMemoryMb(ledger.policy.ceilings.maxMemoryBytes),
         maxTimeMs: Math.max(1, remainingMs - 100),
         maxArtifactBytes: Math.max(0, ledger.policy.ceilings.maxDiskBytes - ledger.spend.currentDiskBytes),
+        longRunWindow,
       }
     );
     const completedAt = new Date().toISOString();
     const diskBytes = campaignDiskBytes(projectRoot, plan.ledger, run.reportId);
-    const evidence = await marginalCampaignEvidence(projectRoot, ledger, run.result);
+    const evidence = await measureLongRunPhaseAsync(longRunWindow, "replay_scoring", () =>
+      marginalCampaignEvidence(projectRoot, ledger, run.result));
+    longRunWindow.recorder.endPhase("finalization");
+    const windowCost = finalizeLongRunWindow(longRunWindow, run.result);
     const completedLedger = commitCampaignRun(plan.ledger, {
       now: completedAt,
       bindingFingerprint: ledger.bindingFingerprint,
@@ -1676,6 +2149,7 @@ export async function continueCampaign(input: ContinueCampaignInput): Promise<Se
       observability: evidence.observability,
       reportId: run.reportId,
       windowElapsedMs: run.elapsedMs,
+      cost: windowCost,
     });
     const updated: SearchSessionRecord = {
       ...record,
@@ -1710,6 +2184,7 @@ export async function continueCampaign(input: ContinueCampaignInput): Promise<Se
     maxTimeMs: Math.max(1, remainingMs - 100),
     maxArtifactBytes: Math.max(0, ledger.policy.ceilings.maxDiskBytes - ledger.spend.currentDiskBytes),
     commitMemoryBytes: ledger.policy.ceilings.maxMemoryBytes,
+    longRunWindow,
   }, resumed.checkpoint);
   const completedAt = new Date().toISOString();
   const diskBytes = campaignDiskBytes(projectRoot, plan.ledger, run.reportId, run.checkpointId);
@@ -1726,6 +2201,7 @@ export async function continueCampaign(input: ContinueCampaignInput): Promise<Se
     reportId: run.reportId,
     checkpointId: run.checkpointId,
     windowElapsedMs: run.elapsedMs,
+    cost: requiredWindowCost(run),
   });
   if (!run.checkpointId) {
     completedLedger = finishCampaignLedger(completedLedger, {
@@ -1783,17 +2259,22 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
   if (record.campaign && record.campaign.ledger.policy.control.valuePreference !== "approved_goals") {
     throw new Error("campaign add_goal requires valuePreference=approved_goals so directed intent is explicit");
   }
-  const currentBase = await openReportArtifact(projectRoot, record.latestReportId);
+  if (record.campaign) ensureCampaignTelemetryCapacity(record);
+  const longRunWindow = record.campaign ? createLongRunWindowCapture() : undefined;
+  const currentBase = await measureLongRunPhaseAsync(longRunWindow, "setup", () =>
+    openReportArtifact(projectRoot, record.latestReportId));
   if (currentBase.artifact.freshness !== "current") {
     throw new Error("add_goal requires the exact source used by the session's latest base report; start a fresh search after source changes");
   }
-  const compiled = await compile(input.file);
+  const compiled = await measureLongRunPhaseAsync(longRunWindow, "compilation", () => compile(input.file));
   if (!compiled.success || !compiled.storyJson) {
     throw new Error(`Compilation failed; run compile_story and fix ${compiled.issues.length} issue(s) before adding a goal`);
   }
   const { storyJson, ...compileReport } = compiled;
-  const knots = scanKnots(input.file);
-  const externals = scanExternals(input.file);
+  const { knots, externals } = measureLongRunPhase(longRunWindow, "source_scan", () => ({
+    knots: scanKnots(input.file),
+    externals: scanExternals(input.file),
+  }));
   validateGoalsForStory(storyJson, knots, externals, goals);
   const startedAtMs = Date.now();
   const campaignAllocation = record.campaign
@@ -1815,7 +2296,7 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
     maxFrontierMb?: number | null;
   };
   const limits = baseConfiguration.limits ?? {};
-  const semantics = scanStorySemantics(input.file);
+  const semantics = measureLongRunPhase(longRunWindow, "source_scan", () => scanStorySemantics(input.file));
   const campaignRemainingMs = campaignAllocation && record.campaign
     ? Math.max(1, record.campaign.ledger.policy.ceilings.maxElapsedMs - campaignAllocation.ledger.spend.elapsedMs - 100)
     : undefined;
@@ -1824,7 +2305,7 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
     ...(campaignRemainingMs === undefined ? {} : { maxTimeMs: campaignRemainingMs }),
     startedAtMs,
   });
-  const result = exploreGoalProbe(storyJson, knots, externals, {
+  const result = measureLongRunPhase(longRunWindow, "search_active", () => exploreGoalProbe(storyJson, knots, externals, {
     maxDepth: limits.maxDepth ?? DEFAULT_MAX_DEPTH,
     seed: limits.seed,
     storySeed: limits.storySeed ?? DEFAULT_STORY_SEED,
@@ -1840,8 +2321,15 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
     sharedMaxPendingBytes: baseConfiguration.maxFrontierMb === null || baseConfiguration.maxFrontierMb === undefined
       ? undefined
       : baseConfiguration.maxFrontierMb * 1024 * 1024,
-  });
-  classifyUnvisitedKnots(result, scanInboundDiverts(input.file));
+    ...(longRunWindow ? {
+      onSharedObservability: (observation) => {
+        if (observation.schemaVersion === 2) observeLongRunWindow(longRunWindow, observation);
+      },
+    } : {}),
+  }));
+  longRunWindow?.recorder.startPhase("finalization");
+  const inboundDiverts = measureLongRunPhase(longRunWindow, "source_scan", () => scanInboundDiverts(input.file));
+  classifyUnvisitedKnots(result, inboundDiverts);
   const configuration: EffectiveReportConfiguration = {
     search: "shared",
     executionScope: "goal-probe",
@@ -1855,7 +2343,7 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
     storySeed: limits.storySeed ?? DEFAULT_STORY_SEED,
     goals,
   };
-  const report = buildReportEnvelope({
+  const report = measureLongRunPhase(longRunWindow, "report_enrichment", () => buildReportEnvelope({
     compile: compileReport,
     explore: result,
     nextRun: {
@@ -1871,8 +2359,9 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
     },
     storyJson,
     configuration,
-  });
-  const goalReport = saveReportArtifact(projectRoot, input.file, report);
+  }));
+  const goalReport = measureLongRunPhase(longRunWindow, "report_write", () =>
+    saveReportArtifact(projectRoot, input.file, report));
   const goalResult = result.goalResults?.[0];
   if (!goalResult) throw new Error("goal probe completed without a goal result");
   const goalHandle = record.campaign
@@ -1886,8 +2375,11 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
     directedConsumed: result.statesExplored,
   };
   const childYield = campaignAllocation && record.campaign
-    ? await directedCampaignYield(projectRoot, record.campaign.ledger, result)
+    ? await measureLongRunPhaseAsync(longRunWindow, "replay_scoring", () =>
+        directedCampaignYield(projectRoot, record.campaign!.ledger, result))
     : undefined;
+  longRunWindow?.recorder.endPhase("finalization");
+  const windowCost = longRunWindow ? finalizeLongRunWindow(longRunWindow, result) : undefined;
   const nextRevision = record.revision + 1;
   const updated: SearchSessionRecord = {
     ...record,
@@ -1911,6 +2403,7 @@ export async function addSessionGoal(input: AddGoalInput): Promise<AddGoalRespon
         yield: childYield,
         reportId: goalReport.id,
         windowElapsedMs: Date.now() - startedAtMs,
+        cost: requiredWindowCost({ cost: windowCost }),
       })),
     } : {}),
   };
@@ -1995,17 +2488,22 @@ export async function addCampaignAssertions(input: AddAssertionsInput): Promise<
   if (issues.length || assertions.length === 0) {
     throw new RangeError(`Invalid assertions:\n${issues.length ? issues.map((issue) => `- ${issue}`).join("\n") : "- assertions: expected at least one rule"}`);
   }
-  const currentBase = await openReportArtifact(projectRoot, record.latestReportId);
+  ensureCampaignTelemetryCapacity(record);
+  const longRunWindow = createLongRunWindowCapture();
+  const currentBase = await measureLongRunPhaseAsync(longRunWindow, "setup", () =>
+    openReportArtifact(projectRoot, record.latestReportId));
   if (currentBase.artifact.freshness !== "current") {
     throw new Error("add_assertions requires the exact source used by the campaign's latest base report; start a fresh campaign after source changes");
   }
-  const compiled = await compile(input.file);
+  const compiled = await measureLongRunPhaseAsync(longRunWindow, "compilation", () => compile(input.file));
   if (!compiled.success || !compiled.storyJson) {
     throw new Error(`Compilation failed; run compile_story and fix ${compiled.issues.length} issue(s) before adding assertions`);
   }
   const { storyJson, ...compileReport } = compiled;
-  const knots = scanKnots(input.file);
-  const externals = scanExternals(input.file);
+  const { knots, externals } = measureLongRunPhase(longRunWindow, "source_scan", () => ({
+    knots: scanKnots(input.file),
+    externals: scanExternals(input.file),
+  }));
   validateAssertionsForStory(storyJson, knots, externals, assertions);
   const baseConfiguration = currentBase.report.effectiveConfiguration as {
     limits?: { maxDepth?: number; seed?: number; storySeed?: number };
@@ -2026,14 +2524,14 @@ export async function addCampaignAssertions(input: AddAssertionsInput): Promise<
       maxDepth: limits.maxDepth ?? DEFAULT_MAX_DEPTH,
     },
   });
-  const semantics = scanStorySemantics(input.file);
+  const semantics = measureLongRunPhase(longRunWindow, "source_scan", () => scanStorySemantics(input.file));
   const remainingMs = Math.max(1, record.campaign.ledger.policy.ceilings.maxElapsedMs - allocation.ledger.spend.elapsedMs - 100);
   const guards = createResourceGuards({
     maxMemoryMb: campaignRunMemoryMb(record.campaign.ledger.policy.ceilings.maxMemoryBytes),
     maxTimeMs: remainingMs,
     startedAtMs,
   });
-  const result = exploreShared(storyJson, knots, externals, {
+  const result = measureLongRunPhase(longRunWindow, "search_active", () => exploreShared(storyJson, knots, externals, {
     maxDepth: limits.maxDepth ?? DEFAULT_MAX_DEPTH,
     maxStates: input.maxStates,
     seed: limits.seed,
@@ -2049,8 +2547,13 @@ export async function addCampaignAssertions(input: AddAssertionsInput): Promise<
     sharedMaxPendingBytes: baseConfiguration.maxFrontierMb === null || baseConfiguration.maxFrontierMb === undefined
       ? undefined
       : baseConfiguration.maxFrontierMb * 1024 * 1024,
-  });
-  classifyUnvisitedKnots(result, scanInboundDiverts(input.file));
+    onSharedObservability: (observation) => {
+      if (observation.schemaVersion === 2) observeLongRunWindow(longRunWindow, observation);
+    },
+  }));
+  longRunWindow.recorder.startPhase("finalization");
+  const inboundDiverts = measureLongRunPhase(longRunWindow, "source_scan", () => scanInboundDiverts(input.file));
+  classifyUnvisitedKnots(result, inboundDiverts);
   const configuration: EffectiveReportConfiguration = {
     search: "shared",
     executionScope: "assertion-probe",
@@ -2064,7 +2567,7 @@ export async function addCampaignAssertions(input: AddAssertionsInput): Promise<
     storySeed: limits.storySeed ?? DEFAULT_STORY_SEED,
     assertions,
   };
-  const report = buildReportEnvelope({
+  const report = measureLongRunPhase(longRunWindow, "report_enrichment", () => buildReportEnvelope({
     compile: compileReport,
     explore: result,
     nextRun: {
@@ -2076,9 +2579,13 @@ export async function addCampaignAssertions(input: AddAssertionsInput): Promise<
     },
     storyJson,
     configuration,
-  });
-  const assertionReport = saveReportArtifact(projectRoot, input.file, report);
-  const childYield = await directedCampaignYield(projectRoot, record.campaign.ledger, result);
+  }));
+  const assertionReport = measureLongRunPhase(longRunWindow, "report_write", () =>
+    saveReportArtifact(projectRoot, input.file, report));
+  const childYield = await measureLongRunPhaseAsync(longRunWindow, "replay_scoring", () =>
+    directedCampaignYield(projectRoot, record.campaign!.ledger, result));
+  longRunWindow.recorder.endPhase("finalization");
+  const windowCost = finalizeLongRunWindow(longRunWindow, result);
   const completedLedger = commitCampaignRun(allocation.ledger, {
     now: new Date().toISOString(),
     bindingFingerprint: record.campaign.ledger.bindingFingerprint,
@@ -2093,6 +2600,7 @@ export async function addCampaignAssertions(input: AddAssertionsInput): Promise<
     yield: childYield,
     reportId: assertionReport.id,
     windowElapsedMs: Date.now() - startedAtMs,
+    cost: windowCost,
   });
   const nextRevision = record.revision + 1;
   const updated: SearchSessionRecord = {
