@@ -288,7 +288,9 @@ const CHECKPOINT_ARTIFACT_V2_LIMIT_METRICS: Readonly<
   maxTotalDecodedBytes: "bytes",
 });
 
-function effectiveLimits(input: Partial<CheckpointArtifactV2Limits> | undefined): CheckpointArtifactV2Limits {
+export function resolveCheckpointArtifactV2Limits(
+  input: Partial<CheckpointArtifactV2Limits> | undefined
+): CheckpointArtifactV2Limits {
   const limits = { ...DEFAULT_CHECKPOINT_ARTIFACT_V2_LIMITS, ...input };
   for (const [name, value] of Object.entries(limits)) {
     const metric = CHECKPOINT_ARTIFACT_V2_LIMIT_METRICS[name as keyof CheckpointArtifactV2Limits];
@@ -298,7 +300,7 @@ function effectiveLimits(input: Partial<CheckpointArtifactV2Limits> | undefined)
         "resource_limit",
         "header",
         `${name} must be a positive 32-bit safe integer`,
-        value,
+        typeof value === "number" && Number.isFinite(value) ? value : undefined,
         0xffffffff,
         metric
       );
@@ -610,7 +612,7 @@ export async function writeCheckpointArtifactV2(
   let limits: CheckpointArtifactV2Limits;
   let gzipLevel: number;
   try {
-    limits = effectiveLimits(options.limits);
+    limits = resolveCheckpointArtifactV2Limits(options.limits);
     gzipLevel = options.gzipLevel ?? 1;
     if (!Number.isInteger(gzipLevel) || gzipLevel < 0 || gzipLevel > 9) {
       throw error("unsupported", "payload", "gzipLevel must be an integer from 0 through 9");
@@ -1179,7 +1181,7 @@ export async function readCheckpointArtifactV2(
 ): Promise<CheckpointArtifactV2ReadResult> {
   const reader = new BoundedReadable(source, options.signal);
   try {
-    const limits = effectiveLimits(options.limits);
+    const limits = resolveCheckpointArtifactV2Limits(options.limits);
     const frames: CheckpointArtifactV2FrameSummary[] = [];
     const components = emptyComponents();
     const expectedStarts = new Map<string, number>();

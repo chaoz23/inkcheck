@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "kind": "checkpoint_v2_promotion_evaluation",
+  "id": "checkpoint-v2-promotion-v1",
+  "compiler": {
+    "name": "inklecate",
+    "version": "1.2.1"
+  },
+  "controls": {
+    "cellOrder": [
+      "heresy2-legacy-split",
+      "heresy2-framed-split",
+      "heresy2-uninterrupted",
+      "intercept-uninterrupted",
+      "intercept-framed-split",
+      "intercept-legacy-split"
+    ],
+    "maxDepth": 100,
+    "searchSeed": 7,
+    "storySeed": 1,
+    "concurrency": 1,
+    "minimizeRepros": false,
+    "stateSensitivity": "source_semantics",
+    "loopRiskDetection": "only_without_turns_randomness_visit_counts_or_externals",
+    "maxMemoryMb": 4096,
+    "maxTimeMs": 840000,
+    "workerTimeoutMs": 900000,
+    "coordinatorMaxOldSpaceMb": 6144,
+    "storage": {
+      "maxCheckpointBytes": 536870912,
+      "maxProjectBytes": 2147483648,
+      "framedV2": {
+        "maxTotalDecodedBytes": 2147483648
+      }
+    }
+  },
+  "sources": [
+    {
+      "id": "heresy2",
+      "story": "authored/heresy2/heresy2.ink",
+      "entrypointSha256": "49db768479e523f39ae9eb838f6daa0798244b7bbe266d686a7a967ccf66f7ea",
+      "compiledStorySha256": "5c65cf077478ad70985341e564695cb8ab35af20ec574d12b517d1e18f9a4bb7",
+      "closure": {
+        "includeCount": 20,
+        "fileCount": 21,
+        "bundleSha256": "2991d13fbf2d036c9bfb5cf4207c16509dfdf77dae24fa410ace1a0d3a36b626"
+      },
+      "provenance": {
+        "license": "CC-BY-4.0",
+        "licenseFile": "authored/heresy2/LICENSE",
+        "licenseSha256": "7e7170e3cebf88a9f60c7b8421418323c09304da1af4d5e90f4da1dc1c8a2661",
+        "upstream": "randall-frank/heresy2-assets",
+        "commit": "37b8a7804217bb40a9f69f6fd9c173f2017d550e"
+      }
+    },
+    {
+      "id": "intercept",
+      "story": "authored/the-intercept/TheIntercept.ink",
+      "entrypointSha256": "1d7b5653b689a9da6801bbfaaa3fbd20b0cc47113b28bb1b1774f6cd11e9eea4",
+      "compiledStorySha256": "2a441a97a345cfc7d3c944e758949d6c3b37ccfe88a75ddad06cf3ac83a637c6",
+      "closure": {
+        "includeCount": 0,
+        "fileCount": 1,
+        "bundleSha256": "c9865a7d2d334e39b68f788f790d202a7c1fbd9acb2bf2fc54fa1a4d549db6c9"
+      },
+      "provenance": {
+        "license": "MIT",
+        "licenseFile": "authored/the-intercept/LICENSE-AND-PROVENANCE.md",
+        "licenseSha256": "4b0d7e6b2ccac7794d0705ee40a6728d664ff1cd80994b5d31077a4cde38f3da",
+        "upstream": "inkle/the-intercept",
+        "commit": "2a816b56e61ce4bf02bec1c638074645bdd871e3"
+      }
+    }
+  ],
+  "cells": [
+    {
+      "id": "heresy2-legacy-split",
+      "sourceId": "heresy2",
+      "mode": "legacy-split",
+      "baseStates": 100000,
+      "targetStates": 150000,
+      "expected": "resume_exact"
+    },
+    {
+      "id": "heresy2-framed-split",
+      "sourceId": "heresy2",
+      "mode": "framed-split",
+      "baseStates": 100000,
+      "targetStates": 150000,
+      "expected": "resume_exact"
+    },
+    {
+      "id": "heresy2-uninterrupted",
+      "sourceId": "heresy2",
+      "mode": "uninterrupted",
+      "baseStates": 100000,
+      "targetStates": 150000,
+      "expected": "endpoint"
+    },
+    {
+      "id": "intercept-uninterrupted",
+      "sourceId": "intercept",
+      "mode": "uninterrupted",
+      "baseStates": 600000,
+      "targetStates": 650000,
+      "expected": "endpoint"
+    },
+    {
+      "id": "intercept-framed-split",
+      "sourceId": "intercept",
+      "mode": "framed-split",
+      "baseStates": 600000,
+      "targetStates": 650000,
+      "expected": "resume_exact"
+    },
+    {
+      "id": "intercept-legacy-split",
+      "sourceId": "intercept",
+      "mode": "legacy-split",
+      "baseStates": 600000,
+      "targetStates": 650000,
+      "expected": "legacy_readback_resource_limit"
+    }
+  ]
+}

@@ -2945,7 +2945,27 @@ test("checkpoint publication serializes cross-process same-ID writers and recove
     }));
     fs.rmSync(artifactFile);
     fs.rmSync(manifestFile);
-    await saveCheckpointArtifact(tmp, story, checkpoint);
+    const originalCleaningWrite = fs.writeFileSync;
+    let injectedWindowsCleaningContention = false;
+    fs.writeFileSync = (candidate, ...args) => {
+      const options = args[1];
+      if (!injectedWindowsCleaningContention
+        && path.resolve(String(candidate)) === path.resolve(staleCleaning)
+        && options?.flag === "wx") {
+        injectedWindowsCleaningContention = true;
+        const error = new Error("simulated Windows delete-pending cleaning claim");
+        error.code = "EPERM";
+        throw error;
+      }
+      return originalCleaningWrite(candidate, ...args);
+    };
+    try {
+      await saveCheckpointArtifact(tmp, story, checkpoint);
+    } finally {
+      fs.writeFileSync = originalCleaningWrite;
+    }
+    assert.strictEqual(injectedWindowsCleaningContention, true,
+      "Windows EPERM while acquiring a cleaning claim is exercised as fail-closed contention");
     assert.strictEqual(fs.existsSync(staleCleaning), true,
       "a crashed cleaning owner consumes one bounded slot instead of permitting pathname reuse");
     assert.strictEqual((await openCheckpointArtifact(tmp, id)).artifact.totalGranted, 20);

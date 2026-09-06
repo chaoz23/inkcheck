@@ -97,6 +97,8 @@ test("gzip checkpoint reopen accounts existing owners without an extra payload r
     assert.strictEqual(accounting.storageEncoding, "gzip");
     assert.strictEqual(accounting.configuredLimits.basis, "configured_limits_not_allocated_capacity");
     assert.ok(accounting.configuredLimits.maxManifestBytes >= manifestBytes);
+    assert.strictEqual(Object.hasOwn(accounting.configuredLimits, "framedV2"), false,
+      "legacy receipt shape does not gain framed codec limits");
     assert.deepStrictEqual(accounting.manifest.storedBuffer, { count: 1, bytes: manifestBytes });
     assert.deepStrictEqual(accounting.manifest.rawString, {
       count: 1,
