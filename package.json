@@ -33,7 +33,7 @@
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "inkjs": "^2.4.0",
     "yaml": "^2.8.1",
     "zod": "^4.4.3"
