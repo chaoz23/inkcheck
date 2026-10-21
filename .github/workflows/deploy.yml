@@ -1,7 +1,8 @@
 name: Deploy hosted checker
 
 # Redeploys the hosted checker on the droplet by pulling main and rebuilding
-# the container. Runs on manual dispatch, or after a Release is published.
+# the container. Runs on explicit manual dispatch, or after a stable product
+# Release is published. Audit prereleases do not authorize a deployment.
 #
 # Auth is a dedicated SSH deploy key (no passwords). One-time setup by the
 # droplet/repo owner:
@@ -26,11 +27,20 @@ concurrency:
 
 jobs:
   deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'v')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       APP_DIR: ${{ vars.APP_DIR || '/root/inkcheck' }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Validate deployment authorization
+        run: node scripts/release-event-gate.js deploy
       - name: Redeploy over SSH
         env:
           SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
@@ -48,11 +58,13 @@ jobs:
           # Trust-on-first-use for the host key; pin via a DROPLET_KNOWN_HOSTS
           # secret instead if you want strict verification.
           ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          printf -v remote_app_dir '%q' "$APP_DIR"
           ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "$SSH_USER@$SSH_HOST" \
             "set -euo pipefail; \
-             cd '$APP_DIR'; \
+             cd -- $remote_app_dir; \
+             test \"\$(git symbolic-ref --quiet --short HEAD)\" = main; \
              echo '--- before:' \$(git rev-parse --short HEAD); \
-             git pull --ff-only; \
+             git pull --ff-only origin main; \
              echo '--- after:'  \$(git rev-parse --short HEAD); \
              docker compose up -d --build; \
              docker image prune -f; \
