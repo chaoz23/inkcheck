@@ -93,7 +93,7 @@ Telemetry v2 also exposes `timing` entries for `critical`, `intent`, `authoredCo
 
 These are deterministic transition distances and category-specific rates, not wall-clock timing, a plateau estimate, or a coverage claim. Raw territory deliberately has no useful-yield timing entry. The existing discovery curve still records its own bounded factual discovery history; observability reasons identify why a resource sample exists.
 
-This slice does not add kth-event milestones, campaign-new versus rediscovered identities, search-active-minute or retained-GiB-minute rates, or complete owner-cost attribution.
+The deterministic pass ledger itself does not add kth-event milestones, campaign-new versus rediscovered identities, wall-clock rates, or complete owner-cost attribution. A separate outer `LongRunTelemetryV1` lifecycle record now combines the live v2 observations over their exact first-to-last sampled interval. It reports search-active-minute and deterministic retained-GiB-minute rates for the six useful-yield categories without changing this checkpointed ledger. Campaign allocations separately persist explicit campaign-new and rediscovered counts; those fields remain campaign-window facts rather than additions to `passes[].sharedObservability`.
 
 ## Observed process memory
 
@@ -101,7 +101,7 @@ This slice does not add kth-event milestones, campaign-new versus rediscovered i
 
 Process fields include V8 heap used/total, process RSS, external and array-buffer bytes, compared logical accounted bytes, and an observational unattributed difference. The difference may be negative because the logical model and V8 heap measure different things. It is not proof of ownership or a leak.
 
-Process observations are deliberately excluded from shared checkpoints, canonical JSON reports, report/checkpoint IDs, exact-resume comparisons, and compact machine summaries. They appear only on live CLI progress and the bounded evidence-stream terminal resource summary. They cannot alter frontier order, sampling reasons, or policy because this slice activates no policy.
+Process observations are deliberately excluded from shared checkpoints, canonical JSON reports, report/checkpoint IDs, and exact-resume comparisons. Individual samples appear on live CLI progress; successful ordinary JSON and bounded evidence-stream terminal output may additionally expose their validated numeric `LongRunTelemetryV1` integral, and campaign inspection may expose the latest persisted window cost. These outer records never copy the raw sample history into a report or checkpoint. Their values are not frontier, allocation, or stopping-policy inputs. Collection does have bounded runtime overhead and can move an execution that is already immediately beside a memory or time guard, so exact-head calibration—not instrumentation alone—is required for an overhead or policy-neutrality claim.
 
 ## Resume and V1 migration
 
@@ -121,4 +121,4 @@ Changing the sampling interval while resuming still fails closed. Sequence valid
 
 Samples and live resource events contain only aggregate counts, boundary-local numeric trigger counts, byte estimates, pass names, reason codes and their bounded numeric mask, transition positions, and process values. They contain no story source, choice prose, final text, variable names or values, runtime messages, or witness paths.
 
-Checkpoint/epoch/pressure boundaries, complete owner accounting, retained-GiB-minute cost, and any observability-driven allocation, eviction, compaction, or stopping policy remain future #216/#156/#217/#218 work. The earlier V1 overhead study is tied to its measured source heads; it is not an overhead claim for this exact V2 implementation head. A separate exact-head calibration is required before any performance or promotion claim.
+Checkpoint/epoch/pressure boundaries, complete exclusive-owner accounting, and any observability-driven allocation, eviction, compaction, or stopping policy remain future #216/#156/#217/#218 work. The outer lifecycle ledger provides a first interval-aligned deterministic retained-GiB-minute cost proxy, not a complete heap-attribution or simultaneous-peak model. The earlier V1 overhead study is tied to its measured source heads; it is not an overhead claim for this exact V2 implementation head. A separate exact-head calibration is required before any performance or promotion claim.
