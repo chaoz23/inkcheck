@@ -77,6 +77,10 @@ docker compose up -d --build
 docker image prune -f
 ```
 
+The automated deployment workflow also follows `main`; it verifies that the remote checkout is on `main` before pulling and rebuilding. Explicit manual dispatch remains available. Automatic deployment and npm publication accept only published stable product releases whose exact `vX.Y.Z` tag agrees with `package.json` and both lockfile identities. Audit prereleases and non-version releases skip both jobs; malformed or mismatched version tags fail validation before SSH or npm commands. Manual npm publication must select the exact stable version tag rather than a branch.
+
+These checks apply to workflow revisions containing the release gate. Publishing a release against a historical tag can execute that tag's older workflows; adding guards to `main` does not retrofit historical archive tags. Preserve audit evidence with tags/assets without publishing another release from an older unguarded revision.
+
 Install the unattended weekly report once after the first metrics-enabled deployment:
 
 ```sh

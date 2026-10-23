@@ -1,7 +1,8 @@
 name: Publish to npm
 
-# Publishes the package to npm when a GitHub Release is published (tag vX.Y.Z),
-# or on manual dispatch. Authentication is npm Trusted Publishing (OIDC): the
+# Publishes stable product releases only (tag vX.Y.Z), or on manual dispatch
+# with an exact stable version tag selected. Audit prereleases are excluded.
+# Authentication is npm Trusted Publishing (OIDC): the
 # job mints a short-lived identity token from GitHub and npm verifies it against
 # the trusted publisher configured on the package — so there is no long-lived
 # NPM_TOKEN secret to manage or leak, and provenance is attached automatically.
@@ -24,6 +25,7 @@ permissions:
 
 jobs:
   publish:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'v')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -31,6 +33,8 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+      - name: Validate product release identity
+        run: node scripts/release-event-gate.js publish
       # Trusted Publishing needs npm >= 11.5.1; Node 22 ships an older npm.
       - run: npm install -g npm@latest
       - run: npm ci
