@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "crypto";
 import * as path from "path";
+import { performance } from "node:perf_hooks";
 import {
   CompileResult,
   DEFAULT_MAX_DEPTH,
@@ -91,6 +92,12 @@ import {
 } from "./checkpoints";
 import { renderHumanResultWindow, runHumanCampaign } from "./human-campaign";
 import type { CampaignMode } from "./campaign-policy";
+import {
+  createLongRunTelemetryRecorder,
+  type LongRunPhaseV1,
+  type LongRunTelemetryPassInputV1,
+  validateLongRunTelemetryV1,
+} from "./long-run-telemetry";
 import { VERSION } from "./version";
 
 let activeProgressFailure: (() => void) | undefined;
@@ -456,6 +463,23 @@ async function main() {
       usage(error instanceof Error ? error.message : String(error));
     }
   }
+  // Decide before mutating/parsing normal-run arguments so machine setup
+  // timing includes the same command preparation as the rest of the run.
+  // Non-machine surfaces never construct or retain the recorder.
+  const collectLongRunTelemetry = args[0] !== "inspect"
+    && !args.includes("--profile")
+    && (args.includes("--json") || args.includes("--json-stream"));
+  const longRunTelemetry = collectLongRunTelemetry
+    ? createLongRunTelemetryRecorder()
+    : undefined;
+  const startLongRunPhase = (phase: LongRunPhaseV1): void => {
+    longRunTelemetry?.startPhase(phase);
+  };
+  const endLongRunPhase = (phase: LongRunPhaseV1): void => {
+    longRunTelemetry?.endPhase(phase);
+  };
+  startLongRunPhase("setup");
+
   let resumeCheckpointId: string | undefined;
   if (args[0] === "resume") {
     resumeCheckpointId = args[1];
@@ -567,11 +591,15 @@ async function main() {
     if (file) usage("resume reads its entrypoint from the checkpoint and does not accept a story path");
     if (!maxStatesSpecified) usage("resume requires explicit --max-states N as the new total grant");
     const projectRoot = projectConfig ? path.dirname(projectConfig.path) : process.cwd();
+    endLongRunPhase("setup");
+    startLongRunPhase("checkpoint_reopen");
     try {
       resumed = await loadCheckpointForResume(projectRoot, resumeCheckpointId);
     } catch (error) {
       usage(error instanceof Error ? error.message : String(error));
     }
+    endLongRunPhase("checkpoint_reopen");
+    startLongRunPhase("setup");
     file = resumed.entrypoint;
     if (searchSpecified && search !== "shared") usage("resume supports only --search=shared");
     search = "shared";
@@ -702,7 +730,9 @@ async function main() {
     ...(projectConfig?.config.assertions?.length ? { assertions: projectConfig.config.assertions } : {}),
     ...(projectConfig?.config.goals?.length ? { goals: projectConfig.config.goals } : {}),
   };
+  endLongRunPhase("setup");
   const startedAt = Date.now();
+  const longRunTelemetryStartedAt = collectLongRunTelemetry ? performance.now() : 0;
   const streamedEvidenceKeys = new Set<string>();
   let streamedEndings = 0;
   let streamedRuntimeErrors = 0;
@@ -863,7 +893,8 @@ async function main() {
 
   emitProgress("run_start");
   emitProgress("phase_start", { phase: "compile" });
-  const compiled = await compile(file);
+  startLongRunPhase("compilation");
+  const compiled = await compile(file).finally(() => endLongRunPhase("compilation"));
   const { storyJson: _compiledStoryJson, ...compileReport } = compiled;
   emitProgress("phase_end", { phase: "compile" });
 
@@ -872,13 +903,19 @@ async function main() {
     reportEnrichmentAccounting?: ReportEnrichmentAccountingV1
   ) => {
     const projectRoot = artifactProjectRoot(file!, projectConfig?.path);
-    const reference = saveReportArtifact(
-      projectRoot,
-      file!,
-      value,
-      {},
-      reportEnrichmentAccounting
-    );
+    startLongRunPhase("report_write");
+    let reference: ReturnType<typeof saveReportArtifact>;
+    try {
+      reference = saveReportArtifact(
+        projectRoot,
+        file!,
+        value,
+        {},
+        reportEnrichmentAccounting
+      );
+    } finally {
+      endLongRunPhase("report_write");
+    }
     console.error(`saved report ${reference.id} (${reference.path})`);
     return reference;
   };
@@ -924,6 +961,7 @@ async function main() {
   }
 
   emitProgress("phase_start", { phase: "source_scan" });
+  startLongRunPhase("source_scan");
   const knots = scanKnots(file);
   const externals = scanExternals(file);
   const semantics = scanStorySemantics(file);
@@ -946,6 +984,7 @@ async function main() {
   // The recommender uses the shape profile for a better deepen target even
   // when --auto was not requested; the scan is cheap and deterministic.
   const adviceProfile = profile ?? scanShapeProfile(file);
+  endLongRunPhase("source_scan");
   emitProgress("phase_end", { phase: "source_scan" });
 
   // Memory guard: a V8 heap OOM cannot be caught after the fact, so stop
@@ -980,7 +1019,14 @@ async function main() {
   });
 
   let nextCheckpoint: ReturnType<typeof exploreSharedResumable>["checkpoint"];
+  const longRunTelemetryPasses: LongRunTelemetryPassInputV1[] | undefined =
+    collectLongRunTelemetry ? [] : undefined;
+  let longRunTelemetryRun = 0;
   const runCheck = (bounds: { maxDepth?: number; maxStates?: number; seed?: number }): ExploreResult => {
+    const telemetryRun = collectLongRunTelemetry ? ++longRunTelemetryRun : 0;
+    const telemetryPass = (pass: string): string => followNext
+      ? `run=${telemetryRun}/${pass}`
+      : pass;
     const runStates = bounds.maxStates ?? 10_000_000;
     if (runStates + additionalGoalStates > 100_000_000) {
       usage("baseline maxStates + goalMaxStates must not exceed 100000000");
@@ -1006,18 +1052,32 @@ async function main() {
       detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
       randomnessDetected: semantics.usesRandomness,
       ...(asJsonStream ? { onEvidence: streamEvidence } : {}),
-      ...(selectedProgressMode === "off" ? {} : {
+      ...(collectLongRunTelemetry || selectedProgressMode !== "off" ? {
         onSharedObservability: (observation: SharedResourceObservation) => {
           latestSharedObservation = observation;
+          if (collectLongRunTelemetry && observation.schemaVersion === 2) {
+            longRunTelemetry?.observeShared(
+              followNext
+                ? {
+                    ...observation,
+                    pass: telemetryPass(observation.pass),
+                    runWideState: statesBase + observation.runWideState,
+                  }
+                : observation,
+              Math.floor(performance.now() - longRunTelemetryStartedAt)
+            );
+          }
           statesExplored = saveCheckpoint
             ? observation.runWideState
             : statesBase + observation.runWideState;
-          emitProgress("resource", {
-            pass: observation.pass,
-            sharedObservability: observation,
-          });
+          if (selectedProgressMode !== "off") {
+            emitProgress("resource", {
+              pass: observation.pass,
+              sharedObservability: observation,
+            });
+          }
         },
-      }),
+      } : {}),
       onProgress: (progress: ExploreProgress) => {
         statesExplored = saveCheckpoint ? progress.statesExplored : statesBase + progress.statesExplored;
         const progressDetails = {
@@ -1066,44 +1126,49 @@ async function main() {
       },
     };
     let checked: ExploreResult;
-    if (saveCheckpoint) {
-      const continuation = exploreSharedResumable(
-        compiled.storyJson!,
-        knots,
-        externals,
-        exploreOptions,
-        resumed?.checkpoint
-      );
-      checked = continuation.result;
-      nextCheckpoint = continuation.checkpoint;
-    } else {
-      const configuredOptions = {
-        ...exploreOptions,
-        weights: profile?.suggested.weights,
-        assertions: configuredAssertions,
-        goals: configuredGoals,
-        goalMaxStates: additionalGoalStates,
-      };
-      checked = goalOnly
-        ? exploreGoalProbe(compiled.storyJson!, knots, externals, {
-            ...configuredOptions,
-            goalMaxStates: runStates,
-          })
-        : resolvedConcurrency.executor === "auto-handoff"
-          ? explorePortfolioPilotHandoffConcurrent(compiled.storyJson!, knots, externals, {
-            ...configuredOptions,
-            concurrency: resolvedConcurrency.ceiling,
-            memoryCapBytes: memorySearchLimitBytes,
-            deadlineMs,
+    startLongRunPhase("search_active");
+    try {
+      if (saveCheckpoint) {
+        const continuation = exploreSharedResumable(
+          compiled.storyJson!,
+          knots,
+          externals,
+          exploreOptions,
+          resumed?.checkpoint
+        );
+        checked = continuation.result;
+        nextCheckpoint = continuation.checkpoint;
+      } else {
+        const configuredOptions = {
+          ...exploreOptions,
+          weights: profile?.suggested.weights,
+          assertions: configuredAssertions,
+          goals: configuredGoals,
+          goalMaxStates: additionalGoalStates,
+        };
+        checked = goalOnly
+          ? exploreGoalProbe(compiled.storyJson!, knots, externals, {
+              ...configuredOptions,
+              goalMaxStates: runStates,
             })
-        : resolvedConcurrency.executor === "fixed-concurrent"
-          ? explorePortfolioConcurrent(compiled.storyJson!, knots, externals, {
+          : resolvedConcurrency.executor === "auto-handoff"
+            ? explorePortfolioPilotHandoffConcurrent(compiled.storyJson!, knots, externals, {
               ...configuredOptions,
               concurrency: resolvedConcurrency.ceiling,
               memoryCapBytes: memorySearchLimitBytes,
               deadlineMs,
-            })
-        : exploreWithGoals(compiled.storyJson!, knots, externals, configuredOptions, search);
+              })
+          : resolvedConcurrency.executor === "fixed-concurrent"
+            ? explorePortfolioConcurrent(compiled.storyJson!, knots, externals, {
+                ...configuredOptions,
+                concurrency: resolvedConcurrency.ceiling,
+                memoryCapBytes: memorySearchLimitBytes,
+                deadlineMs,
+              })
+          : exploreWithGoals(compiled.storyJson!, knots, externals, configuredOptions, search);
+      }
+    } finally {
+      endLongRunPhase("search_active");
     }
     statesExplored = saveCheckpoint ? checked.statesExplored : statesBase + checked.statesExplored;
     emitProgress("phase_end", { phase: "explore" });
@@ -1112,25 +1177,42 @@ async function main() {
     );
     if (reproStates > 0 && !forcedRootCycle) {
       emitProgress("phase_start", { phase: "min_repro" });
-      const bfs = explore(compiled.storyJson!, knots, externals, {
-        maxDepth: bounds.maxDepth,
-        maxStates: reproStates,
-        strategy: "bfs",
-        storySeed,
-        memoryGuard,
-      timeGuard,
-        preserveTurnState: semantics.usesTurns,
-        preserveRandomState: semantics.usesRandomness,
-        detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
-        randomnessDetected: semantics.usesRandomness,
-        assertions: configuredAssertions,
-        ...(asJsonStream ? { onEvidence: streamEvidence } : {}),
-      });
+      startLongRunPhase("minimum_reproduction");
+      let bfs: ExploreResult;
+      try {
+        bfs = explore(compiled.storyJson!, knots, externals, {
+          maxDepth: bounds.maxDepth,
+          maxStates: reproStates,
+          strategy: "bfs",
+          storySeed,
+          memoryGuard,
+          timeGuard,
+          preserveTurnState: semantics.usesTurns,
+          preserveRandomState: semantics.usesRandomness,
+          detectLoopRisks: !semantics.usesTurns && !semantics.usesRandomness && !semantics.usesVisitCounts && externals.length === 0,
+          randomnessDetected: semantics.usesRandomness,
+          assertions: configuredAssertions,
+          ...(asJsonStream ? { onEvidence: streamEvidence } : {}),
+        });
+      } finally {
+        endLongRunPhase("minimum_reproduction");
+      }
       checked = mergeMinRepro(checked, bfs);
       statesExplored = statesBase + checked.statesExplored;
       emitProgress("phase_end", { phase: "min_repro" });
     }
-    return classifyUnvisitedKnots(checked, inboundDiverts);
+    const classified = classifyUnvisitedKnots(checked, inboundDiverts);
+    if (longRunTelemetryPasses) {
+      for (const pass of classified.passes ?? []) {
+        if (pass.sharedObservability?.schemaVersion !== 2) continue;
+        longRunTelemetryPasses.push({
+          pass: telemetryPass(pass.pass),
+          statesExplored: pass.statesExplored,
+          sharedObservability: pass.sharedObservability,
+        });
+      }
+    }
+    return classified;
   };
 
   let report: ExploreResult;
@@ -1190,6 +1272,7 @@ async function main() {
       runs.push(summarize(runs.length + 1, flags, report));
     }
   }
+  startLongRunPhase("finalization");
 
   // The bounded stream deliberately avoids materializing the enriched full
   // report: at marathon scale that duplicate object graph and its monolithic
@@ -1204,18 +1287,33 @@ async function main() {
     storyJson: compiled.storyJson!,
     configuration: reportConfiguration,
   };
-  const reportBuild = asJsonStream
-    ? undefined
-    : asJson || saveReport
-      ? buildReportEnvelopeAccounted(reportInput)
-      : { report: buildReportEnvelope(reportInput), accounting: undefined };
+  let reportBuild:
+    | ReturnType<typeof buildReportEnvelopeAccounted>
+    | { report: ReturnType<typeof buildReportEnvelope>; accounting: undefined }
+    | undefined;
+  if (!asJsonStream) {
+    startLongRunPhase("report_enrichment");
+    try {
+      reportBuild = asJson || saveReport
+        ? buildReportEnvelopeAccounted(reportInput)
+        : { report: buildReportEnvelope(reportInput), accounting: undefined };
+    } finally {
+      endLongRunPhase("report_enrichment");
+    }
+  }
   const outputReport = reportBuild?.report;
   const reportEnrichmentAccounting = reportBuild?.accounting;
   let checkpointOutput: Record<string, unknown> | undefined;
   if (saveCheckpoint) {
     if (nextCheckpoint) {
       const projectRoot = artifactProjectRoot(file!, projectConfig?.path);
-      const reference = await saveCheckpointArtifact(projectRoot, file!, nextCheckpoint);
+      startLongRunPhase("checkpoint_write");
+      let reference: Awaited<ReturnType<typeof saveCheckpointArtifact>>;
+      try {
+        reference = await saveCheckpointArtifact(projectRoot, file!, nextCheckpoint);
+      } finally {
+        endLongRunPhase("checkpoint_write");
+      }
       checkpointOutput = {
         saved: true,
         ...reference,
@@ -1258,8 +1356,8 @@ async function main() {
     ...(artifact ? { reportFinalization: artifact.accounting } : {}),
   };
   emitProgress("phase_start", { phase: "report" });
+  let terminalLogicalAccountedBytes = 0;
   if (asJsonStream) {
-    let terminalLogicalAccountedBytes = 0;
     for (let index = (report.passes?.length ?? 0) - 1; index >= 0; index--) {
       const pass = report.passes![index];
       if (pass.sharedOwnerAccounting) {
@@ -1277,6 +1375,12 @@ async function main() {
     // omit a finding from a clean terminal stream.
     for (const ending of report.endingsFound) streamEvidence({ kind: "ending", finding: ending });
     for (const error of report.runtimeErrors) streamEvidence({ kind: "runtime-error", finding: error });
+  }
+  endLongRunPhase("finalization");
+  const terminalLongRunTelemetry = longRunTelemetry
+    ? validateLongRunTelemetryV1(longRunTelemetry.finalize(longRunTelemetryPasses ?? []))
+    : undefined;
+  if (asJsonStream) {
     emitJsonStream({
       type: "run_end",
       inkcheckVersion: VERSION,
@@ -1310,6 +1414,7 @@ async function main() {
         finalizationTimeReserveMs: finalizationReserve.timeMs,
         ownerAccounting: runtimeOwnerAccounting,
         observedProcessAtTermination: observeProcessMemory(terminalLogicalAccountedBytes),
+        longRunTelemetry: terminalLongRunTelemetry,
       },
       evidence: { endingsEmitted: streamedEndings, runtimeErrorsEmitted: streamedRuntimeErrors, benchmarkSignalsEmitted: streamedBenchmarkSignals },
     });
@@ -1320,7 +1425,10 @@ async function main() {
             ...outputReport!,
             ...(artifact ? { artifact } : {}),
             ...(checkpointOutput ? { checkpoint: checkpointOutput } : {}),
-            resources: { ownerAccounting: runtimeOwnerAccounting },
+            resources: {
+              ownerAccounting: runtimeOwnerAccounting,
+              longRunTelemetry: terminalLongRunTelemetry,
+            },
           },
         null,
         2

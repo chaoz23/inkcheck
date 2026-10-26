@@ -14,6 +14,7 @@ const {
   createCampaignPolicy,
   planCampaignRun,
 } = require("../dist/campaign-policy");
+const { createLongRunTelemetryRecorder } = require("../dist/long-run-telemetry");
 
 const fingerprint = "campaign-controls-0123456789";
 const start = "2026-07-14T12:00:00.000Z";
@@ -214,6 +215,7 @@ function observedWindow({ campaignNew, rediscovered, state, latestGap, longestGa
   return {
     schemaVersion: 1,
     observedYield: { ...zero, terminalVariants: campaignNew + rediscovered },
+    campaignNewYield: { ...zero, terminalVariants: campaignNew },
     rediscoveredYield: { ...zero, terminalVariants: rediscovered },
     discoverySpacing: {
       scope: "report_meaningful_events",
@@ -261,6 +263,53 @@ test("long-tail shadow exposes selected-value rediscovery and factual discovery 
   assert.strictEqual(shadow.liveEffect, false);
 });
 
+test("campaign-new yield and pass-local cost are decision-neutral observations", () => {
+  const campaignNew = [3, 1];
+  const observability = campaignNew.map((value, index) => observedWindow({
+    campaignNew: value,
+    rediscovered: 4 - value,
+    state: 100,
+    latestGap: 10 + index,
+    longestGap: 20 + index,
+  }));
+  const { ledger } = longTailSequence({
+    yields: campaignNew.map((terminalVariants) => ({
+      critical: 0, intent: 0, authoredCoverage: 0, terminalVariants,
+    })),
+    observability,
+  });
+  const enriched = structuredClone(ledger);
+  const cost = createLongRunTelemetryRecorder().finalize([]);
+  for (const allocation of enriched.allocations) {
+    if (allocation.provenance) allocation.provenance.cost = structuredClone(cost);
+  }
+  const legacy = structuredClone(enriched);
+  for (const allocation of legacy.allocations) {
+    if (allocation.provenance) delete allocation.provenance.cost;
+    if (allocation.observability) delete allocation.observability.campaignNewYield;
+  }
+
+  assert.deepStrictEqual(forecastCampaign(enriched), forecastCampaign(legacy));
+  assert.strictEqual(campaignRecommendation(enriched), campaignRecommendation(legacy));
+  assert.deepStrictEqual(recommendLongTailShadow(enriched), recommendLongTailShadow(legacy));
+  assert.deepStrictEqual(explainCampaignDecision(enriched), explainCampaignDecision(legacy));
+
+  const planSignature = (value) => ({
+    action: value.action,
+    reason: value.reason,
+    allocation: value.allocation,
+  });
+  const planInput = {
+    now: new Date(Date.parse(start) + 10_000).toISOString(),
+    bindingFingerprint: fingerprint,
+    recommendation: "continue",
+  };
+  assert.deepStrictEqual(
+    planSignature(planCampaignRun(enriched, planInput)),
+    planSignature(planCampaignRun(legacy, planInput))
+  );
+});
+
 test("campaign commits reject observability that invents or loses evidence", () => {
   const policy = createCampaignPolicy({
     intent: "balanced",
@@ -283,6 +332,20 @@ test("campaign commits reject observability that invents or loses evidence", () 
     stopReason: "window_complete",
     yield: { critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: 2 },
     observability: observedWindow({ campaignNew: 1, rediscovered: 1, state: 100, latestGap: 10, longestGap: 20 }),
+  }), /must equal the allocation yield/);
+
+  const invalidInvariant = observedWindow({ campaignNew: 2, rediscovered: 1, state: 100, latestGap: 10, longestGap: 20 });
+  invalidInvariant.observedYield.terminalVariants = 4;
+  assert.throws(() => commitCampaignRun(plan.ledger, {
+    now: new Date(Date.parse(start) + 1_000).toISOString(),
+    bindingFingerprint: fingerprint,
+    allocationId: plan.allocation.id,
+    consumedStates: 100,
+    peakMemoryBytes: 1_000,
+    currentDiskBytes: 2_000,
+    stopReason: "window_complete",
+    yield: { critical: 0, intent: 0, authoredCoverage: 0, terminalVariants: 2 },
+    observability: invalidInvariant,
   }), /must equal campaign-new plus rediscovered evidence/);
 });
 
